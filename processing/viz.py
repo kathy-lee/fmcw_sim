@@ -8,9 +8,9 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
 
-from radar_postproc.clustering import Detection
-from radar_postproc.config import RadarParams
-from radar_postproc.tracking import Track
+from processing.clustering import Detection
+from processing.config import RadarParams
+from processing.tracking import Track
 
 _LAYERS = {"cfar", "clusters", "tracks"}
 

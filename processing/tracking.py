@@ -12,8 +12,8 @@ from typing import Optional
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-from radar_postproc.clustering import Detection
-from radar_postproc.config import TrackerConfig
+from processing.clustering import Detection
+from processing.config import TrackerConfig
 
 _F = np.array([[1.0, 1.0], [0.0, 1.0]])
 _Q_BASE = np.array([[1.0 / 4.0, 1.0 / 2.0], [1.0 / 2.0, 1.0]])

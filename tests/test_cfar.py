@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from radar_postproc.cfar import cfar_2d
-from radar_postproc.tests._synth import (
+from processing.cfar import cfar_2d
+from _synth import (
     make_noise_frame, add_target, make_two_targets,
 )
 

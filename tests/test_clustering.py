@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from radar_postproc.clustering import Detection, cluster
-from radar_postproc.tests._synth import make_noise_frame
+from processing.clustering import Detection, cluster
+from _synth import make_noise_frame
 
 
 def _empty_mask(shape=(32, 640)):

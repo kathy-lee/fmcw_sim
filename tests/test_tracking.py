@@ -3,7 +3,7 @@ import math
 import numpy as np
 import pytest
 
-from radar_postproc.tracking import Track, _kf_predict, _kf_update
+from processing.tracking import Track, _kf_predict, _kf_update
 
 
 def _make_track():
@@ -60,9 +60,9 @@ def test_kf_converges_with_repeated_measurements():
     assert state[1] == pytest.approx(truth_vel, abs=0.5)
 
 
-from radar_postproc.tracking import Tracker
-from radar_postproc.config import TrackerConfig
-from radar_postproc.clustering import Detection
+from processing.tracking import Tracker
+from processing.config import TrackerConfig
+from processing.clustering import Detection
 
 
 def _det(range_bin: float, doppler_bin: float, peak_db: float = 5.0):

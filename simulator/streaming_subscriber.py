@@ -12,6 +12,8 @@ from typing import Any
 import numpy as np
 import zmq
 
+from processing.range_doppler import range_doppler
+
 C = 299_792_458.0
 
 
@@ -47,25 +49,29 @@ def get_axes(header: dict[str, Any], n_range_fft: int, n_doppler_fft: int) -> tu
     return range_axis_m, velocity_axis_mps
 
 
-def range_doppler(frame: np.ndarray, window: str = "hann") -> np.ndarray:
-    n_chirps, n_range = frame.shape
-
-    if window == "hann":
-        range_win = np.hanning(n_range)[None, :]
-        doppler_win = np.hanning(n_chirps)[:, None]
-    else:
-        range_win = 1.0
-        doppler_win = 1.0
-
-    x = frame * range_win
-    rfft = np.fft.fft(x, axis=1)
-
-    # Keep only positive beat-frequency range bins.
-    rfft = rfft[:, : n_range // 2]
-
-    rfft = rfft * doppler_win
-    rd = np.fft.fftshift(np.fft.fft(rfft, axis=0), axes=0)
-    return rd
+# Original local implementation, kept for reference. The function now lives at
+# processing/range_doppler.py (imported above) with added DC removal and
+# slow-time clutter suppression.
+#
+# def range_doppler(frame: np.ndarray, window: str = "hann") -> np.ndarray:
+#     n_chirps, n_range = frame.shape
+#
+#     if window == "hann":
+#         range_win = np.hanning(n_range)[None, :]
+#         doppler_win = np.hanning(n_chirps)[:, None]
+#     else:
+#         range_win = 1.0
+#         doppler_win = 1.0
+#
+#     x = frame * range_win
+#     rfft = np.fft.fft(x, axis=1)
+#
+#     # Keep only positive beat-frequency range bins.
+#     rfft = rfft[:, : n_range // 2]
+#
+#     rfft = rfft * doppler_win
+#     rd = np.fft.fftshift(np.fft.fft(rfft, axis=0), axes=0)
+#     return rd
 
 
 def top_peaks(power_db: np.ndarray, range_axis_m: np.ndarray, velocity_axis_mps: np.ndarray, k: int) -> list[dict[str, float]]:

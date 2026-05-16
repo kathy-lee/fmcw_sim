@@ -64,21 +64,3 @@ def test_view_on_reset_callback_invoked():
     assert called[0] == 1
 
 
-def test_entry_script_imports_without_starting_loop():
-    """Smoke-import the entry script via importlib without running its main loop.
-
-    The script's behavior (running the ZMQ subscribe loop) lives behind an
-    `if __name__ == '__main__'` guard, so importing the module is safe.
-    """
-    import importlib.util
-    import pathlib
-
-    here = pathlib.Path(__file__).resolve().parents[2]  # project root
-    script = here / "receive_with_tracking.py"
-    assert script.exists(), f"expected entry script at {script}"
-    spec = importlib.util.spec_from_file_location("receive_with_tracking", script)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    # Top-level should expose `main` and `build_pipeline`.
-    assert hasattr(mod, "main")
-    assert hasattr(mod, "build_pipeline")

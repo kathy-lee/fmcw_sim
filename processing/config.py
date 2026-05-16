@@ -1,22 +1,4 @@
-from dataclasses import dataclass, field
-
-
-@dataclass(frozen=True)
-class RadarParams:
-    n_range: int = 640
-    n_doppler: int = 32
-    samp_rate: float = 32000.0
-    chirp_period: float = 0.02
-    bandwidth: float = 8000.0
-    sound_speed: float = 343.0
-
-    @property
-    def range_res_m(self) -> float:
-        return self.sound_speed / (2.0 * self.bandwidth)
-
-    @property
-    def doppler_res_hz(self) -> float:
-        return 1.0 / (self.n_doppler * self.chirp_period)
+from dataclasses import dataclass
 
 
 _CFAR_METHODS = {"ca", "os", "go", "so"}
@@ -136,11 +118,3 @@ class TrackerConfig:
             raise ValueError(
                 f"TrackerConfig.history_len must be >= 1, got {self.history_len}"
             )
-
-
-@dataclass
-class PipelineConfig:
-    radar: RadarParams = field(default_factory=RadarParams)
-    cfar: CfarConfig = field(default_factory=CfarConfig)
-    clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
-    tracker: TrackerConfig = field(default_factory=TrackerConfig)

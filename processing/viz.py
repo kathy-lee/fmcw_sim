@@ -9,7 +9,6 @@ import matplotlib.colors as mcolors
 import numpy as np
 
 from processing.clustering import Detection
-from processing.config import RadarParams
 from processing.tracking import Track
 
 _LAYERS = {"cfar", "clusters", "tracks"}
@@ -29,13 +28,17 @@ class LayeredRDView:
         self,
         n_doppler: int,
         n_range: int,
-        params: RadarParams,
+        range_res_m: float,
+        chirp_period_s: float,
+        lambda_m: float,
         vmin: float = -120.0,
         vmax: float = 20.0,
     ):
         self.n_doppler = n_doppler
         self.n_range = n_range
-        self.params = params
+        self.range_res_m = range_res_m
+        self.chirp_period_s = chirp_period_s
+        self.lambda_m = lambda_m
         self._reset_cb: Optional[Callable[[], None]] = None
         self._visible = {"cfar": True, "clusters": True, "tracks": True}
         # Track-id-keyed cache of per-track artist groups; rebuilt each frame for simplicity.
@@ -70,18 +73,19 @@ class LayeredRDView:
                                                 c="yellow", linewidths=1.5)
 
         # Secondary axes (decorative — bins ↔ physical units).
-        rr = params.range_res_m
+        rr = range_res_m
         self.ax.secondary_xaxis(
             "top",
             functions=(lambda b, rr=rr: b * rr, lambda m, rr=rr: m / rr),
         ).set_xlabel("Range (m)")
         n_d = n_doppler
-        cp = params.chirp_period
-        def b2hz(b, n_d=n_d, cp=cp):
-            return (b - n_d / 2.0) / (n_d * cp)
-        def hz2b(h, n_d=n_d, cp=cp):
-            return h * (n_d * cp) + n_d / 2.0
-        self.ax.secondary_yaxis("right", functions=(b2hz, hz2b)).set_ylabel("Doppler (Hz)")
+        cp = chirp_period_s
+        lm = lambda_m
+        def b2mps(b, n_d=n_d, cp=cp, lm=lm):
+            return (b - n_d / 2.0) / (n_d * cp) * lm / 2.0
+        def mps2b(v, n_d=n_d, cp=cp, lm=lm):
+            return v * 2.0 / lm * (n_d * cp) + n_d / 2.0
+        self.ax.secondary_yaxis("right", functions=(b2mps, mps2b)).set_ylabel("Velocity (m/s)")
 
         # Hotkeys.
         self.fig.canvas.mpl_connect("key_press_event", self._on_key)
@@ -141,12 +145,14 @@ class LayeredRDView:
                 )
                 self._track_artists.append(sc)
                 # Label.
-                rng_m = t.state[0] * self.params.range_res_m
-                dop_hz = (t.last_doppler_bin - self.n_doppler / 2.0) / (
-                    self.n_doppler * self.params.chirp_period
+                rng_m = t.state[0] * self.range_res_m
+                vel_mps = (
+                    (t.last_doppler_bin - self.n_doppler / 2.0)
+                    / (self.n_doppler * self.chirp_period_s)
+                    * self.lambda_m / 2.0
                 )
                 txt = self.ax.annotate(
-                    f"T{t.id}  r={rng_m:.2f}m  v={dop_hz:+.1f}Hz",
+                    f"T{t.id}  r={rng_m:.2f}m  v={vel_mps:+.2f}m/s",
                     xy=(t.state[0], t.last_doppler_bin),
                     xytext=(6, 4), textcoords="offset points",
                     color=color, fontsize=8,

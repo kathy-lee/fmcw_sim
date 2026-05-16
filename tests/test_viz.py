@@ -6,7 +6,6 @@ matplotlib.use("Agg")  # must precede pyplot import
 import numpy as np
 import pytest
 
-from processing.config import RadarParams
 from processing.clustering import Detection
 from processing.tracking import Track
 from processing.viz import LayeredRDView
@@ -14,7 +13,13 @@ from collections import deque
 
 
 def _make_view():
-    return LayeredRDView(n_doppler=32, n_range=640, params=RadarParams())
+    return LayeredRDView(
+        n_doppler=32,
+        n_range=640,
+        range_res_m=0.075,
+        chirp_period_s=50e-6,
+        lambda_m=3.9e-3,
+    )
 
 
 def test_view_construction_does_not_crash():

@@ -87,3 +87,52 @@ def test_format_summary_signs_negative_lag():
         drops=0, lag_s=-0.05,
     )
     assert "lag=-0.05s" in line
+
+
+# --- init_view tests ---
+
+from processing.config import CfarConfig
+from simulator.streaming_pipeline import init_view
+
+
+C_EM = 299_792_458.0
+
+
+def _fake_header(n_chirps=16, n_range=64, bandwidth_hz=2e9,
+                 chirp_period_s=50e-6, frame_period_s=0.05, fc_hz=77e9):
+    return {
+        "frame_id": 0,
+        "shape": [n_chirps, n_range],
+        "dtype": "complex64",
+        "metadata": {
+            "config": {
+                "fc_hz": fc_hz,
+                "bandwidth_hz": bandwidth_hz,
+                "chirp_period_s": chirp_period_s,
+                "frame_period_s": frame_period_s,
+                "n_range": n_range,
+                "n_chirps": n_chirps,
+            },
+            "derived": {
+                "lambda_m": C_EM / fc_hz,
+                "fs_hz": n_range / 40e-6,
+                "slope_hz_per_s": bandwidth_hz / 40e-6,
+            },
+        },
+    }
+
+
+def test_init_view_returns_view_and_deadlines():
+    header = _fake_header()
+    view, stream_dl, realtime_dl = init_view(header, CfarConfig())
+    assert view is not None
+    assert abs(stream_dl - 0.05) < 1e-12
+    assert abs(realtime_dl - 16 * 50e-6) < 1e-12
+
+
+def test_init_view_raises_on_cfar_window_overflow():
+    # Tiny RD with default CfarConfig: guard=(2,4), training=(4,8).
+    # Range window = 2*(4+8)+1 = 25 > n_range_post = 4. Should raise.
+    header = _fake_header(n_chirps=16, n_range=8)
+    with pytest.raises(ValueError, match="CFAR"):
+        init_view(header, CfarConfig())

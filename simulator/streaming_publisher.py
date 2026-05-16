@@ -17,7 +17,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--bind", default="tcp://127.0.0.1:5555")
     p.add_argument("--topic", default="fmcw")
     p.add_argument("--scenario", default=None, help="JSON scenario file")
-    p.add_argument("--frame-rate", type=float, default=20.0)
     p.add_argument("--frames", type=int, default=0, help="0 means run forever")
     p.add_argument("--startup-delay", type=float, default=0.5)
     return p.parse_args()
@@ -30,10 +29,6 @@ def main() -> None:
         cfg, targets = load_scenario(args.scenario)
     else:
         cfg, targets = default_scenario()
-
-    # Make inter-frame motion match the publishing rate unless scenario overrides it.
-    if cfg.frame_period_s is None:
-        cfg.frame_period_s = 1.0 / args.frame_rate
 
     gen = FMCWBeatSignalGenerator(cfg)
 
@@ -49,7 +44,7 @@ def main() -> None:
 
     time.sleep(args.startup_delay)
 
-    period = 1.0 / args.frame_rate
+    period = cfg.frame_period_s
     next_t = time.monotonic()
     frame_id = 0
 
@@ -74,7 +69,7 @@ def main() -> None:
                 frame.ravel(order="C").tobytes(),
             ])
 
-            if frame_id % max(1, int(args.frame_rate)) == 0:
+            if frame_id % max(1, int(round(1.0 / cfg.frame_period_s))) == 0:
                 print(f"\nSent frame {frame_id}")
 
             frame_id += 1

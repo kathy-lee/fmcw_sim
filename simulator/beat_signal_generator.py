@@ -40,6 +40,10 @@ class RadarConfig:
     frame_period_s: float | None = None
     seed: int = 0
 
+    def __post_init__(self):
+        if self.frame_period_s is None:
+            self.frame_period_s = self.n_chirps * self.chirp_period_s
+
 
 class FMCWBeatSignalGenerator:
     def __init__(self, cfg: RadarConfig):

@@ -13,7 +13,7 @@ C_EM = 299_792_458.0
 
 
 def _small_cfg(**overrides):
-    cfg = RadarConfig(
+    defaults = dict(
         fc_hz=77e9,
         bandwidth_hz=2e9,
         ramp_duration_s=40e-6,
@@ -24,9 +24,8 @@ def _small_cfg(**overrides):
         leakage_amplitude=0.0,
         seed=0,
     )
-    for k, v in overrides.items():
-        setattr(cfg, k, v)
-    return cfg
+    defaults.update(overrides)
+    return RadarConfig(**defaults)
 
 
 # --- RadarConfig.__post_init__ ---
@@ -39,6 +38,19 @@ def test_radar_config_post_init_fills_natural_cadence():
 def test_radar_config_post_init_preserves_explicit_value():
     c = RadarConfig(frame_period_s=0.05)
     assert c.frame_period_s == 0.05
+
+
+# --- _validate_config ---
+
+@pytest.mark.parametrize("overrides, match", [
+    (dict(ramp_duration_s=50e-6, chirp_period_s=40e-6), "chirp_period_s"),
+    (dict(frame_period_s=5e-4), "frame_period_s"),
+])
+def test_validate_config_rejects_inconsistent_timing(overrides, match):
+    # n_chirps * chirp_period_s = 16 * 50e-6 = 8e-4 s.
+    cfg = _small_cfg(**overrides)
+    with pytest.raises(ValueError, match=match):
+        FMCWBeatSignalGenerator(cfg)
 
 
 # --- generate_frame ---

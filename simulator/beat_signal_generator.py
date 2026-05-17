@@ -63,6 +63,10 @@ class FMCWBeatSignalGenerator:
             raise ValueError("n_range and n_chirps must be positive")
         if self.cfg.bandwidth_hz <= 0 or self.cfg.ramp_duration_s <= 0:
             raise ValueError("bandwidth_hz and ramp_duration_s must be positive")
+        if self.cfg.frame_period_s < self.cfg.n_chirps * self.cfg.chirp_period_s:
+            raise ValueError(
+                "frame_period_s must be >= n_chirps * chirp_period_s"
+            )
 
     @property
     def max_unambiguous_range_m(self) -> float:

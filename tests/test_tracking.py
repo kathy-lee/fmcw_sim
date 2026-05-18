@@ -142,6 +142,27 @@ def test_tracker_two_well_separated_targets():
     assert len(ids) == 2
 
 
+def test_tracker_records_associated_detection_index():
+    # On the spawn frame, a new track was just created from detections[0],
+    # so assoc_det_idx should be 0.
+    tr = _make_tracker_nn(confirm_M=3, confirm_N=5)
+    out = tr.step([_det(100.0, 4.0)])
+    assert len(out) == 1
+    assert out[0].assoc_det_idx == 0
+
+    # Next frame, the same track associates with detections[1] (out-of-order list).
+    out = tr.step([_det(500.0, -3.0), _det(101.0, 4.0)])
+    same = [t for t in out if t.id == 0]
+    assert len(same) == 1
+    assert same[0].assoc_det_idx == 1
+
+    # Next frame, no detections: track coasts -> assoc_det_idx must be None.
+    out = tr.step([])
+    same = [t for t in out if t.id == 0]
+    assert len(same) == 1
+    assert same[0].assoc_det_idx is None
+
+
 def test_tracker_reset_clears_state():
     tr = _make_tracker_nn(confirm_M=2, confirm_N=3)
     tr.step([_det(100.0, 4.0)])

@@ -14,6 +14,12 @@ from processing.tracking import Track
 _LAYERS = {"cfar", "clusters", "tracks"}
 
 
+def doppler_bin_to_mps(doppler_bin: float, n_doppler: int,
+                       chirp_period_s: float, lambda_m: float) -> float:
+    """Convert a (centered) Doppler bin index to radial velocity in m/s."""
+    return (doppler_bin - n_doppler / 2.0) / (n_doppler * chirp_period_s) * lambda_m / 2.0
+
+
 class LayeredRDView:
     """Owns the matplotlib figure and stacked overlays.
 
@@ -45,7 +51,7 @@ class LayeredRDView:
         self._track_artists: list = []
 
         plt.ion()
-        self.fig, self.ax = plt.subplots(figsize=(10, 4))
+        self.fig, self.ax = plt.subplots(figsize=(10, 6))
         self.ax.set_xlabel("Range bin")
         self.ax.set_ylabel("Doppler bin")
         self.ax.set_title("Frame 0  |  tracks: 0")
@@ -81,7 +87,7 @@ class LayeredRDView:
         cp = chirp_period_s
         lm = lambda_m
         def b2mps(b, n_d=n_d, cp=cp, lm=lm):
-            return (b - n_d / 2.0) / (n_d * cp) * lm / 2.0
+            return doppler_bin_to_mps(b, n_d, cp, lm)
         def mps2b(v, n_d=n_d, cp=cp, lm=lm):
             return v * 2.0 / lm * (n_d * cp) + n_d / 2.0
         self.ax.secondary_yaxis("right", functions=(b2mps, mps2b)).set_ylabel("Velocity (m/s)")
@@ -144,10 +150,9 @@ class LayeredRDView:
                 self._track_artists.append(sc)
                 # Label.
                 rng_m = t.state[0] * self.range_res_m
-                vel_mps = (
-                    (t.last_doppler_bin - self.n_doppler / 2.0)
-                    / (self.n_doppler * self.chirp_period_s)
-                    * self.lambda_m / 2.0
+                vel_mps = doppler_bin_to_mps(
+                    t.last_doppler_bin, self.n_doppler,
+                    self.chirp_period_s, self.lambda_m,
                 )
                 txt = self.ax.annotate(
                     f"T{t.id}  r={rng_m:.2f}m  v={vel_mps:+.2f}m/s",

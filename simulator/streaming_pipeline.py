@@ -19,6 +19,7 @@ import zmq
 from processing.cfar import cfar_2d
 from processing.clustering import cluster
 from processing.config import CfarConfig, ClusteringConfig, TrackerConfig
+from processing.output import open_csv_writers
 from processing.range_doppler import range_doppler
 from processing.tracking import Tracker
 from processing.viz import LayeredRDView
@@ -182,6 +183,8 @@ def main() -> None:
     cluster_kw = _cluster_kwargs(cluster_cfg)
 
     view: Optional[LayeredRDView] = None
+    det_writer = None
+    track_writer = None
     stream_deadline_s = 0.0
     realtime_deadline_s = 0.0
     last_frame_id: Optional[int] = None
@@ -212,6 +215,14 @@ def main() -> None:
                 view, stream_deadline_s, realtime_deadline_s = init_view(header, cfar_cfg)
                 view.on_reset(tracker.reset)
                 view.show()
+                meta = header["metadata"]; cfg = meta["config"]
+                det_writer, track_writer = open_csv_writers(
+                    save_dir,
+                    range_res_m=C_EM / (2.0 * float(cfg["bandwidth_hz"])),
+                    chirp_period_s=float(cfg["chirp_period_s"]),
+                    lambda_m=float(meta["derived"]["lambda_m"]),
+                    n_doppler=view.n_doppler,
+                )
                 t_first = time.perf_counter()
                 frame_id_first = int(header["frame_id"])
                 print(
@@ -269,8 +280,10 @@ def main() -> None:
             stage_times[idx % WINDOW] = (t1 - t0, t2 - t1, t3 - t2, t4 - t3, t5 - t4)
             idx += 1
 
-            if save_dir:
-                np.save(save_dir / f"rd_power_db_{fid:06d}.npy", power_db)
+            if save_dir is not None:
+                # np.save(save_dir / f"rd_power_db_{fid:06d}.npy", power_db)
+                det_writer.write(fid, detections)
+                track_writer.write(fid, tracks)
 
             if idx % WINDOW == 0:
                 rd_ms = stage_times[:, 0].mean() * 1e3
@@ -304,6 +317,9 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nSubscriber stopped.")
     finally:
+        if save_dir is not None and det_writer is not None:
+            det_writer.close()
+            track_writer.close()
         sock.close(linger=0)
 
 

@@ -43,7 +43,6 @@ class LayeredRDView:
         self._visible = {"cfar": True, "clusters": True, "tracks": True}
         # Track-id-keyed cache of per-track artist groups; rebuilt each frame for simplicity.
         self._track_artists: list = []
-        self._frame_count = 0
 
         plt.ion()
         self.fig, self.ax = plt.subplots(figsize=(10, 4))
@@ -95,11 +94,10 @@ class LayeredRDView:
     def show(self) -> None:
         plt.show(block=False)
 
-    def update(self, rd_db, mask, detections, tracks) -> None:
-        self._frame_count += 1
+    def update(self, rd_db, mask, detections, tracks, frame_id: int) -> None:
         n_confirmed = sum(1 for t in tracks if t.status == "confirmed")
         self.ax.set_title(
-            f"Frame {self._frame_count}  |  detections: {len(detections)}  |  "
+            f"Frame {frame_id}  |  detections: {len(detections)}  |  "
             f"tracks: {len(tracks)} ({n_confirmed} confirmed)"
         )
         self._heatmap.set_data(rd_db)

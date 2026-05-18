@@ -44,19 +44,19 @@ def test_view_update_with_synthetic_data():
         hit_history=deque([True, True, True], maxlen=5),
         history=deque([(98.0, 16.0), (99.0, 16.0), (100.0, 16.0)], maxlen=10),
     )
-    v.update(rd, mask, dets, [t])  # should not raise
+    v.update(rd, mask, dets, [t], frame_id=0)  # should not raise
 
 
 def test_view_toggles_via_keypress_callbacks_dont_crash():
     v = _make_view()
     rd = np.full((32, 640), -60.0, dtype=np.float32)
     mask = np.zeros((32, 640), dtype=bool)
-    v.update(rd, mask, [], [])
+    v.update(rd, mask, [], [], frame_id=0)
     # Simulate the toggle keys via the public methods directly.
     v.toggle_layer("cfar")
     v.toggle_layer("clusters")
     v.toggle_layer("tracks")
-    v.update(rd, mask, [], [])  # should still not raise after toggles
+    v.update(rd, mask, [], [], frame_id=1)  # should still not raise after toggles
 
 
 def test_view_on_reset_callback_invoked():

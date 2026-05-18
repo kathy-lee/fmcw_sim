@@ -253,7 +253,7 @@ def main() -> None:
 
             has_backlog = sock.poll(0, zmq.POLLIN) != 0
             if not has_backlog:
-                view.update(power_db, mask, detections, tracks)
+                view.update(power_db, mask, detections, tracks, frame_id=fid)
                 t5 = time.perf_counter()
             else:
                 t5 = t4

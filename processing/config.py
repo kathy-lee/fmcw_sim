@@ -41,7 +41,7 @@ class CfarConfig:
 @dataclass
 class ClusteringConfig:
     method: str = "cc"
-    min_cells: int = 1
+    min_cells: int = 2
     connectivity: int = 8              # cc only: 4 or 8
     eps: float = 1.5                   # dbscan only
     min_samples: int = 2               # dbscan only

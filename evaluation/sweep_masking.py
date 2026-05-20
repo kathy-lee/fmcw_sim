@@ -58,6 +58,7 @@ def run_one_point(
     radar_cfg: RadarConfig,
     targets: list[Target],
     cfar_method: str,
+    cluster_kwargs: dict,
     n_frames: int,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """Returns (centroid-level Pd, cell-level Pd, FA per frame)."""
@@ -83,7 +84,7 @@ def run_one_point(
                 hits_cell[ti] += 1
 
         # Centroid-level: full pipeline including clustering.
-        centroids = cluster(mask, rd_db, method="cc", min_cells=2)
+        centroids = cluster(mask, rd_db, **cluster_kwargs)
         detected = [False] * n_targets
         for c in centroids:
             matched = False
@@ -107,6 +108,7 @@ def run_sweep(
     radar_cfg: RadarConfig,
     separations_m: np.ndarray,
     methods: list[str],
+    cluster_kwargs: dict,
     n_frames: int,
 ) -> tuple[dict, dict, dict]:
     # Keys: (method, stage, who) where stage in {"centroid", "cell"} and
@@ -128,7 +130,7 @@ def run_sweep(
                        amplitude=WEAK_AMPLITUDE),
             ]
             pd_cen, pd_cel, fa = run_one_point(
-                radar_cfg, targets, method, n_frames
+                radar_cfg, targets, method, cluster_kwargs, n_frames
             )
             pd_results[(method, "centroid", "masker")].append((sep, pd_cen[0]))
             pd_results[(method, "centroid", "weak")].append((sep, pd_cen[1]))
@@ -148,6 +150,7 @@ def plot(
     fa_results: dict,
     methods: list[str],
     out: Path,
+    config_label: str = "cc",
 ) -> None:
     fig, (ax_cell, ax_cen, ax_fa) = plt.subplots(
         3, 1, figsize=(9, 9), sharex=True
@@ -191,9 +194,9 @@ def plot(
     ax_cell.set_ylabel("Pd (cell-level)")
     ax_cell.set_ylim(-0.05, 1.15)
     ax_cell.set_title(
-        f"CFAR target masking: masker (A={MASKER_AMPLITUDE}) "
-        f"fixed at {MASKER_RANGE_M} m; weak (A={WEAK_AMPLITUDE}) "
-        f"at {MASKER_RANGE_M} m + separation"
+        f"CFAR target masking [clustering={config_label}]: "
+        f"masker (A={MASKER_AMPLITUDE}) fixed at {MASKER_RANGE_M} m; "
+        f"weak (A={WEAK_AMPLITUDE}) at {MASKER_RANGE_M} m + separation"
     )
     ax_cell.grid(True, alpha=0.3)
     ax_cell.legend(fontsize=8, loc="lower right")
@@ -220,22 +223,43 @@ def main() -> None:
                    help="used only to pull the RadarConfig; targets are overridden")
     p.add_argument("--frames", type=int, default=100)
     p.add_argument("--methods", nargs="+",
-                   default=["ca", "os", "go", "so"])
-    p.add_argument("--out", type=Path,
-                   default=Path("docs/sweep_masking.png"))
+                   default=["ca", "os", "go", "so"],
+                   help="CFAR methods to compare")
+    p.add_argument("--clustering", choices=["cc", "dbscan"], default="cc",
+                   help="clustering method")
+    p.add_argument("--eps", type=float, default=1.0,
+                   help="DBSCAN eps (ignored when clustering=cc)")
+    p.add_argument("--min-samples", type=int, default=2,
+                   help="DBSCAN min_samples (ignored when clustering=cc)")
+    p.add_argument("--min-cells", type=int, default=2,
+                   help="minimum cells per cluster (both methods)")
+    p.add_argument("--out", type=Path, default=None,
+                   help="output PNG path; if omitted, derived from clustering config")
     args = p.parse_args()
+
+    if args.clustering == "cc":
+        cluster_kwargs = {"method": "cc", "min_cells": args.min_cells,
+                          "connectivity": 8}
+        config_label = "cc"
+    else:
+        cluster_kwargs = {"method": "dbscan", "min_cells": args.min_cells,
+                          "eps": args.eps, "min_samples": args.min_samples}
+        config_label = f"dbscan_eps{args.eps:g}"
+
+    out = args.out or Path(f"docs/sweep_masking_{config_label}.png")
 
     # Span from just-outside-guard to well-outside-training (~12 bins = 0.9 m).
     # Bin resolution ≈ 0.075 m, so 0.3 m = 4 bins (guard edge).
     separations_m = np.array([0.3, 0.5, 0.7, 0.9, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0])
+    print(f"Clustering: {cluster_kwargs}")
     print(f"Separation grid (m): {separations_m.tolist()}\n")
 
     radar_cfg, _ = load_scenario(str(args.scenario))
     pd_results, fa_results = run_sweep(
-        radar_cfg, separations_m, args.methods, args.frames,
+        radar_cfg, separations_m, args.methods, cluster_kwargs, args.frames,
     )
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    plot(pd_results, fa_results, args.methods, args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    plot(pd_results, fa_results, args.methods, out, config_label)
 
 
 if __name__ == "__main__":

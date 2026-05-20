@@ -225,14 +225,16 @@ def main() -> None:
     p.add_argument("--methods", nargs="+",
                    default=["ca", "os", "go", "so"],
                    help="CFAR methods to compare")
-    p.add_argument("--clustering", choices=["cc", "dbscan"], default="cc",
+    p.add_argument("--clustering", choices=["cc", "dbscan", "peak"], default="cc",
                    help="clustering method")
     p.add_argument("--eps", type=float, default=1.0,
-                   help="DBSCAN eps (ignored when clustering=cc)")
+                   help="DBSCAN eps (ignored unless clustering=dbscan)")
     p.add_argument("--min-samples", type=int, default=2,
-                   help="DBSCAN min_samples (ignored when clustering=cc)")
+                   help="DBSCAN min_samples (ignored unless clustering=dbscan)")
+    p.add_argument("--peak-neighborhood", type=int, default=3,
+                   help="peak-picking local-max window size (ignored unless clustering=peak)")
     p.add_argument("--min-cells", type=int, default=2,
-                   help="minimum cells per cluster (both methods)")
+                   help="minimum cells per cluster (all methods)")
     p.add_argument("--out", type=Path, default=None,
                    help="output PNG path; if omitted, derived from clustering config")
     args = p.parse_args()
@@ -241,10 +243,14 @@ def main() -> None:
         cluster_kwargs = {"method": "cc", "min_cells": args.min_cells,
                           "connectivity": 8}
         config_label = "cc"
-    else:
+    elif args.clustering == "dbscan":
         cluster_kwargs = {"method": "dbscan", "min_cells": args.min_cells,
                           "eps": args.eps, "min_samples": args.min_samples}
         config_label = f"dbscan_eps{args.eps:g}"
+    else:   # peak
+        cluster_kwargs = {"method": "peak", "min_cells": args.min_cells,
+                          "peak_neighborhood": args.peak_neighborhood}
+        config_label = f"peak_n{args.peak_neighborhood}"
 
     out = args.out or Path(f"docs/sweep_masking_{config_label}.png")
 

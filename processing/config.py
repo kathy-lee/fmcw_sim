@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 
 _CFAR_METHODS = {"ca", "os", "go", "so"}
-_CLUSTERING_METHODS = {"cc", "dbscan"}
+_CLUSTERING_METHODS = {"cc", "dbscan", "peak"}
 _TRACKER_METHODS = {"nn", "gnn"}
 
 
@@ -46,6 +46,7 @@ class ClusteringConfig:
     eps: float = 1.5                   # dbscan only
     min_samples: int = 2               # dbscan only
     axis_weights: tuple = (1.0, 1.0)   # (doppler, range)
+    peak_neighborhood: int = 3         # peak only: local-max window size
 
     def __post_init__(self):
         if self.method not in _CLUSTERING_METHODS:
@@ -67,6 +68,11 @@ class ClusteringConfig:
         if self.min_samples < 1:
             raise ValueError(
                 f"ClusteringConfig.min_samples must be >= 1, got {self.min_samples}"
+            )
+        if self.peak_neighborhood < 1:
+            raise ValueError(
+                f"ClusteringConfig.peak_neighborhood must be >= 1, "
+                f"got {self.peak_neighborhood}"
             )
 
 

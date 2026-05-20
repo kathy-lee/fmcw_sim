@@ -125,6 +125,67 @@ def test_dbscan_with_axis_weights_separates_close_blocks():
     assert len(out_split) >= len(out_merged)
 
 
+def test_peak_picks_one_per_isolated_blob():
+    """Single 3x3 block with a hot center cell → one detection at the center."""
+    frame = np.full((32, 640), -60.0, dtype=np.float32)
+    mask = np.zeros((32, 640), dtype=bool)
+    for d in range(15, 18):
+        for r in range(99, 102):
+            frame[d, r] = 10.0
+            mask[d, r] = True
+    frame[16, 100] = 30.0   # unique peak at the center
+    out = cluster(mask, frame, method="peak", min_cells=2)
+    assert len(out) == 1
+    det = out[0]
+    assert det.doppler_bin == 16.0
+    assert det.range_bin == 100.0
+    assert det.peak_db == pytest.approx(30.0)
+    assert det.cell_count == 9
+
+
+def test_peak_splits_two_peaks_inside_one_connected_blob():
+    """Connected mask region with two distinct peaks → two detections.
+
+    This is the close-target masking case where cc and dbscan both merge.
+    Mimics two Hann-windowed mainlobes with a saddle that's lower than the
+    cells immediately next to each peak.
+    """
+    frame = np.full((32, 640), -60.0, dtype=np.float32)
+    mask = np.zeros((32, 640), dtype=bool)
+    mask[16, 95:106] = True
+    #                          col:  95    96    97    98    99   100   101   102   103   104   105
+    frame[16, 95:106] = np.array([10.0, 20.0, 30.0, 20.0, 15.0, 12.0, 15.0, 20.0, 25.0, 18.0,  8.0])
+    out = cluster(mask, frame, method="peak", min_cells=2)
+    assert len(out) == 2, f"expected two peaks, got {len(out)}"
+    peaks = sorted([(d.range_bin, d.peak_db) for d in out])
+    assert peaks[0] == (97.0, pytest.approx(30.0))
+    assert peaks[1] == (103.0, pytest.approx(25.0))
+
+
+def test_peak_min_cells_filters_small_blobs():
+    frame = np.full((32, 640), -60.0, dtype=np.float32)
+    mask = np.zeros((32, 640), dtype=bool)
+    mask[15, 100] = True
+    frame[15, 100] = 20.0       # singleton, would be a peak but blob size = 1
+    mask[20, 200:203] = True
+    frame[20, 201] = 25.0       # 3-cell blob with one peak
+    out = cluster(mask, frame, method="peak", min_cells=2)
+    assert len(out) == 1
+    assert out[0].range_bin == 201.0
+
+
+def test_peak_returns_empty_list_on_empty_mask():
+    frame = make_noise_frame()
+    out = cluster(_empty_mask(), frame, method="peak")
+    assert out == []
+
+
+def test_peak_rejects_bad_neighborhood():
+    frame, mask = _frame_db_with_blocks([(15, 18, 99, 102)])
+    with pytest.raises(ValueError, match="peak_neighborhood"):
+        cluster(mask, frame, method="peak", peak_neighborhood=0)
+
+
 def test_dbscan_raises_helpful_error_when_sklearn_missing(monkeypatch):
     """Simulate missing sklearn; cluster(method='dbscan') should raise ImportError."""
     import builtins

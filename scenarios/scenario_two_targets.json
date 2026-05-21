@@ -9,7 +9,7 @@
     "noise_power": 0.0001,
     "leakage_amplitude": 0.02,
     "frame_period_s": 0.05,
-    "seed": 0
+    "seed": 99999
   },
   "targets": [
     {

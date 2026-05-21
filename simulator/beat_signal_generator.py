@@ -38,7 +38,12 @@ class RadarConfig:
     noise_power: float = 1e-4
     leakage_amplitude: float = 0.0
     frame_period_s: float | None = None
-    seed: int = 0
+    # Default seed != 0 so this generator's RNG sequence is decoupled from
+    # processing.cfar's calibration RNG (which uses seed=0 internally). With
+    # the same seed, the two paths produce identical noise realizations, which
+    # makes any downstream Pfa measurement self-consistent with the calibration
+    # data rather than out-of-sample.
+    seed: int = 99999
 
     def __post_init__(self):
         if self.frame_period_s is None:

@@ -255,7 +255,9 @@ def main() -> None:
             )
             power_db = 20.0 * np.log10(np.abs(rd) + 1e-12)
             t1 = time.perf_counter()
-            mask = cfar_2d(power_db, **cfar_kw)
+            mask = cfar_2d(power_db, window=args.window,
+                           dc_removal=args.dc_removal,
+                           clutter_removal=args.clutter_removal, **cfar_kw)
             mask[:, 0] = False   # range-0 notch: suppress TX→RX leakage column
             t2 = time.perf_counter()
             detections = cluster(mask, power_db, **cluster_kw)

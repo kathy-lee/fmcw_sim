@@ -64,7 +64,8 @@ def run_one_point(
                            clutter_removal=False)
         rd_db = 20.0 * np.log10(np.abs(rd) + 1e-12)
         mask = cfar_2d(rd_db, method=cfar_method,
-                       guard=(2, 4), training=(4, 8), pfa=1e-4)
+                       guard=(2, 4), training=(4, 8), pfa=1e-4,
+                       window="hann")
         mask[:, 0] = False   # range-0 leakage notch
         centroids = cluster(mask, rd_db, method="cc", min_cells=2)
 

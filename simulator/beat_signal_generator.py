@@ -28,6 +28,40 @@ class Target:
 
 
 @dataclass
+class ClutterRegion:
+    """Spatially-bounded Gaussian noise region with elevated variance.
+
+    Cells inside the region receive an additional complex-Gaussian
+    contribution whose per-cell variance is `noise_power * 10^(cnr_db/10)`
+    above the base noise. velocity bounds = None means unbounded
+    (the region covers all Doppler — Level 1 in the clutter-edge eval).
+    """
+    range_m_min: float
+    range_m_max: float
+    velocity_mps_min: float | None = None
+    velocity_mps_max: float | None = None
+    cnr_db: float = 10.0
+
+    def __post_init__(self):
+        if self.range_m_min >= self.range_m_max:
+            raise ValueError(
+                f"ClutterRegion.range_m_min ({self.range_m_min}) must be < "
+                f"range_m_max ({self.range_m_max})"
+            )
+        if (self.velocity_mps_min is not None
+                and self.velocity_mps_max is not None
+                and self.velocity_mps_min >= self.velocity_mps_max):
+            raise ValueError(
+                f"ClutterRegion.velocity_mps_min ({self.velocity_mps_min}) "
+                f"must be < velocity_mps_max ({self.velocity_mps_max})"
+            )
+        if self.cnr_db < 0:
+            raise ValueError(
+                f"ClutterRegion.cnr_db must be >= 0, got {self.cnr_db}"
+            )
+
+
+@dataclass
 class RadarConfig:
     fc_hz: float = 77e9
     bandwidth_hz: float = 2e9

@@ -151,3 +151,44 @@ def test_ground_truth_range_bin_matches_argmax_after_range_fft():
     peak = int(np.argmax(np.abs(rfft[: cfg.n_range // 2])))
     gt = gen.ground_truth([target], frame_index=0)[0]
     assert abs(peak - gt["range_bin"]) <= 1
+
+
+# --- ClutterRegion ---
+
+def test_clutter_region_valid_inputs():
+    from simulator.beat_signal_generator import ClutterRegion
+    r = ClutterRegion(range_m_min=4.0, range_m_max=6.0,
+                      velocity_mps_min=-0.5, velocity_mps_max=0.5,
+                      cnr_db=10.0)
+    assert r.range_m_min == 4.0
+    assert r.range_m_max == 6.0
+    assert r.velocity_mps_min == -0.5
+    assert r.velocity_mps_max == 0.5
+    assert r.cnr_db == 10.0
+
+
+def test_clutter_region_unbounded_velocity_defaults():
+    from simulator.beat_signal_generator import ClutterRegion
+    r = ClutterRegion(range_m_min=4.0, range_m_max=6.0)
+    assert r.velocity_mps_min is None
+    assert r.velocity_mps_max is None
+    assert r.cnr_db == 10.0
+
+
+def test_clutter_region_rejects_inverted_range():
+    from simulator.beat_signal_generator import ClutterRegion
+    with pytest.raises(ValueError, match="range_m"):
+        ClutterRegion(range_m_min=6.0, range_m_max=4.0)
+
+
+def test_clutter_region_rejects_inverted_velocity():
+    from simulator.beat_signal_generator import ClutterRegion
+    with pytest.raises(ValueError, match="velocity_mps"):
+        ClutterRegion(range_m_min=4.0, range_m_max=6.0,
+                      velocity_mps_min=0.5, velocity_mps_max=-0.5)
+
+
+def test_clutter_region_rejects_negative_cnr():
+    from simulator.beat_signal_generator import ClutterRegion
+    with pytest.raises(ValueError, match="cnr_db"):
+        ClutterRegion(range_m_min=4.0, range_m_max=6.0, cnr_db=-1.0)

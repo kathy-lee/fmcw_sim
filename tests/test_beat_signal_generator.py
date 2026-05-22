@@ -283,3 +283,55 @@ def test_clutter_doppler_band_restriction():
     assert ratio > 30, (
         f"clutter not Doppler-bounded: in-box vs high-velocity ratio {ratio:.2f}"
     )
+
+
+def test_load_scenario_parses_clutter_field(tmp_path):
+    from simulator.beat_signal_generator import ClutterRegion, load_scenario
+    import json
+    scenario = {
+        "radar": {
+            "fc_hz": 77e9, "bandwidth_hz": 2e9, "ramp_duration_s": 40e-6,
+            "chirp_period_s": 50e-6, "n_range": 256, "n_chirps": 64,
+            "noise_power": 1e-4, "seed": 0,
+        },
+        "targets": [],
+        "clutter": [
+            {
+                "range_m_min": 4.0,
+                "range_m_max": 6.0,
+                "velocity_mps_min": -0.5,
+                "velocity_mps_max": 0.5,
+                "cnr_db": 10.0,
+            }
+        ],
+    }
+    path = tmp_path / "scenario.json"
+    path.write_text(json.dumps(scenario))
+    radar_cfg, _ = load_scenario(str(path))
+
+    assert len(radar_cfg.clutter) == 1
+    region = radar_cfg.clutter[0]
+    assert isinstance(region, ClutterRegion)
+    assert region.range_m_min == 4.0
+    assert region.range_m_max == 6.0
+    assert region.velocity_mps_min == -0.5
+    assert region.velocity_mps_max == 0.5
+    assert region.cnr_db == 10.0
+
+
+def test_load_scenario_without_clutter_field(tmp_path):
+    """Scenarios without a 'clutter' field load fine (backward compat)."""
+    from simulator.beat_signal_generator import load_scenario
+    import json
+    scenario = {
+        "radar": {
+            "fc_hz": 77e9, "bandwidth_hz": 2e9, "ramp_duration_s": 40e-6,
+            "chirp_period_s": 50e-6, "n_range": 256, "n_chirps": 64,
+            "noise_power": 1e-4, "seed": 0,
+        },
+        "targets": [],
+    }
+    path = tmp_path / "scenario.json"
+    path.write_text(json.dumps(scenario))
+    radar_cfg, _ = load_scenario(str(path))
+    assert radar_cfg.clutter == []

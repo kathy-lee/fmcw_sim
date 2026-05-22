@@ -305,8 +305,10 @@ def load_scenario(path: str) -> tuple[RadarConfig, list[Target]]:
 
     radar = data.get("radar", {})
     targets_raw = data.get("targets", [])
+    clutter_raw = data.get("clutter", [])
 
     cfg = RadarConfig(**radar)
+    cfg.clutter = [ClutterRegion(**item) for item in clutter_raw]
     targets = [Target(**item) for item in targets_raw]
     return cfg, targets
 

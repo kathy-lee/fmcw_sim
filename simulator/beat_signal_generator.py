@@ -11,7 +11,7 @@ beat signal used as input to range FFT / Doppler FFT processing.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Any
 import json
 import numpy as np
@@ -78,6 +78,8 @@ class RadarConfig:
     # makes any downstream Pfa measurement self-consistent with the calibration
     # data rather than out-of-sample.
     seed: int = 99999
+    # Optional clutter regions; empty by default (existing behavior unchanged).
+    clutter: list = field(default_factory=list)   # list[ClutterRegion]
 
     def __post_init__(self):
         if self.frame_period_s is None:

@@ -192,3 +192,22 @@ def test_clutter_region_rejects_negative_cnr():
     from simulator.beat_signal_generator import ClutterRegion
     with pytest.raises(ValueError, match="cnr_db"):
         ClutterRegion(range_m_min=4.0, range_m_max=6.0, cnr_db=-1.0)
+
+
+def test_radar_config_clutter_defaults_to_empty_list():
+    cfg = RadarConfig()
+    assert cfg.clutter == []
+
+
+def test_generate_frame_with_empty_clutter_matches_no_clutter():
+    """Backward compat: with cfg.clutter=[], output is bit-identical to a
+    fresh generator with the same seed."""
+    cfg = RadarConfig(seed=42)
+    gen = FMCWBeatSignalGenerator(cfg)
+    frame = gen.generate_frame(targets=[], frame_index=0)
+
+    cfg2 = RadarConfig(seed=42)
+    gen2 = FMCWBeatSignalGenerator(cfg2)
+    frame2 = gen2.generate_frame(targets=[], frame_index=0)
+
+    np.testing.assert_array_equal(frame, frame2)

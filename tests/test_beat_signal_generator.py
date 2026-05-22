@@ -211,3 +211,75 @@ def test_generate_frame_with_empty_clutter_matches_no_clutter():
     frame2 = gen2.generate_frame(targets=[], frame_index=0)
 
     np.testing.assert_array_equal(frame, frame2)
+
+
+def test_clutter_inside_region_has_elevated_mean_power():
+    """With rect window (no window loss), in-region mean power should be much
+    higher than out-of-region mean power. CNR=20dB → expected ratio ~101.
+    """
+    from simulator.beat_signal_generator import ClutterRegion
+    from processing.range_doppler import range_doppler
+
+    region = ClutterRegion(range_m_min=4.0, range_m_max=6.0, cnr_db=20.0)
+    cfg = RadarConfig(noise_power=1e-4, clutter=[region], seed=12345)
+    gen = FMCWBeatSignalGenerator(cfg)
+
+    n_frames = 100
+    rd_power_sum = np.zeros((cfg.n_chirps, cfg.n_range // 2), dtype=np.float64)
+    for _ in range(n_frames):
+        frame = gen.generate_frame(targets=[], frame_index=0)
+        rd = range_doppler(frame, window="rect", dc_removal=False,
+                           clutter_removal=False)
+        rd_power_sum += np.abs(rd) ** 2
+    rd_power_mean = rd_power_sum / n_frames
+
+    range_axis = gen.range_axis_m()
+    in_region = (range_axis >= 4.0) & (range_axis <= 6.0)
+    out_region = (range_axis < 3.5) | (range_axis > 6.5)
+
+    mean_in = rd_power_mean[:, in_region].mean()
+    mean_out = rd_power_mean[:, out_region].mean()
+    ratio = mean_in / mean_out
+
+    assert ratio > 30, (
+        f"in/out power ratio {ratio:.2f} too low — clutter not injecting "
+        f"(expected ~101 for CNR=20 dB)"
+    )
+    assert ratio < 300, f"in/out power ratio {ratio:.2f} too high"
+
+
+def test_clutter_doppler_band_restriction():
+    """Level-2-style clutter: elevation only in the (range × Doppler) box."""
+    from simulator.beat_signal_generator import ClutterRegion
+    from processing.range_doppler import range_doppler
+
+    region = ClutterRegion(
+        range_m_min=4.0, range_m_max=6.0,
+        velocity_mps_min=-0.5, velocity_mps_max=0.5,
+        cnr_db=20.0,
+    )
+    cfg = RadarConfig(noise_power=1e-4, clutter=[region], seed=12345)
+    gen = FMCWBeatSignalGenerator(cfg)
+
+    n_frames = 100
+    rd_power_sum = np.zeros((cfg.n_chirps, cfg.n_range // 2), dtype=np.float64)
+    for _ in range(n_frames):
+        frame = gen.generate_frame(targets=[], frame_index=0)
+        rd = range_doppler(frame, window="rect", dc_removal=False,
+                           clutter_removal=False)
+        rd_power_sum += np.abs(rd) ** 2
+    rd_power_mean = rd_power_sum / n_frames
+
+    range_axis = gen.range_axis_m()
+    vel_axis = gen.velocity_axis_mps()
+    in_range = (range_axis >= 4.0) & (range_axis <= 6.0)
+    in_doppler = (vel_axis >= -0.5) & (vel_axis <= 0.5)
+    far_doppler = (vel_axis < -1.5) | (vel_axis > 1.5)
+
+    mean_in_box = rd_power_mean[np.ix_(in_doppler, in_range)].mean()
+    mean_outside_doppler = rd_power_mean[np.ix_(far_doppler, in_range)].mean()
+    ratio = mean_in_box / mean_outside_doppler
+
+    assert ratio > 30, (
+        f"clutter not Doppler-bounded: in-box vs high-velocity ratio {ratio:.2f}"
+    )

@@ -37,6 +37,20 @@ CNR_DB = 10.0
 SCENARIO_PATH = "scenarios/scenario_clutter_edge.json"
 
 
+# Sweep grids setting for Level1
+_RANGE_GRID_L1 = [1.5, 2.5, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.5]
+_FIXED_TARGET_VELOCITY_L1 = 2.0   # m/s, well outside zero-Doppler
+_CLUTTER_RANGE_BAND = (4.0, 6.0)
+_CLUTTER_DOPPLER_BAND = (-0.5, 0.5)
+
+# Sweep grids setting for Level2
+_RANGE_GRID_L2 = _RANGE_GRID_L1   # same range grid for Slice A
+_VELOCITY_GRID_L2 = [-2.0, -1.5, -1.0, -0.75, -0.5, -0.25,
+                     0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
+_SLICE_A_FIXED_VELOCITY = 0.0
+_SLICE_B_FIXED_RANGE = 5.0
+
+
 def predicted_bins(target: Target, gen: FMCWBeatSignalGenerator) -> tuple[float, float]:
     f_beat = 2.0 * gen.slope_hz_per_s * target.range_m / C
     range_bin = f_beat / gen.fs_hz * gen.cfg.n_range
@@ -106,12 +120,6 @@ def run_one_point(
             fp_total / n_frames)
 
 
-_RANGE_GRID_L1 = [1.5, 2.5, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.5]
-_FIXED_TARGET_VELOCITY_L1 = 2.0   # m/s, well outside zero-Doppler
-_CLUTTER_RANGE_BAND = (4.0, 6.0)
-_CLUTTER_DOPPLER_BAND = (-0.5, 0.5)
-
-
 def _load_scenario_for_clutter(scenario_path: str) -> tuple[RadarConfig, float]:
     """Load the clutter-edge scenario. The targets list in the JSON is a
     template — only its first entry's amplitude is used (range/velocity are
@@ -179,6 +187,95 @@ def plot_level1(results: dict, out: Path, clutter_removal: bool) -> None:
     print(f"\nwrote {out}")
 
 
+
+def _build_radar_cfg_l2(radar_cfg: RadarConfig) -> RadarConfig:
+    radar_cfg.clutter = [ClutterRegion(
+        range_m_min=_CLUTTER_RANGE_BAND[0],
+        range_m_max=_CLUTTER_RANGE_BAND[1],
+        velocity_mps_min=_CLUTTER_DOPPLER_BAND[0],
+        velocity_mps_max=_CLUTTER_DOPPLER_BAND[1],
+        cnr_db=CNR_DB,
+    )]
+    return radar_cfg
+
+
+def _positions_l2_cross() -> list[tuple[float, float]]:
+    slice_a = [(r, _SLICE_A_FIXED_VELOCITY) for r in _RANGE_GRID_L2]
+    slice_b = [(_SLICE_B_FIXED_RANGE, v) for v in _VELOCITY_GRID_L2]
+    return slice_a + slice_b
+
+
+def plot_level2_cross(results: dict, out: Path, clutter_removal: bool) -> None:
+    fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(13, 5))
+    cmap = plt.get_cmap("tab10")
+    method_markers = {"ca": "o", "os": "s", "go": "^", "so": "D"}
+
+    methods = list(results.keys())
+    for mi, method in enumerate(methods):
+        color = cmap(mi % 10)
+        marker = method_markers.get(method, "o")
+
+        # Slice A: range sweep at v=0
+        items_a = [(r, vals) for ((r, v), vals) in results[method].items()
+                   if v == _SLICE_A_FIXED_VELOCITY]
+        items_a.sort()
+        x_a = [r for (r, _) in items_a]
+        pd_cell_a = [vals[0] for (_, vals) in items_a]
+        pd_cen_a = [vals[1] for (_, vals) in items_a]
+        ax_a.plot(x_a, pd_cell_a, color=color, marker=marker, linewidth=1.6,
+                  markersize=9, markerfacecolor="none", markeredgewidth=1.5,
+                  alpha=0.85, label=f"{method.upper()} cell")
+        ax_a.plot(x_a, pd_cen_a, color=color, marker=marker, linewidth=1.0,
+                  linestyle="--", markersize=7, markerfacecolor=color,
+                  alpha=0.85, label=f"{method.upper()} centroid")
+
+        # Slice B: velocity sweep at r=5
+        items_b = [(v, vals) for ((r, v), vals) in results[method].items()
+                   if r == _SLICE_B_FIXED_RANGE]
+        items_b.sort()
+        x_b = [v for (v, _) in items_b]
+        pd_cell_b = [vals[0] for (_, vals) in items_b]
+        pd_cen_b = [vals[1] for (_, vals) in items_b]
+        ax_b.plot(x_b, pd_cell_b, color=color, marker=marker, linewidth=1.6,
+                  markersize=9, markerfacecolor="none", markeredgewidth=1.5,
+                  alpha=0.85, label=f"{method.upper()} cell")
+        ax_b.plot(x_b, pd_cen_b, color=color, marker=marker, linewidth=1.0,
+                  linestyle="--", markersize=7, markerfacecolor=color,
+                  alpha=0.85, label=f"{method.upper()} centroid")
+
+    ax_a.axvspan(_CLUTTER_RANGE_BAND[0], _CLUTTER_RANGE_BAND[1],
+                 color="gray", alpha=0.15, label="clutter range")
+    ax_a.set_xlabel(
+        f"target range [m]  (velocity = {_SLICE_A_FIXED_VELOCITY} m/s)"
+    )
+    ax_a.set_ylabel("Pd of target")
+    ax_a.set_ylim(-0.05, 1.15)
+    ax_a.set_title("Slice A: range sweep at v=0 (target in clutter Doppler)")
+    ax_a.grid(True, alpha=0.3)
+    ax_a.legend(fontsize=8, ncol=2, loc="lower right")
+
+    ax_b.axvspan(_CLUTTER_DOPPLER_BAND[0], _CLUTTER_DOPPLER_BAND[1],
+                 color="gray", alpha=0.15, label="clutter Doppler")
+    ax_b.set_xlabel(
+        f"target velocity [m/s]  (range = {_SLICE_B_FIXED_RANGE} m)"
+    )
+    ax_b.set_ylabel("Pd of target")
+    ax_b.set_ylim(-0.05, 1.15)
+    ax_b.set_title("Slice B: velocity sweep at r=5 m (target in clutter range)")
+    ax_b.grid(True, alpha=0.3)
+    ax_b.legend(fontsize=8, ncol=2, loc="lower right")
+
+    fig.suptitle(
+        f"Level 2 — static-only clutter "
+        f"(range {_CLUTTER_RANGE_BAND[0]}–{_CLUTTER_RANGE_BAND[1]} m, "
+        f"|v| ≤ {abs(_CLUTTER_DOPPLER_BAND[0])} m/s, CNR={CNR_DB:g} dB); "
+        f"clutter_removal={clutter_removal}"
+    )
+    fig.tight_layout()
+    fig.savefig(out, dpi=120)
+    print(f"\nwrote {out}")
+
+
 def run_sweep(
     radar_cfg: RadarConfig,
     positions: list[tuple[float, float]],
@@ -239,7 +336,24 @@ def main() -> None:
         plot_level1(results, out, args.clutter_removal)
         return
 
-    raise NotImplementedError("Level 2 not yet wired (Task 8).")
+    if args.level == 2:
+        radar_cfg = _build_radar_cfg_l2(radar_cfg)
+        positions = _positions_l2_cross()
+        suffix = "_clutterRemoval" if args.clutter_removal else ""
+        out = args.out or Path(
+            f"docs/sweep_clutter_edge_level2_cross{suffix}.png"
+        )
+        print(f"Level 2 cross sweep, clutter_removal={args.clutter_removal}, "
+              f"{len(positions)} positions × {len(methods)} methods × "
+              f"{args.frames} frames")
+        results = run_sweep(radar_cfg, positions, target_amplitude,
+                            methods, cluster_kwargs,
+                            args.frames, args.clutter_removal)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        plot_level2_cross(results, out, args.clutter_removal)
+        return
+
+    raise NotImplementedError(f"unknown level {args.level}")
 
 
 if __name__ == "__main__":

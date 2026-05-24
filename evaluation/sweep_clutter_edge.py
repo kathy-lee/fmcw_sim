@@ -149,7 +149,10 @@ def _positions_l1() -> list[tuple[float, float]]:
 
 
 def plot_level1(results: dict, out: Path, clutter_removal: bool) -> None:
-    fig, ax = plt.subplots(figsize=(9, 5))
+    fig, (ax_pd, ax_fa) = plt.subplots(
+        2, 1, figsize=(9, 8), sharex=True,
+        gridspec_kw={"height_ratios": [3, 2]},
+    )
     cmap = plt.get_cmap("tab10")
     method_markers = {"ca": "o", "os": "s", "go": "^", "so": "D"}
 
@@ -161,27 +164,37 @@ def plot_level1(results: dict, out: Path, clutter_removal: bool) -> None:
         x = [r for ((r, _v), _) in items]
         pd_cell = [vals[0] for (_, vals) in items]
         pd_cen = [vals[1] for (_, vals) in items]
-        ax.plot(x, pd_cell, color=color, marker=marker, linewidth=1.6,
-                markersize=9, markerfacecolor="none", markeredgewidth=1.5,
-                alpha=0.85, label=f"{method.upper()} cell")
-        ax.plot(x, pd_cen, color=color, marker=marker, linewidth=1.0,
-                linestyle="--", markersize=7, markerfacecolor=color,
-                alpha=0.85, label=f"{method.upper()} centroid")
+        fa = [vals[2] for (_, vals) in items]
+        ax_pd.plot(x, pd_cell, color=color, marker=marker, linewidth=1.6,
+                   markersize=9, markerfacecolor="none", markeredgewidth=1.5,
+                   alpha=0.85, label=f"{method.upper()} cell")
+        ax_pd.plot(x, pd_cen, color=color, marker=marker, linewidth=1.0,
+                   linestyle="--", markersize=7, markerfacecolor=color,
+                   alpha=0.85, label=f"{method.upper()} centroid")
+        ax_fa.plot(x, fa, color=color, marker=marker, linewidth=1.4,
+                   markersize=8, markerfacecolor="none", markeredgewidth=1.5,
+                   alpha=0.85, label=method.upper())
 
-    ax.axvspan(_CLUTTER_RANGE_BAND[0], _CLUTTER_RANGE_BAND[1],
-               color="gray", alpha=0.15, label="clutter range")
-    ax.set_xlabel(
-        f"target range [m]  (target velocity fixed at "
-        f"{_FIXED_TARGET_VELOCITY_L1} m/s)"
-    )
-    ax.set_ylabel("Pd of target")
-    ax.set_ylim(-0.05, 1.15)
-    ax.set_title(
+    for ax in (ax_pd, ax_fa):
+        ax.axvspan(_CLUTTER_RANGE_BAND[0], _CLUTTER_RANGE_BAND[1],
+                   color="gray", alpha=0.15)
+    ax_pd.set_ylabel("Pd of target")
+    ax_pd.set_ylim(-0.05, 1.15)
+    ax_pd.set_title(
         f"Level 1 — broad clutter (CNR={CNR_DB:g} dB across all Doppler); "
         f"clutter_removal={clutter_removal}"
     )
-    ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=8, ncol=2, loc="lower right")
+    ax_pd.grid(True, alpha=0.3)
+    ax_pd.legend(fontsize=8, ncol=2, loc="lower right")
+
+    ax_fa.set_xlabel(
+        f"target range [m]  (target velocity fixed at "
+        f"{_FIXED_TARGET_VELOCITY_L1} m/s)"
+    )
+    ax_fa.set_ylabel("false alarms / frame")
+    ax_fa.grid(True, alpha=0.3)
+    ax_fa.legend(fontsize=8, loc="best")
+
     fig.tight_layout()
     fig.savefig(out, dpi=120)
     print(f"\nwrote {out}")
@@ -206,7 +219,12 @@ def _positions_l2_cross() -> list[tuple[float, float]]:
 
 
 def plot_level2_cross(results: dict, out: Path, clutter_removal: bool) -> None:
-    fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(13, 5))
+    fig, axes = plt.subplots(
+        2, 2, figsize=(13, 9),
+        gridspec_kw={"height_ratios": [3, 2]},
+    )
+    ax_a_pd, ax_b_pd = axes[0]
+    ax_a_fa, ax_b_fa = axes[1]
     cmap = plt.get_cmap("tab10")
     method_markers = {"ca": "o", "os": "s", "go": "^", "so": "D"}
 
@@ -222,12 +240,16 @@ def plot_level2_cross(results: dict, out: Path, clutter_removal: bool) -> None:
         x_a = [r for (r, _) in items_a]
         pd_cell_a = [vals[0] for (_, vals) in items_a]
         pd_cen_a = [vals[1] for (_, vals) in items_a]
-        ax_a.plot(x_a, pd_cell_a, color=color, marker=marker, linewidth=1.6,
-                  markersize=9, markerfacecolor="none", markeredgewidth=1.5,
-                  alpha=0.85, label=f"{method.upper()} cell")
-        ax_a.plot(x_a, pd_cen_a, color=color, marker=marker, linewidth=1.0,
-                  linestyle="--", markersize=7, markerfacecolor=color,
-                  alpha=0.85, label=f"{method.upper()} centroid")
+        fa_a = [vals[2] for (_, vals) in items_a]
+        ax_a_pd.plot(x_a, pd_cell_a, color=color, marker=marker, linewidth=1.6,
+                     markersize=9, markerfacecolor="none", markeredgewidth=1.5,
+                     alpha=0.85, label=f"{method.upper()} cell")
+        ax_a_pd.plot(x_a, pd_cen_a, color=color, marker=marker, linewidth=1.0,
+                     linestyle="--", markersize=7, markerfacecolor=color,
+                     alpha=0.85, label=f"{method.upper()} centroid")
+        ax_a_fa.plot(x_a, fa_a, color=color, marker=marker, linewidth=1.4,
+                     markersize=8, markerfacecolor="none", markeredgewidth=1.5,
+                     alpha=0.85, label=method.upper())
 
         # Slice B: velocity sweep at r=5
         items_b = [(v, vals) for ((r, v), vals) in results[method].items()
@@ -236,34 +258,49 @@ def plot_level2_cross(results: dict, out: Path, clutter_removal: bool) -> None:
         x_b = [v for (v, _) in items_b]
         pd_cell_b = [vals[0] for (_, vals) in items_b]
         pd_cen_b = [vals[1] for (_, vals) in items_b]
-        ax_b.plot(x_b, pd_cell_b, color=color, marker=marker, linewidth=1.6,
-                  markersize=9, markerfacecolor="none", markeredgewidth=1.5,
-                  alpha=0.85, label=f"{method.upper()} cell")
-        ax_b.plot(x_b, pd_cen_b, color=color, marker=marker, linewidth=1.0,
-                  linestyle="--", markersize=7, markerfacecolor=color,
-                  alpha=0.85, label=f"{method.upper()} centroid")
+        fa_b = [vals[2] for (_, vals) in items_b]
+        ax_b_pd.plot(x_b, pd_cell_b, color=color, marker=marker, linewidth=1.6,
+                     markersize=9, markerfacecolor="none", markeredgewidth=1.5,
+                     alpha=0.85, label=f"{method.upper()} cell")
+        ax_b_pd.plot(x_b, pd_cen_b, color=color, marker=marker, linewidth=1.0,
+                     linestyle="--", markersize=7, markerfacecolor=color,
+                     alpha=0.85, label=f"{method.upper()} centroid")
+        ax_b_fa.plot(x_b, fa_b, color=color, marker=marker, linewidth=1.4,
+                     markersize=8, markerfacecolor="none", markeredgewidth=1.5,
+                     alpha=0.85, label=method.upper())
 
-    ax_a.axvspan(_CLUTTER_RANGE_BAND[0], _CLUTTER_RANGE_BAND[1],
-                 color="gray", alpha=0.15, label="clutter range")
-    ax_a.set_xlabel(
+    for ax in (ax_a_pd, ax_a_fa):
+        ax.axvspan(_CLUTTER_RANGE_BAND[0], _CLUTTER_RANGE_BAND[1],
+                   color="gray", alpha=0.15)
+    for ax in (ax_b_pd, ax_b_fa):
+        ax.axvspan(_CLUTTER_DOPPLER_BAND[0], _CLUTTER_DOPPLER_BAND[1],
+                   color="gray", alpha=0.15)
+
+    ax_a_pd.set_ylabel("Pd of target")
+    ax_a_pd.set_ylim(-0.05, 1.15)
+    ax_a_pd.set_title("Slice A: range sweep at v=0 (target in clutter Doppler)")
+    ax_a_pd.grid(True, alpha=0.3)
+    ax_a_pd.legend(fontsize=8, ncol=2, loc="lower right")
+
+    ax_a_fa.set_xlabel(
         f"target range [m]  (velocity = {_SLICE_A_FIXED_VELOCITY} m/s)"
     )
-    ax_a.set_ylabel("Pd of target")
-    ax_a.set_ylim(-0.05, 1.15)
-    ax_a.set_title("Slice A: range sweep at v=0 (target in clutter Doppler)")
-    ax_a.grid(True, alpha=0.3)
-    ax_a.legend(fontsize=8, ncol=2, loc="lower right")
+    ax_a_fa.set_ylabel("false alarms / frame")
+    ax_a_fa.grid(True, alpha=0.3)
+    ax_a_fa.legend(fontsize=8, loc="best")
 
-    ax_b.axvspan(_CLUTTER_DOPPLER_BAND[0], _CLUTTER_DOPPLER_BAND[1],
-                 color="gray", alpha=0.15, label="clutter Doppler")
-    ax_b.set_xlabel(
+    ax_b_pd.set_ylabel("Pd of target")
+    ax_b_pd.set_ylim(-0.05, 1.15)
+    ax_b_pd.set_title("Slice B: velocity sweep at r=5 m (target in clutter range)")
+    ax_b_pd.grid(True, alpha=0.3)
+    ax_b_pd.legend(fontsize=8, ncol=2, loc="lower right")
+
+    ax_b_fa.set_xlabel(
         f"target velocity [m/s]  (range = {_SLICE_B_FIXED_RANGE} m)"
     )
-    ax_b.set_ylabel("Pd of target")
-    ax_b.set_ylim(-0.05, 1.15)
-    ax_b.set_title("Slice B: velocity sweep at r=5 m (target in clutter range)")
-    ax_b.grid(True, alpha=0.3)
-    ax_b.legend(fontsize=8, ncol=2, loc="lower right")
+    ax_b_fa.set_ylabel("false alarms / frame")
+    ax_b_fa.grid(True, alpha=0.3)
+    ax_b_fa.legend(fontsize=8, loc="best")
 
     fig.suptitle(
         f"Level 2 — static-only clutter "

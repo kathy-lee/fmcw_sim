@@ -11,7 +11,7 @@ beat signal used as input to range FFT / Doppler FFT processing.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Any
 import json
 import numpy as np
@@ -28,6 +28,40 @@ class Target:
 
 
 @dataclass
+class ClutterRegion:
+    """Spatially-bounded Gaussian noise region with elevated variance.
+
+    Cells inside the region receive an additional complex-Gaussian
+    contribution whose per-cell variance is `noise_power * 10^(cnr_db/10)`
+    above the base noise. velocity bounds = None means unbounded
+    (the region covers all Doppler — Level 1 in the clutter-edge eval).
+    """
+    range_m_min: float
+    range_m_max: float
+    velocity_mps_min: float | None = None
+    velocity_mps_max: float | None = None
+    cnr_db: float = 10.0
+
+    def __post_init__(self):
+        if self.range_m_min >= self.range_m_max:
+            raise ValueError(
+                f"ClutterRegion.range_m_min ({self.range_m_min}) must be < "
+                f"range_m_max ({self.range_m_max})"
+            )
+        if (self.velocity_mps_min is not None
+                and self.velocity_mps_max is not None
+                and self.velocity_mps_min >= self.velocity_mps_max):
+            raise ValueError(
+                f"ClutterRegion.velocity_mps_min ({self.velocity_mps_min}) "
+                f"must be < velocity_mps_max ({self.velocity_mps_max})"
+            )
+        if self.cnr_db < 0:
+            raise ValueError(
+                f"ClutterRegion.cnr_db must be >= 0, got {self.cnr_db}"
+            )
+
+
+@dataclass
 class RadarConfig:
     fc_hz: float = 77e9
     bandwidth_hz: float = 2e9
@@ -38,7 +72,18 @@ class RadarConfig:
     noise_power: float = 1e-4
     leakage_amplitude: float = 0.0
     frame_period_s: float | None = None
-    seed: int = 0
+    # Default seed != 0 so this generator's RNG sequence is decoupled from
+    # processing.cfar's calibration RNG (which uses seed=0 internally). With
+    # the same seed, the two paths produce identical noise realizations, which
+    # makes any downstream Pfa measurement self-consistent with the calibration
+    # data rather than out-of-sample.
+    seed: int = 99999
+    # Optional clutter regions; empty by default (existing behavior unchanged).
+    clutter: list = field(default_factory=list)   # list[ClutterRegion]
+
+    def __post_init__(self):
+        if self.frame_period_s is None:
+            self.frame_period_s = self.n_chirps * self.chirp_period_s
 
 
 class FMCWBeatSignalGenerator:
@@ -59,6 +104,10 @@ class FMCWBeatSignalGenerator:
             raise ValueError("n_range and n_chirps must be positive")
         if self.cfg.bandwidth_hz <= 0 or self.cfg.ramp_duration_s <= 0:
             raise ValueError("bandwidth_hz and ramp_duration_s must be positive")
+        if self.cfg.frame_period_s < self.cfg.n_chirps * self.cfg.chirp_period_s:
+            raise ValueError(
+                "frame_period_s must be >= n_chirps * chirp_period_s"
+            )
 
     @property
     def max_unambiguous_range_m(self) -> float:
@@ -131,6 +180,9 @@ class FMCWBeatSignalGenerator:
         if cfg.leakage_amplitude != 0.0:
             x += cfg.leakage_amplitude
 
+        for region in cfg.clutter:
+            x += self._generate_clutter_beat_signal(region)
+
         if cfg.noise_power > 0.0:
             sigma = np.sqrt(cfg.noise_power / 2.0)
             noise = sigma * (
@@ -140,6 +192,69 @@ class FMCWBeatSignalGenerator:
             x += noise
 
         return x.astype(np.complex64)
+
+    def _generate_clutter_beat_signal(self, region: ClutterRegion) -> np.ndarray:
+        """Synthesize the beat-signal contribution for one clutter region.
+
+        Approach: build the desired RD-bin-space description (complex
+        Gaussian inside the region's bins, zero outside, scaled by
+        sqrt(noise_power) * 10^(cnr_db/20)), then invert the FFT chain
+        that range_doppler applies (Doppler-fftshift, Doppler-IFFT, range
+        zero-pad, range-IFFT).
+
+        Window losses in range_doppler are not pre-compensated, so the
+        realised CNR in the RD map is approximately cnr_db within a few dB
+        (off by ~12 dB for Hann × Hann). Adequate for the clutter-edge
+        experiment; exact calibration would require dividing by window
+        coherent gain.
+
+        Returns:
+            Complex (n_chirps, n_range) beat-signal contribution to add to x.
+        """
+        cfg = self.cfg
+        n_d = cfg.n_chirps
+        n_r_out = cfg.n_range // 2
+        n_r_in = cfg.n_range
+
+        range_axis = self.range_axis_m()                  # (n_r_out,)
+        vel_axis = self.velocity_axis_mps()               # (n_d,), fftshifted
+
+        r_mask = (range_axis >= region.range_m_min) & (range_axis <= region.range_m_max)
+        d_mask = np.ones(n_d, dtype=bool)
+        if region.velocity_mps_min is not None:
+            d_mask &= (vel_axis >= region.velocity_mps_min)
+        if region.velocity_mps_max is not None:
+            d_mask &= (vel_axis <= region.velocity_mps_max)
+
+        cells_d = np.where(d_mask)[0]
+        cells_r = np.where(r_mask)[0]
+        if cells_d.size == 0 or cells_r.size == 0:
+            return np.zeros((n_d, n_r_in), dtype=np.complex64)
+
+        # CNR is defined relative to the RD-output noise floor per cell, which
+        # for rect window is N_d × N_r_in × noise_power (the FFT processing
+        # gain applied to per-sample noise). Windowed FFTs change this by a
+        # multiplicative factor that affects both clutter and noise equally,
+        # so the realised CNR is preserved (within ~1-2 dB).
+        noise_floor_per_cell = n_d * n_r_in * cfg.noise_power
+        sigma = np.sqrt(noise_floor_per_cell) * 10.0 ** (region.cnr_db / 20.0)
+        rd_clutter = np.zeros((n_d, n_r_out), dtype=np.complex128)
+        noise = (
+            self.rng.standard_normal((cells_d.size, cells_r.size)) +
+            1j * self.rng.standard_normal((cells_d.size, cells_r.size))
+        ) / np.sqrt(2.0)
+        rd_clutter[np.ix_(cells_d, cells_r)] = sigma * noise
+
+        # Invert range_doppler's FFT chain. numpy's ifft is the exact inverse
+        # of fft (fft(ifft(X)) == X), so no extra N-scaling needed.
+        # Windowing is not pre-compensated — produces approximate CNR.
+        rfft = np.fft.ifftshift(rd_clutter, axes=0)
+        rfft = np.fft.ifft(rfft, axis=0)
+        rfft_full = np.zeros((n_d, n_r_in), dtype=np.complex128)
+        rfft_full[:, :n_r_out] = rfft
+        x_clutter = np.fft.ifft(rfft_full, axis=1)
+
+        return x_clutter.astype(np.complex64)
 
     def ground_truth(self, targets: list[Target], frame_index: int = 0) -> list[dict[str, float]]:
         """Approximate target range/Doppler bin locations at frame center."""
@@ -190,8 +305,10 @@ def load_scenario(path: str) -> tuple[RadarConfig, list[Target]]:
 
     radar = data.get("radar", {})
     targets_raw = data.get("targets", [])
+    clutter_raw = data.get("clutter", [])
 
     cfg = RadarConfig(**radar)
+    cfg.clutter = [ClutterRegion(**item) for item in clutter_raw]
     targets = [Target(**item) for item in targets_raw]
     return cfg, targets
 

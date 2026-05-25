@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 import scipy.ndimage
 
-_VALID_METHODS = {"cc", "dbscan"}
+_VALID_METHODS = {"cc", "dbscan", "peak"}
 
 
 @dataclass
@@ -31,12 +31,14 @@ def cluster(
     eps: float = 1.5,
     min_samples: int = 2,
     axis_weights: tuple = (1.0, 1.0),
+    peak_neighborhood: int = 3,
 ) -> list:
     """Cluster CFAR detection cells into Detection objects.
 
     Parameters used by each method:
       method="cc":     min_cells, connectivity
       method="dbscan": min_cells, eps, min_samples, axis_weights
+      method="peak":   min_cells, peak_neighborhood
     Parameters not used by the chosen method are accepted but silently
     ignored, so a caller can switch methods without changing the call site.
 
@@ -59,6 +61,11 @@ def cluster(
         return cluster_dbscan(
             mask, rd_db, eps=eps, min_samples=min_samples,
             axis_weights=axis_weights, min_cells=min_cells,
+        )
+    if method == "peak":
+        return cluster_peak_picking(
+            mask, rd_db, min_cells=min_cells,
+            peak_neighborhood=peak_neighborhood,
         )
     raise NotImplementedError(f"cluster method {method!r} not yet implemented")
 
@@ -158,5 +165,81 @@ def cluster_dbscan(
         out.append(Detection(
             range_bin=r_c, doppler_bin=d_c,
             peak_db=peak_db, cell_count=n,
+        ))
+    return out
+
+
+def cluster_peak_picking(
+    mask: np.ndarray,
+    rd_db: np.ndarray,
+    min_cells: int = 1,
+    peak_neighborhood: int = 3,
+) -> list:
+    """Peak-picking clustering: one detection per local maximum of `rd_db`.
+
+    A cell is a peak if (a) it is in the mask and (b) its rd_db value equals
+    the max within a `peak_neighborhood`-sized window centred on it. Non-mask
+    cells are suppressed so adjacent bright-but-rejected cells can't hide a
+    masked peak.
+
+    Each emitted Detection's `cell_count` is the size of the connected-component
+    blob the peak belongs to; the `min_cells` filter operates on that blob size,
+    so a single isolated CFAR-positive cell can be rejected via min_cells>=2 just
+    like with the "cc" method.
+
+    Unlike `cc` and `dbscan`, this method uses the **intensity surface** under
+    the mask, not just mask topology. Two CFAR-positive cells whose blob has
+    two local maxima will produce two detections — which is the property that
+    resolves the close-target merge problem CC and DBSCAN suffer from.
+    """
+    if peak_neighborhood < 1:
+        raise ValueError(
+            f"peak_neighborhood must be >= 1, got {peak_neighborhood}"
+        )
+
+    rd_masked = np.where(mask, rd_db, -np.inf)
+    # Strict local max: the CUT is strictly greater than every other cell in
+    # its neighbourhood. Excluding the centre from the footprint sidesteps
+    # plateau ambiguity — flat regions never qualify as peaks.
+    footprint = np.ones((peak_neighborhood, peak_neighborhood), dtype=bool)
+    centre = peak_neighborhood // 2
+    footprint[centre, centre] = False
+    max_neighbour = scipy.ndimage.maximum_filter(
+        rd_masked, footprint=footprint, mode="nearest"
+    )
+    is_peak = (rd_masked > max_neighbour) & mask
+
+    if not is_peak.any():
+        return []
+
+    struct8 = np.ones((3, 3), dtype=bool)
+    # Underlying blob labels of the mask, for cell_count and min_cells filter.
+    blob_labels, n_blobs = scipy.ndimage.label(mask, structure=struct8)
+    if n_blobs == 0:
+        return []
+    blob_sizes = np.bincount(blob_labels.ravel())  # blob_sizes[0] = background
+
+    # A plateau of equal-valued cells all pass the (rd == max) test. Group
+    # them into one detection by labelling the peak mask and emitting the
+    # centroid of each peak-region.
+    peak_labels, n_peaks = scipy.ndimage.label(is_peak, structure=struct8)
+
+    out = []
+    for pid in range(1, n_peaks + 1):
+        pd_idx, pr_idx = np.where(peak_labels == pid)
+        if pd_idx.size == 0:
+            continue
+        blob_id = int(blob_labels[pd_idx[0], pr_idx[0]])
+        n = int(blob_sizes[blob_id])
+        if n < min_cells:
+            continue
+        d_c = float(pd_idx.mean())
+        r_c = float(pr_idx.mean())
+        peak_val = float(rd_db[pd_idx, pr_idx].max())
+        out.append(Detection(
+            range_bin=r_c,
+            doppler_bin=d_c,
+            peak_db=peak_val,
+            cell_count=n,
         ))
     return out

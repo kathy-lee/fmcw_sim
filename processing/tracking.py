@@ -12,8 +12,8 @@ from typing import Optional
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-from radar_postproc.clustering import Detection
-from radar_postproc.config import TrackerConfig
+from processing.clustering import Detection
+from processing.config import TrackerConfig
 
 _F = np.array([[1.0, 1.0], [0.0, 1.0]])
 _Q_BASE = np.array([[1.0 / 4.0, 1.0 / 2.0], [1.0 / 2.0, 1.0]])
@@ -33,6 +33,7 @@ class Track:
     status: str                      # "tentative" | "confirmed" | "coasting"
     hit_history: Optional[deque] = None
     history: Optional[deque] = None  # last N (range_bin, doppler_bin) pairs
+    assoc_det_idx: Optional[int] = None  # index of associated detection this frame; None when coasting
 
 
 def _kf_predict(state: np.ndarray, cov: np.ndarray, q: float):
@@ -68,10 +69,11 @@ class Tracker:
     # ---- Public API ----
 
     def step(self, detections: list) -> list:
-        # 1) Predict.
+        # 1) Predict. Clear last frame's association.
         for t in self.tracks:
             t.state, t.cov = _kf_predict(t.state, t.cov, self.cfg.process_noise_q)
             t.age += 1
+            t.assoc_det_idx = None
 
         # 2) Build cost matrix and associate.
         assignments = self._associate(detections)
@@ -81,6 +83,7 @@ class Tracker:
         assigned_dets = set()
         for ti, di in assignments:
             self._update_track(self.tracks[ti], detections[di])
+            self.tracks[ti].assoc_det_idx = di
             assigned_tracks.add(ti)
             assigned_dets.add(di)
 
@@ -96,7 +99,7 @@ class Tracker:
         for di, det in enumerate(detections):
             if di in assigned_dets:
                 continue
-            self._spawn(det)
+            self._spawn(det, di)
 
         # 6) Lifecycle: confirm / mark coasting / delete.
         self.tracks = [t for t in self.tracks if self._lifecycle_keep(t)]
@@ -181,7 +184,7 @@ class Tracker:
         if t.history is not None:
             t.history.append((det.range_bin, det.doppler_bin))
 
-    def _spawn(self, det: Detection) -> None:
+    def _spawn(self, det: Detection, det_idx: int) -> None:
         cfg = self.cfg
         t = Track(
             id=self._next_id,
@@ -194,6 +197,7 @@ class Tracker:
             status="tentative",
             hit_history=deque([True], maxlen=cfg.confirm_N),
             history=deque([(det.range_bin, det.doppler_bin)], maxlen=cfg.history_len),
+            assoc_det_idx=det_idx,
         )
         self._next_id += 1
         self.tracks.append(t)

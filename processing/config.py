@@ -1,26 +1,8 @@
-from dataclasses import dataclass, field
-
-
-@dataclass(frozen=True)
-class RadarParams:
-    n_range: int = 640
-    n_doppler: int = 32
-    samp_rate: float = 32000.0
-    chirp_period: float = 0.02
-    bandwidth: float = 8000.0
-    sound_speed: float = 343.0
-
-    @property
-    def range_res_m(self) -> float:
-        return self.sound_speed / (2.0 * self.bandwidth)
-
-    @property
-    def doppler_res_hz(self) -> float:
-        return 1.0 / (self.n_doppler * self.chirp_period)
+from dataclasses import dataclass
 
 
 _CFAR_METHODS = {"ca", "os", "go", "so"}
-_CLUSTERING_METHODS = {"cc", "dbscan"}
+_CLUSTERING_METHODS = {"cc", "dbscan", "peak"}
 _TRACKER_METHODS = {"nn", "gnn"}
 
 
@@ -59,11 +41,12 @@ class CfarConfig:
 @dataclass
 class ClusteringConfig:
     method: str = "cc"
-    min_cells: int = 1
+    min_cells: int = 2
     connectivity: int = 8              # cc only: 4 or 8
     eps: float = 1.5                   # dbscan only
     min_samples: int = 2               # dbscan only
     axis_weights: tuple = (1.0, 1.0)   # (doppler, range)
+    peak_neighborhood: int = 3         # peak only: local-max window size
 
     def __post_init__(self):
         if self.method not in _CLUSTERING_METHODS:
@@ -85,6 +68,11 @@ class ClusteringConfig:
         if self.min_samples < 1:
             raise ValueError(
                 f"ClusteringConfig.min_samples must be >= 1, got {self.min_samples}"
+            )
+        if self.peak_neighborhood < 1:
+            raise ValueError(
+                f"ClusteringConfig.peak_neighborhood must be >= 1, "
+                f"got {self.peak_neighborhood}"
             )
 
 
@@ -136,11 +124,3 @@ class TrackerConfig:
             raise ValueError(
                 f"TrackerConfig.history_len must be >= 1, got {self.history_len}"
             )
-
-
-@dataclass
-class PipelineConfig:
-    radar: RadarParams = field(default_factory=RadarParams)
-    cfar: CfarConfig = field(default_factory=CfarConfig)
-    clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
-    tracker: TrackerConfig = field(default_factory=TrackerConfig)

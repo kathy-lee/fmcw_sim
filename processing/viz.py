@@ -8,11 +8,16 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
 
-from radar_postproc.clustering import Detection
-from radar_postproc.config import RadarParams
-from radar_postproc.tracking import Track
+from processing.clustering import Detection
+from processing.tracking import Track
 
 _LAYERS = {"cfar", "clusters", "tracks"}
+
+
+def doppler_bin_to_mps(doppler_bin: float, n_doppler: int,
+                       chirp_period_s: float, lambda_m: float) -> float:
+    """Convert a (centered) Doppler bin index to radial velocity in m/s."""
+    return (doppler_bin - n_doppler / 2.0) / (n_doppler * chirp_period_s) * lambda_m / 2.0
 
 
 class LayeredRDView:
@@ -29,21 +34,24 @@ class LayeredRDView:
         self,
         n_doppler: int,
         n_range: int,
-        params: RadarParams,
+        range_res_m: float,
+        chirp_period_s: float,
+        lambda_m: float,
         vmin: float = -120.0,
         vmax: float = 20.0,
     ):
         self.n_doppler = n_doppler
         self.n_range = n_range
-        self.params = params
+        self.range_res_m = range_res_m
+        self.chirp_period_s = chirp_period_s
+        self.lambda_m = lambda_m
         self._reset_cb: Optional[Callable[[], None]] = None
         self._visible = {"cfar": True, "clusters": True, "tracks": True}
         # Track-id-keyed cache of per-track artist groups; rebuilt each frame for simplicity.
         self._track_artists: list = []
-        self._frame_count = 0
 
         plt.ion()
-        self.fig, self.ax = plt.subplots(figsize=(10, 4))
+        self.fig, self.ax = plt.subplots(figsize=(10, 6))
         self.ax.set_xlabel("Range bin")
         self.ax.set_ylabel("Doppler bin")
         self.ax.set_title("Frame 0  |  tracks: 0")
@@ -70,18 +78,19 @@ class LayeredRDView:
                                                 c="yellow", linewidths=1.5)
 
         # Secondary axes (decorative — bins ↔ physical units).
-        rr = params.range_res_m
+        rr = range_res_m
         self.ax.secondary_xaxis(
             "top",
             functions=(lambda b, rr=rr: b * rr, lambda m, rr=rr: m / rr),
         ).set_xlabel("Range (m)")
         n_d = n_doppler
-        cp = params.chirp_period
-        def b2hz(b, n_d=n_d, cp=cp):
-            return (b - n_d / 2.0) / (n_d * cp)
-        def hz2b(h, n_d=n_d, cp=cp):
-            return h * (n_d * cp) + n_d / 2.0
-        self.ax.secondary_yaxis("right", functions=(b2hz, hz2b)).set_ylabel("Doppler (Hz)")
+        cp = chirp_period_s
+        lm = lambda_m
+        def b2mps(b, n_d=n_d, cp=cp, lm=lm):
+            return doppler_bin_to_mps(b, n_d, cp, lm)
+        def mps2b(v, n_d=n_d, cp=cp, lm=lm):
+            return v * 2.0 / lm * (n_d * cp) + n_d / 2.0
+        self.ax.secondary_yaxis("right", functions=(b2mps, mps2b)).set_ylabel("Velocity (m/s)")
 
         # Hotkeys.
         self.fig.canvas.mpl_connect("key_press_event", self._on_key)
@@ -91,11 +100,10 @@ class LayeredRDView:
     def show(self) -> None:
         plt.show(block=False)
 
-    def update(self, rd_db, mask, detections, tracks) -> None:
-        self._frame_count += 1
+    def update(self, rd_db, mask, detections, tracks, frame_id: int) -> None:
         n_confirmed = sum(1 for t in tracks if t.status == "confirmed")
         self.ax.set_title(
-            f"Frame {self._frame_count}  |  detections: {len(detections)}  |  "
+            f"Frame {frame_id}  |  detections: {len(detections)}  |  "
             f"tracks: {len(tracks)} ({n_confirmed} confirmed)"
         )
         self._heatmap.set_data(rd_db)
@@ -141,12 +149,13 @@ class LayeredRDView:
                 )
                 self._track_artists.append(sc)
                 # Label.
-                rng_m = t.state[0] * self.params.range_res_m
-                dop_hz = (t.last_doppler_bin - self.n_doppler / 2.0) / (
-                    self.n_doppler * self.params.chirp_period
+                rng_m = t.state[0] * self.range_res_m
+                vel_mps = doppler_bin_to_mps(
+                    t.last_doppler_bin, self.n_doppler,
+                    self.chirp_period_s, self.lambda_m,
                 )
                 txt = self.ax.annotate(
-                    f"T{t.id}  r={rng_m:.2f}m  v={dop_hz:+.1f}Hz",
+                    f"T{t.id}  r={rng_m:.2f}m  v={vel_mps:+.2f}m/s",
                     xy=(t.state[0], t.last_doppler_bin),
                     xytext=(6, 4), textcoords="offset points",
                     color=color, fontsize=8,

@@ -2,6 +2,19 @@
 
 Public entry point: `cfar_2d(rd_db, method=...)`. Returns a boolean mask the
 same shape as the input. All algorithms operate on linear power.
+
+Threshold calibration:
+    The threshold for every method is α × noise_estimate, where α is calibrated
+    to hit the design Pfa. Calibration is empirical: we draw pure-noise RD power
+    maps from the same windowed-FFT chain the pipeline uses (so adjacent cells
+    have the correct windowing-induced correlation), run the method-specific
+    noise-estimate operator on them, and take the (1−Pfa) quantile of the
+    cut/noise ratios as α.
+
+    The earlier analytical / i.i.d.-Monte-Carlo calibrations were biased
+    because the real RD map has correlated cells (Hann-window power
+    autocorrelation extends a few bins), violating the i.i.d. exponential
+    assumption those formulas rely on.
 """
 
 from __future__ import annotations
@@ -14,6 +27,11 @@ from scipy.optimize import brentq
 from scipy.special import gammaln
 
 _VALID_METHODS = {"ca", "os", "go", "so"}
+_VALID_WINDOWS = {"hann", "rect"}
+
+# Frames used for empirical α calibration. 300 frames × 64×128 cells ≈ 2.5M
+# samples per noise pool. Enough for stable (1-Pfa)=1−1e-4 quantile estimates.
+_CALIBRATION_FRAMES = 300
 
 
 def cfar_2d(
@@ -23,29 +41,220 @@ def cfar_2d(
     training: tuple = (4, 8),
     pfa: float = 1e-4,
     rank_frac: float = 0.75,
+    window: str = "hann",
+    dc_removal: bool = True,
+    clutter_removal: bool = False,
 ) -> np.ndarray:
-    """Dispatch to the configured CFAR algorithm. See module docstring."""
+    """Dispatch to the configured CFAR algorithm. See module docstring.
+
+    `window`, `dc_removal`, `clutter_removal` must match the values passed to
+    `range_doppler`. They govern only the α calibration (which simulates the
+    same processing chain to generate noise samples); the input `rd_db` itself
+    is not modified.
+    """
     if method not in _VALID_METHODS:
         raise ValueError(
             f"cfar_2d.method must be one of {sorted(_VALID_METHODS)}, got {method!r}"
         )
+    if window not in _VALID_WINDOWS:
+        raise ValueError(
+            f"cfar_2d.window must be one of {sorted(_VALID_WINDOWS)}, got {window!r}"
+        )
     rd_db = np.nan_to_num(rd_db, nan=-200.0, posinf=20.0, neginf=-200.0)
+    kw = dict(guard=guard, training=training, pfa=pfa, window=window,
+              dc_removal=dc_removal, clutter_removal=clutter_removal)
     if method == "ca":
-        return cfar_2d_ca(rd_db, guard=guard, training=training, pfa=pfa)
+        return cfar_2d_ca(rd_db, **kw)
     if method == "os":
-        return cfar_2d_os(rd_db, guard=guard, training=training, pfa=pfa,
-                          rank_frac=rank_frac)
+        return cfar_2d_os(rd_db, rank_frac=rank_frac, **kw)
     if method in ("go", "so"):
-        return cfar_2d_goso(rd_db, mode=method, guard=guard,
-                            training=training, pfa=pfa)
+        return cfar_2d_goso(rd_db, mode=method, **kw)
     raise NotImplementedError(f"cfar method {method!r} not yet implemented")
 
+
+# --------------------------------------------------------------------------- #
+# Empirical α calibration                                                      #
+# --------------------------------------------------------------------------- #
+
+@functools.lru_cache(maxsize=8)
+def _windowed_noise_rd_maps(
+    rd_shape: tuple,
+    window: str,
+    dc_removal: bool,
+    clutter_removal: bool,
+    n_frames: int,
+    seed: int,
+) -> np.ndarray:
+    """Pure-noise RD power maps with the pipeline's processing chain.
+
+    Mirrors `range_doppler` exactly: complex-Gaussian noise → optional
+    per-chirp mean removal → range window → range FFT → optional slow-time
+    mean removal → Doppler window → Doppler FFT → fftshift → magnitude squared.
+
+    Each pipeline flag affects which cells become "dead" (range bin 0 for
+    dc_removal, doppler bin n_d/2 for clutter_removal). The α calibration
+    must see the same dead cells the pipeline produces, otherwise SO (and to
+    a lesser extent CA/OS) miscalibrate at the edges of the dead regions.
+
+    Shape returned: (n_frames, n_doppler, n_range_out), linear power.
+    """
+    if window not in _VALID_WINDOWS:
+        raise ValueError(
+            f"window must be one of {sorted(_VALID_WINDOWS)}, got {window!r}"
+        )
+    n_d, n_r_out = rd_shape
+    n_r_in = 2 * n_r_out   # range FFT keeps positive half
+
+    if window == "hann":
+        wr = np.hanning(n_r_in)
+        wd = np.hanning(n_d)
+    else:  # "rect"
+        wr = np.ones(n_r_in)
+        wd = np.ones(n_d)
+
+    rng = np.random.default_rng(seed)
+    samples = np.empty((n_frames, n_d, n_r_out), dtype=np.float64)
+    for i in range(n_frames):
+        x = (rng.standard_normal((n_d, n_r_in)) +
+             1j * rng.standard_normal((n_d, n_r_in))) / np.sqrt(2.0)
+        if dc_removal:
+            x = x - x.mean(axis=1, keepdims=True)
+        x = x * wr[None, :]
+        rfft = np.fft.fft(x, axis=1)[:, :n_r_out]
+        if clutter_removal:
+            rfft = rfft - rfft.mean(axis=0, keepdims=True)
+        rfft = rfft * wd[:, None]
+        out = np.fft.fftshift(np.fft.fft(rfft, axis=0), axes=0)
+        samples[i] = np.abs(out) ** 2
+    return samples
+
+
+def _ratios_ca(samples: np.ndarray, guard: tuple, training: tuple) -> np.ndarray:
+    G_d, G_r = guard
+    T_d, T_r = training
+    full_d = 2 * (G_d + T_d) + 1
+    full_r = 2 * (G_r + T_r) + 1
+    inner_d = 2 * G_d + 1
+    inner_r = 2 * G_r + 1
+    n_full = full_d * full_r
+    n_inner = inner_d * inner_r
+    n_train = n_full - n_inner
+
+    out = []
+    for rd_lin in samples:
+        sum_full = scipy.ndimage.uniform_filter(
+            rd_lin, size=(full_d, full_r), mode="nearest") * n_full
+        sum_inner = scipy.ndimage.uniform_filter(
+            rd_lin, size=(inner_d, inner_r), mode="nearest") * n_inner
+        noise = (sum_full - sum_inner) / n_train
+        out.append((rd_lin / noise).ravel())
+    return np.concatenate(out)
+
+
+def _ratios_os(
+    samples: np.ndarray, guard: tuple, training: tuple, rank_frac: float
+) -> np.ndarray:
+    G_d, G_r = guard
+    T_d, T_r = training
+    full_d = 2 * (G_d + T_d) + 1
+    full_r = 2 * (G_r + T_r) + 1
+    inner_d = 2 * G_d + 1
+    inner_r = 2 * G_r + 1
+    pad_d = G_d + T_d
+    pad_r = G_r + T_r
+
+    keep = np.ones((full_d, full_r), dtype=bool)
+    cd0 = (full_d - inner_d) // 2
+    cr0 = (full_r - inner_r) // 2
+    keep[cd0:cd0 + inner_d, cr0:cr0 + inner_r] = False
+
+    out = []
+    for rd_lin in samples:
+        padded = np.pad(rd_lin, ((pad_d, pad_d), (pad_r, pad_r)), mode="edge")
+        windows = np.lib.stride_tricks.sliding_window_view(
+            padded, (full_d, full_r))
+        training_cells = windows[..., keep]
+        N = training_cells.shape[-1]
+        k = max(1, min(N - 1, int(round(rank_frac * N))))
+        noise = np.partition(training_cells, k - 1, axis=-1)[..., k - 1]
+        out.append((rd_lin / noise).ravel())
+    return np.concatenate(out)
+
+
+def _ratios_goso(
+    samples: np.ndarray, guard: tuple, training: tuple, mode: str
+) -> np.ndarray:
+    G_d, G_r = guard
+    T_d, T_r = training
+    kernels, sizes = _quadrant_kernels(G_d, G_r, T_d, T_r)
+
+    out = []
+    for rd_lin in samples:
+        means = []
+        for k, n_q in zip(kernels, sizes):
+            sums = scipy.ndimage.convolve(rd_lin, k, mode="nearest")
+            means.append(sums / n_q)
+        stack = np.stack(means, axis=0)
+        noise = stack.max(axis=0) if mode == "go" else stack.min(axis=0)
+        out.append((rd_lin / noise).ravel())
+    return np.concatenate(out)
+
+
+@functools.lru_cache(maxsize=64)
+def _alpha_empirical(
+    method: str,
+    rd_shape: tuple,
+    guard: tuple,
+    training: tuple,
+    pfa: float,
+    window: str,
+    dc_removal: bool,
+    clutter_removal: bool,
+    rank_frac: float = 0.75,
+    n_frames: int = _CALIBRATION_FRAMES,
+    seed: int = 0,
+) -> float:
+    """Calibrate α empirically against pure-noise samples generated through the
+    same processing chain (window / dc_removal / clutter_removal) the pipeline
+    uses, so that "dead" cells produced by the chain are present in the
+    calibration data the same way they are in the live RD map.
+
+    Convention: the default `seed=0` is intentional and reproducible. To
+    keep calibration noise decoupled from pipeline noise, `RadarConfig.seed`
+    defaults to a non-zero value (99999), so the FMCWBeatSignalGenerator's
+    RNG stream never accidentally collides with this calibration RNG stream.
+    Anyone wiring up a new noise path that interacts with cfar should
+    similarly pick a seed != 0; otherwise the two RNG streams are identical
+    and any "empirical Pfa" measured downstream becomes self-consistent with
+    the calibration data rather than a true out-of-sample measurement. Unit
+    tests use `seed=12345` to make this explicit.
+    """
+    samples = _windowed_noise_rd_maps(
+        rd_shape, window, dc_removal, clutter_removal, n_frames, seed,
+    )
+    if method == "ca":
+        ratios = _ratios_ca(samples, guard, training)
+    elif method == "os":
+        ratios = _ratios_os(samples, guard, training, rank_frac)
+    elif method in ("go", "so"):
+        ratios = _ratios_goso(samples, guard, training, method)
+    else:
+        raise ValueError(f"unknown method {method!r}")
+    return float(np.quantile(ratios, 1.0 - pfa))
+
+
+# --------------------------------------------------------------------------- #
+# Public CFAR variants                                                         #
+# --------------------------------------------------------------------------- #
 
 def cfar_2d_ca(
     rd_db: np.ndarray,
     guard: tuple = (2, 4),
     training: tuple = (4, 8),
     pfa: float = 1e-4,
+    window: str = "hann",
+    dc_removal: bool = True,
+    clutter_removal: bool = False,
 ) -> np.ndarray:
     """2D Cell-Averaging CFAR. Returns a boolean detection mask.
 
@@ -71,18 +280,21 @@ def cfar_2d_ca(
             f"training region is empty for guard={guard}, training={training}"
         )
 
-    # Sum over full window and over inner (guard) block via uniform_filter * size.
     sum_full = scipy.ndimage.uniform_filter(rd_lin, size=(full_d, full_r),
                                             mode="nearest") * n_full
     sum_inner = scipy.ndimage.uniform_filter(rd_lin, size=(inner_d, inner_r),
                                              mode="nearest") * n_inner
-
     noise = (sum_full - sum_inner) / n_train
 
-    alpha = n_train * (pfa ** (-1.0 / n_train) - 1.0)
-    threshold = alpha * noise
+    # # Previous version under i.i.d. exponential assumption
+    # alpha = n_train * (pfa ** (-1.0 / n_train) - 1.0)
+    # threshold = alpha * noise
+    # return rd_lin > threshold
 
-    return rd_lin > threshold
+    alpha = _alpha_empirical("ca", tuple(rd_db.shape), tuple(guard),
+                             tuple(training), pfa, window,
+                             dc_removal, clutter_removal)
+    return rd_lin > alpha * noise
 
 
 @functools.lru_cache(maxsize=128)
@@ -111,12 +323,16 @@ def _os_alpha(N: int, k: int, pfa: float) -> float:
     return float(brentq(lambda a: log_pfa(a) - target, 1e-3, 1e7, xtol=1e-4))
 
 
+
 def cfar_2d_os(
     rd_db: np.ndarray,
     guard: tuple = (2, 4),
     training: tuple = (4, 8),
     pfa: float = 1e-4,
     rank_frac: float = 0.75,
+    window: str = "hann",
+    dc_removal: bool = True,
+    clutter_removal: bool = False,
 ) -> np.ndarray:
     """2D Ordered-Statistics CFAR."""
     G_d, G_r = guard
@@ -150,10 +366,15 @@ def cfar_2d_os(
     # k-th smallest training cell per CUT (1-indexed → np.partition uses 0-indexed).
     noise = np.partition(training_cells, k - 1, axis=-1)[..., k - 1]
 
-    alpha = _os_alpha(N, k, pfa)
-    threshold = alpha * noise
+    # # Previous version under i.i.d. exponential assumption
+    # alpha = _os_alpha(N, k, pfa)
+    # threshold = alpha * noise
+    # return rd_lin > threshold
 
-    return rd_lin > threshold
+    alpha = _alpha_empirical("os", tuple(rd_db.shape), tuple(guard),
+                             tuple(training), pfa, window,
+                             dc_removal, clutter_removal, rank_frac=rank_frac)
+    return rd_lin > alpha * noise
 
 
 def _quadrant_kernels(G_d: int, G_r: int, T_d: int, T_r: int):
@@ -227,6 +448,9 @@ def cfar_2d_goso(
     guard: tuple = (2, 4),
     training: tuple = (4, 8),
     pfa: float = 1e-4,
+    window: str = "hann",
+    dc_removal: bool = True,
+    clutter_removal: bool = False,
 ) -> np.ndarray:
     """2D Greatest-Of / Smallest-Of CFAR with 4 training-ring quadrants."""
     G_d, G_r = guard
@@ -238,9 +462,15 @@ def cfar_2d_goso(
     for k, n_q in zip(kernels, sizes):
         sums = scipy.ndimage.convolve(rd_lin, k, mode="nearest")
         means.append(sums / n_q)
-    stack = np.stack(means, axis=0)             # (4, n_d, n_r)
+    stack = np.stack(means, axis=0)
     noise = stack.max(axis=0) if mode == "go" else stack.min(axis=0)
 
-    alpha = _goso_alpha(tuple(sizes), pfa, mode)
-    threshold = alpha * noise
-    return rd_lin > threshold
+    # # Previous version under i.i.d. exponential assumption
+    # alpha = _goso_alpha(tuple(sizes), pfa, mode)
+    # threshold = alpha * noise
+    # return rd_lin > threshold
+
+    alpha = _alpha_empirical(mode, tuple(rd_db.shape), tuple(guard),
+                             tuple(training), pfa, window,
+                             dc_removal, clutter_removal)
+    return rd_lin > alpha * noise

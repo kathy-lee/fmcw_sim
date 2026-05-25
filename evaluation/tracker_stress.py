@@ -168,6 +168,7 @@ def count_id_switches(
 def summarize_run(
     association_history: list,
     switch_events: list,
+    tracks_history: list,
     track_break_pd_threshold: float = 0.5,
 ) -> dict:
     """Compute per-GT metrics and classify the run.
@@ -176,19 +177,46 @@ def summarize_run(
         association_history: list of (frame_idx, {gt_id: track_id_or_None}).
         switch_events: list of (frame_idx, gt_id, old_id, new_id) -- output of
             count_id_switches().
+        tracks_history: list of (frame_idx, [TrackSnapshot, ...]) -- output of
+            run_pipeline(). Pass [] to skip coast-frame counting (resulting
+            coast_frames will be 0 for every GT).
         track_break_pd_threshold: a GT's Pd below this triggers TRACK BREAK.
 
     Returns:
         {
           "per_gt": {gt_id: {"pd": float, "distinct_track_ids": int,
-                              "n_frames_associated": int}},
+                              "n_frames_associated": int,
+                              "coast_frames": int}},
           "n_switches": int,
           "switch_events": [...],
           "classification": "CLEAN" | "ID SWITCH" | "TRACK BREAK"
                             | "TOTAL CONFUSION",
         }
+
+    coast_frames counts frames where some track that was ever-associated
+    with this GT was alive in status='coasting'. This is the metric the
+    spec calls "how long the tracker coasted through misses" -- the same
+    track ID is being kept alive across CFAR misses via Kalman prediction.
     """
     gt_ids = sorted({gt_id for _, m in association_history for gt_id in m})
+
+    # Tracks ever associated with each GT (used to attribute coast frames).
+    gt_to_tracks = {gt_id: set() for gt_id in gt_ids}
+    for _, mapping in association_history:
+        for gt_id, track_id in mapping.items():
+            if track_id is not None:
+                gt_to_tracks[gt_id].add(track_id)
+
+    coast_count = {gt_id: 0 for gt_id in gt_ids}
+    for _, snapshots in tracks_history:
+        for snap in snapshots:
+            if snap.status != "coasting":
+                continue
+            for gt_id, track_set in gt_to_tracks.items():
+                if snap.id in track_set:
+                    coast_count[gt_id] += 1
+                    break
+
     per_gt = {}
     for gt_id in gt_ids:
         n_total = len(association_history)
@@ -203,6 +231,7 @@ def summarize_run(
             "pd": n_with / n_total if n_total else 0.0,
             "distinct_track_ids": len(distinct),
             "n_frames_associated": n_with,
+            "coast_frames": coast_count[gt_id],
         }
 
     has_switches = len(switch_events) > 0
@@ -249,6 +278,8 @@ def run_pipeline(
     radar_cfg,
     initial_targets: list,
     n_frames: int,
+    max_coast: int | None = None,
+    process_noise_q: float | None = None,
 ) -> list:
     """Run generate_frame -> range_doppler -> cfar_2d -> cluster -> Tracker.step
     for n_frames, with the lens chosen for this pilot:
@@ -258,9 +289,19 @@ def run_pipeline(
 
     TrackSnapshot is an immutable per-frame copy of the relevant Track fields,
     needed because Tracker mutates Track objects in place across frames.
+
+    max_coast / process_noise_q override TrackerConfig defaults when not None.
+    This is the hook the C.2 hypothesis sweep uses to vary tracker behavior
+    across runs without editing config files. Leave both at None to get
+    default tracker tuning.
     """
+    tracker_kwargs = {"method": "gnn"}
+    if max_coast is not None:
+        tracker_kwargs["max_coast"] = max_coast
+    if process_noise_q is not None:
+        tracker_kwargs["process_noise_q"] = process_noise_q
     gen = FMCWBeatSignalGenerator(radar_cfg)
-    tracker = Tracker(TrackerConfig(method="gnn"))
+    tracker = Tracker(TrackerConfig(**tracker_kwargs))
     tracks_history = []
     for frame_idx in range(n_frames):
         frame = gen.generate_frame(initial_targets, frame_index=frame_idx)
@@ -382,19 +423,25 @@ def plot_results(
     ax.grid(True, alpha=0.3)
 
     # Build an explicit legend distinguishing GT lines, track markers per
-    # GT-association color, and confirmed vs coasting marker style.
-    legend_handles = [
-        plt.Line2D([0], [0], color=gt_color.get(0, "black"),
-                   linewidth=2.2, alpha=0.5, label="GT 0 (truth line)"),
-        plt.Line2D([0], [0], color=gt_color.get(1, "black"),
-                   linewidth=2.2, alpha=0.5, label="GT 1 (truth line)"),
-        plt.Line2D([0], [0], color=gt_color.get(0, "black"), marker="o",
-                   markersize=8, linestyle="", label="track assoc. with GT 0"),
-        plt.Line2D([0], [0], color=gt_color.get(1, "black"), marker="o",
-                   markersize=8, linestyle="", label="track assoc. with GT 1"),
-        plt.Line2D([0], [0], color=color_for_none, marker="o",
-                   markersize=8, linestyle="", label="track (no association)"),
-    ]
+    # GT-association color, and confirmed vs coasting marker style. The
+    # GT-specific entries are generated dynamically so single-target scenarios
+    # don't see a phantom "GT 1" in the legend.
+    legend_handles = []
+    for gt_id in range(n_gts):
+        legend_handles.append(plt.Line2D(
+            [0], [0], color=gt_color.get(gt_id, "black"),
+            linewidth=2.2, alpha=0.5, label=f"GT {gt_id} (truth line)",
+        ))
+    for gt_id in range(n_gts):
+        legend_handles.append(plt.Line2D(
+            [0], [0], color=gt_color.get(gt_id, "black"), marker="o",
+            markersize=8, linestyle="",
+            label=f"track assoc. with GT {gt_id}",
+        ))
+    legend_handles.append(plt.Line2D(
+        [0], [0], color=color_for_none, marker="o",
+        markersize=8, linestyle="", label="track (no association)",
+    ))
     ax.legend(handles=legend_handles, fontsize=8, loc="upper right",
               framealpha=0.9)
 
@@ -415,12 +462,16 @@ def print_summary(summary: dict, n_frames: int, scenario_path: str) -> None:
           f"({n_frames * 0.05:.1f} s at 20 Hz)")
     print()
     print("Per-target metrics:")
-    headers = ["gt_id", "Pd", "distinct_tracks", "n_assoc_frames"]
-    print(f"  {headers[0]:8s} {headers[1]:>6s} {headers[2]:>16s} {headers[3]:>16s}")
+    headers = ["gt_id", "Pd", "distinct_tracks", "n_assoc_frames",
+               "coast_frames"]
+    print(f"  {headers[0]:8s} {headers[1]:>6s} {headers[2]:>16s} "
+          f"{headers[3]:>16s} {headers[4]:>13s}")
     for gt_id in sorted(summary["per_gt"]):
         m = summary["per_gt"][gt_id]
         print(f"  gt_{gt_id:<5d} {m['pd']:>6.2f} "
-              f"{m['distinct_track_ids']:>16d} {m['n_frames_associated']:>16d}")
+              f"{m['distinct_track_ids']:>16d} "
+              f"{m['n_frames_associated']:>16d} "
+              f"{m['coast_frames']:>13d}")
     print()
     if summary["switch_events"]:
         print("ID-switch events:")
@@ -443,6 +494,10 @@ def main() -> None:
                    help="number of frames to run")
     p.add_argument("--out", type=Path, default=None,
                    help="output PNG path (default: derived from scenario name)")
+    p.add_argument("--max-coast", type=int, default=None,
+                   help="override TrackerConfig.max_coast (default: 5)")
+    p.add_argument("--process-noise-q", type=float, default=None,
+                   help="override TrackerConfig.process_noise_q (default: 0.5)")
     args = p.parse_args()
 
     if args.out is None:
@@ -454,7 +509,10 @@ def main() -> None:
           f"{args.frames} frames")
 
     gt_trajectory = build_gt_trajectory(initial_targets, gen, args.frames)
-    tracks_history = run_pipeline(radar_cfg, initial_targets, args.frames)
+    tracks_history = run_pipeline(
+        radar_cfg, initial_targets, args.frames,
+        max_coast=args.max_coast, process_noise_q=args.process_noise_q,
+    )
 
     association_history = []
     for (f_gt, gt_at_frame), (f_tr, tracks) in zip(gt_trajectory,
@@ -465,7 +523,8 @@ def main() -> None:
 
     switch_events = count_id_switches(association_history,
                                        min_persistence_frames=2)
-    summary = summarize_run(association_history, switch_events)
+    summary = summarize_run(association_history, switch_events,
+                            tracks_history)
 
     # Convert track range_bin (state[0]) to metres for the plot's y-axis.
     range_per_bin = float(gen.range_axis_m()[1] - gen.range_axis_m()[0])

@@ -194,6 +194,86 @@ def test_clutter_region_rejects_negative_cnr():
         ClutterRegion(range_m_min=4.0, range_m_max=6.0, cnr_db=-1.0)
 
 
+def test_clutter_region_default_frame_window_is_unbounded():
+    from simulator.beat_signal_generator import ClutterRegion
+    r = ClutterRegion(range_m_min=4.0, range_m_max=6.0)
+    assert r.frame_min is None
+    assert r.frame_max is None
+    # Active at any frame index when both bounds are None.
+    assert r.is_active(0)
+    assert r.is_active(123)
+    assert r.is_active(-1)
+
+
+def test_clutter_region_is_active_respects_frame_window():
+    from simulator.beat_signal_generator import ClutterRegion
+    r = ClutterRegion(range_m_min=4.0, range_m_max=6.0,
+                      frame_min=10, frame_max=20)
+    assert not r.is_active(9)
+    assert r.is_active(10)        # inclusive lower
+    assert r.is_active(19)
+    assert not r.is_active(20)    # exclusive upper
+    assert not r.is_active(100)
+
+
+def test_clutter_region_is_active_half_open_windows():
+    from simulator.beat_signal_generator import ClutterRegion
+    # Only upper bound.
+    r_upper = ClutterRegion(range_m_min=4.0, range_m_max=6.0, frame_max=5)
+    assert r_upper.is_active(0)
+    assert r_upper.is_active(4)
+    assert not r_upper.is_active(5)
+    # Only lower bound.
+    r_lower = ClutterRegion(range_m_min=4.0, range_m_max=6.0, frame_min=5)
+    assert not r_lower.is_active(4)
+    assert r_lower.is_active(5)
+    assert r_lower.is_active(100)
+
+
+def test_clutter_region_rejects_inverted_frame_window():
+    from simulator.beat_signal_generator import ClutterRegion
+    with pytest.raises(ValueError, match="frame_min"):
+        ClutterRegion(range_m_min=4.0, range_m_max=6.0,
+                      frame_min=20, frame_max=10)
+
+
+def test_inactive_clutter_region_does_not_contribute_to_frame():
+    """A region outside its active window must produce a frame identical to
+    one generated with cfg.clutter=[] (same seed). This guarantees frame-level
+    intermittence and not just a weaker contribution."""
+    from simulator.beat_signal_generator import ClutterRegion
+    region = ClutterRegion(range_m_min=4.0, range_m_max=6.0, cnr_db=20.0,
+                           frame_min=10, frame_max=20)
+
+    cfg_with = RadarConfig(seed=42, clutter=[region])
+    gen_with = FMCWBeatSignalGenerator(cfg_with)
+    frame_inactive = gen_with.generate_frame(targets=[], frame_index=0)
+
+    cfg_without = RadarConfig(seed=42, clutter=[])
+    gen_without = FMCWBeatSignalGenerator(cfg_without)
+    frame_baseline = gen_without.generate_frame(targets=[], frame_index=0)
+
+    np.testing.assert_array_equal(frame_inactive, frame_baseline)
+
+
+def test_active_clutter_region_does_contribute_to_frame():
+    """The same region, evaluated inside its window, must produce a frame
+    that differs from the no-clutter baseline."""
+    from simulator.beat_signal_generator import ClutterRegion
+    region = ClutterRegion(range_m_min=4.0, range_m_max=6.0, cnr_db=20.0,
+                           frame_min=10, frame_max=20)
+
+    cfg_with = RadarConfig(seed=42, clutter=[region])
+    gen_with = FMCWBeatSignalGenerator(cfg_with)
+    frame_active = gen_with.generate_frame(targets=[], frame_index=15)
+
+    cfg_without = RadarConfig(seed=42, clutter=[])
+    gen_without = FMCWBeatSignalGenerator(cfg_without)
+    frame_baseline = gen_without.generate_frame(targets=[], frame_index=15)
+
+    assert not np.array_equal(frame_active, frame_baseline)
+
+
 def test_radar_config_clutter_defaults_to_empty_list():
     cfg = RadarConfig()
     assert cfg.clutter == []

@@ -35,12 +35,19 @@ class ClutterRegion:
     contribution whose per-cell variance is `noise_power * 10^(cnr_db/10)`
     above the base noise. velocity bounds = None means unbounded
     (the region covers all Doppler — Level 1 in the clutter-edge eval).
+
+    Time window: frame_min / frame_max bracket the frames during which the
+    region is active (inclusive lower, exclusive upper, matching range()).
+    None means unbounded on that side. With both at None (the default), the
+    region is active for every frame — preserves prior behavior.
     """
     range_m_min: float
     range_m_max: float
     velocity_mps_min: float | None = None
     velocity_mps_max: float | None = None
     cnr_db: float = 10.0
+    frame_min: int | None = None
+    frame_max: int | None = None
 
     def __post_init__(self):
         if self.range_m_min >= self.range_m_max:
@@ -59,6 +66,20 @@ class ClutterRegion:
             raise ValueError(
                 f"ClutterRegion.cnr_db must be >= 0, got {self.cnr_db}"
             )
+        if (self.frame_min is not None and self.frame_max is not None
+                and self.frame_min >= self.frame_max):
+            raise ValueError(
+                f"ClutterRegion.frame_min ({self.frame_min}) must be < "
+                f"frame_max ({self.frame_max})"
+            )
+
+    def is_active(self, frame_index: int) -> bool:
+        """Return True when this region contributes clutter on `frame_index`."""
+        if self.frame_min is not None and frame_index < self.frame_min:
+            return False
+        if self.frame_max is not None and frame_index >= self.frame_max:
+            return False
+        return True
 
 
 @dataclass
@@ -181,6 +202,8 @@ class FMCWBeatSignalGenerator:
             x += cfg.leakage_amplitude
 
         for region in cfg.clutter:
+            if not region.is_active(frame_index):
+                continue
             x += self._generate_clutter_beat_signal(region)
 
         if cfg.noise_power > 0.0:

@@ -217,7 +217,7 @@ def test_summarize_clean_run():
     """Pd=1, 1 track ID per GT, 0 switches -> CLEAN."""
     from evaluation.tracker_stress import summarize_run
     history = _history_all_clean(10)
-    summary = summarize_run(history, switch_events=[])
+    summary = summarize_run(history, switch_events=[], tracks_history=[])
     assert summary["classification"] == "CLEAN"
     assert summary["per_gt"][0]["pd"] == 1.0
     assert summary["per_gt"][1]["pd"] == 1.0
@@ -236,7 +236,8 @@ def test_summarize_id_switch_only():
         (4, {0: 200, 1: 100}),
     ]
     switch_events = [(2, 0, 100, 200), (2, 1, 200, 100)]
-    summary = summarize_run(history, switch_events=switch_events)
+    summary = summarize_run(history, switch_events=switch_events,
+                            tracks_history=[])
     assert summary["classification"] == "ID SWITCH"
     assert summary["per_gt"][0]["pd"] == 1.0
     assert summary["per_gt"][1]["pd"] == 1.0
@@ -252,7 +253,7 @@ def test_summarize_track_break():
         (3, {0: None, 1: 200}),
         (4, {0: None, 1: 200}),
     ]
-    summary = summarize_run(history, switch_events=[])
+    summary = summarize_run(history, switch_events=[], tracks_history=[])
     # GT-0: Pd = 1/5 = 0.2 < 0.5 -> TRACK BREAK
     assert summary["classification"] == "TRACK BREAK"
     assert summary["per_gt"][0]["pd"] == pytest.approx(0.2)
@@ -269,7 +270,8 @@ def test_summarize_total_confusion():
         (3, {0: 200, 1: None}),
     ]
     switch_events = [(1, 0, 100, 200)]
-    summary = summarize_run(history, switch_events=switch_events)
+    summary = summarize_run(history, switch_events=switch_events,
+                            tracks_history=[])
     assert summary["classification"] == "TOTAL CONFUSION"
 
 
@@ -282,7 +284,7 @@ def test_summarize_pd_per_gt():
         (2, {0: 100}),
         (3, {0: None}),
     ]
-    summary = summarize_run(history, switch_events=[])
+    summary = summarize_run(history, switch_events=[], tracks_history=[])
     assert summary["per_gt"][0]["pd"] == 0.5
 
 
@@ -296,8 +298,67 @@ def test_summarize_distinct_track_ids_count():
         (3, {0: 200}),
         (4, {0: 300}),
     ]
-    summary = summarize_run(history, switch_events=[])
+    summary = summarize_run(history, switch_events=[], tracks_history=[])
     assert summary["per_gt"][0]["distinct_track_ids"] == 3
+
+
+def test_summarize_coast_frames_per_gt():
+    """coast_frames counts frames where a track that ever-associated with
+    this GT was alive in status='coasting'."""
+    from evaluation.tracker_stress import summarize_run, TrackSnapshot
+    import numpy as np
+
+    # GT 0 is associated with track 100 on frames 0-1 and 4. On frames 2 and 3,
+    # track 100 is alive but coasting (not associated). Expected: coast_frames=2.
+    history = [
+        (0, {0: 100}),
+        (1, {0: 100}),
+        (2, {0: None}),
+        (3, {0: None}),
+        (4, {0: 100}),
+    ]
+    state = np.array([10.0, 0.0])
+    tracks_history = [
+        (0, [TrackSnapshot(id=100, state=state, last_doppler_bin=32.0,
+                           status="confirmed")]),
+        (1, [TrackSnapshot(id=100, state=state, last_doppler_bin=32.0,
+                           status="confirmed")]),
+        (2, [TrackSnapshot(id=100, state=state, last_doppler_bin=32.0,
+                           status="coasting")]),
+        (3, [TrackSnapshot(id=100, state=state, last_doppler_bin=32.0,
+                           status="coasting")]),
+        (4, [TrackSnapshot(id=100, state=state, last_doppler_bin=32.0,
+                           status="confirmed")]),
+    ]
+    summary = summarize_run(history, switch_events=[],
+                            tracks_history=tracks_history)
+    assert summary["per_gt"][0]["coast_frames"] == 2
+
+
+def test_summarize_coast_frames_excludes_unassociated_tracks():
+    """A track that coasts but was never associated with any GT does not
+    add to anyone's coast_frames count (e.g., a false-track corpse)."""
+    from evaluation.tracker_stress import summarize_run, TrackSnapshot
+    import numpy as np
+
+    history = [
+        (0, {0: 100}),
+        (1, {0: 100}),
+    ]
+    state = np.array([10.0, 0.0])
+    tracks_history = [
+        (0, [TrackSnapshot(id=100, state=state, last_doppler_bin=32.0,
+                           status="confirmed"),
+             TrackSnapshot(id=999, state=state, last_doppler_bin=32.0,
+                           status="coasting")]),  # never assoc with any GT
+        (1, [TrackSnapshot(id=100, state=state, last_doppler_bin=32.0,
+                           status="confirmed"),
+             TrackSnapshot(id=999, state=state, last_doppler_bin=32.0,
+                           status="coasting")]),
+    ]
+    summary = summarize_run(history, switch_events=[],
+                            tracks_history=tracks_history)
+    assert summary["per_gt"][0]["coast_frames"] == 0
 
 
 def test_pilot_smoke_run_10_frames():
@@ -327,7 +388,11 @@ def test_pilot_smoke_run_10_frames():
         association_history.append((f_gt, mapping))
 
     switch_events = count_id_switches(association_history)
-    summary = summarize_run(association_history, switch_events)
+    summary = summarize_run(association_history, switch_events,
+                            tracks_history)
     assert "classification" in summary
     assert "per_gt" in summary
     assert set(summary["per_gt"].keys()) == {0, 1}
+    # coast_frames is reported per GT; non-negative integer.
+    for gt_id in summary["per_gt"]:
+        assert summary["per_gt"][gt_id]["coast_frames"] >= 0

@@ -153,6 +153,119 @@ def test_ground_truth_range_bin_matches_argmax_after_range_fft():
     assert abs(peak - gt["range_bin"]) <= 1
 
 
+# --- Target motion_model extension ---
+
+def test_target_default_motion_model_is_constant_velocity():
+    from simulator.beat_signal_generator import Target
+    t = Target(range_m=1.0, velocity_mps=2.0)
+    assert t.motion_model == "constant_velocity"
+    assert t.motion_params == {}
+
+
+def test_target_accepts_drag_motion_model():
+    from simulator.beat_signal_generator import Target
+    t = Target(
+        range_m=1.0, velocity_mps=5.0,
+        motion_model="drag",
+        motion_params={"drag_coefficient_k": 0.5},
+    )
+    assert t.motion_model == "drag"
+    assert t.motion_params == {"drag_coefficient_k": 0.5}
+
+
+def test_ground_truth_drag_target_position_matches_analytic():
+    """ground_truth() with a drag target should report the analytic
+    drag-decelerated range, not the linear CV formula."""
+    import math
+    from simulator.beat_signal_generator import (
+        FMCWBeatSignalGenerator, RadarConfig, Target,
+    )
+
+    cfg = RadarConfig(seed=42)
+    target = Target(
+        range_m=4.0, velocity_mps=2.0, amplitude=1.0,
+        motion_model="drag",
+        motion_params={"drag_coefficient_k": 0.5},
+    )
+    gen = FMCWBeatSignalGenerator(cfg)
+
+    # Compute analytic drag position at frame 40's start, plus the within-frame
+    # carry-over using stop-and-hop (the simulator's motion model).
+    t_frame_start = 40 * cfg.frame_period_s
+    denom_start = 1.0 + 0.5 * 2.0 * t_frame_start
+    r_start = 4.0 + math.log(denom_start) / 0.5
+    v_start = 2.0 / denom_start
+    # ground_truth reports the frame-center position
+    frame_center_offset = 0.5 * cfg.n_chirps * cfg.chirp_period_s
+    expected_r_center = r_start + v_start * frame_center_offset
+
+    gts = gen.ground_truth([target], frame_index=40)
+    assert gts[0]["range_m"] == pytest.approx(expected_r_center, rel=1e-6)
+
+
+def test_load_scenario_parses_drag_target(tmp_path):
+    import json
+    from simulator.beat_signal_generator import load_scenario
+
+    scenario = {
+        "radar": {"seed": 42},
+        "targets": [
+            {
+                "range_m": 1.0,
+                "velocity_mps": 5.0,
+                "amplitude": 0.3,
+                "motion_model": "drag",
+                "motion_params": {"drag_coefficient_k": 0.5},
+            }
+        ],
+    }
+    path = tmp_path / "drag_scenario.json"
+    path.write_text(json.dumps(scenario))
+
+    cfg, targets = load_scenario(str(path))
+    assert len(targets) == 1
+    assert targets[0].motion_model == "drag"
+    assert targets[0].motion_params == {"drag_coefficient_k": 0.5}
+
+
+def test_load_scenario_defaults_motion_model_when_unset(tmp_path):
+    """Existing scenarios without motion_model should default to CV."""
+    import json
+    from simulator.beat_signal_generator import load_scenario
+
+    scenario = {
+        "radar": {"seed": 42},
+        "targets": [{"range_m": 1.0, "velocity_mps": 1.0, "amplitude": 0.3}],
+    }
+    path = tmp_path / "legacy_scenario.json"
+    path.write_text(json.dumps(scenario))
+
+    cfg, targets = load_scenario(str(path))
+    assert targets[0].motion_model == "constant_velocity"
+    assert targets[0].motion_params == {}
+
+
+def test_generate_frame_cv_target_reproducible():
+    """A CV target with default motion_model should produce a reproducible
+    frame across runs (regression: the refactor doesn't change CV behavior)."""
+    import numpy as np
+    from simulator.beat_signal_generator import (
+        FMCWBeatSignalGenerator, RadarConfig, Target,
+    )
+
+    cfg = RadarConfig(seed=42)
+    target = Target(range_m=2.0, velocity_mps=1.0, amplitude=0.3)
+
+    gen1 = FMCWBeatSignalGenerator(cfg)
+    frame1 = gen1.generate_frame([target], frame_index=5)
+
+    cfg2 = RadarConfig(seed=42)
+    gen2 = FMCWBeatSignalGenerator(cfg2)
+    frame2 = gen2.generate_frame([target], frame_index=5)
+
+    np.testing.assert_array_equal(frame1, frame2)
+
+
 # --- ClutterRegion ---
 
 def test_clutter_region_valid_inputs():

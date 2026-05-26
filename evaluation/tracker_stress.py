@@ -165,7 +165,7 @@ def count_id_switches(
     return events
 
 
-def summarize_run(
+def evaluate_run(
     association_history: list,
     switch_events: list,
     tracks_history: list,
@@ -523,7 +523,7 @@ def main() -> None:
 
     switch_events = count_id_switches(association_history,
                                        min_persistence_frames=2)
-    summary = summarize_run(association_history, switch_events,
+    summary = evaluate_run(association_history, switch_events,
                             tracks_history)
 
     # Convert track range_bin (state[0]) to metres for the plot's y-axis.

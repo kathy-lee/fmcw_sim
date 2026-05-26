@@ -26,7 +26,7 @@ from pathlib import Path
 
 from evaluation.tracker_stress import (
     associate_per_frame, build_gt_trajectory, count_id_switches,
-    run_pipeline, summarize_run,
+    run_pipeline, evaluate_run,
 )
 from simulator.beat_signal_generator import (
     FMCWBeatSignalGenerator, load_scenario,
@@ -67,7 +67,7 @@ def run_one(scenario_path: str, n_frames: int, max_coast: int,
 
     switch_events = count_id_switches(association_history,
                                        min_persistence_frames=2)
-    summary = summarize_run(association_history, switch_events,
+    summary = evaluate_run(association_history, switch_events,
                             tracks_history)
 
     # Single-GT scenario: report gt_0 metrics.

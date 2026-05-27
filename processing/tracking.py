@@ -55,6 +55,39 @@ def _ekf_predict(state: np.ndarray, cov: np.ndarray,
     return new_state, new_cov
 
 
+def drag_k_metric_to_bins(k_metric: float, range_per_bin: float) -> float:
+    """Convert a metric-units drag coefficient to the bin-units coefficient
+    consumed by `TrackerConfig.drag_coefficient_k` and the corresponding
+    `MotionModelSpec.motion_params['drag_coefficient_k']` field for IMM.
+
+    Args:
+        k_metric: drag coefficient in 1/(m·s) — the value used by the
+            simulator's `Target.motion_params['drag_coefficient_k']` (matches
+            the continuous law `dv/dt = -k * v²`).
+        range_per_bin: physical width of one range bin, in metres
+            (e.g. `gen.range_axis_m()[1] - gen.range_axis_m()[0]`).
+
+    Returns:
+        k_bins suitable for the filter's per-frame Euler step
+        `Δv_bins = -k_bins × v_bins²`.
+
+    Derivation:
+        With v_bins = v_mps · Δt / Δr, equating per-frame Euler decays
+        gives k_bins = k_metric · Δr. The frame period Δt cancels because
+        the filter's "one step" implicitly represents one frame.
+
+    Caveat:
+        This matches the simulator's per-frame *Euler* decay. The simulator
+        actually advances ground truth via the *analytic* drag solution
+        `v(t+Δt) = v / (1 + k·v·Δt)`, which decays slightly slower than
+        Euler. The Euler-vs-analytic gap is O(k·v·Δt) — about 12% at
+        v=5 m/s with our 50 ms frame period — which is the residual
+        prediction error the filter can't avoid without a higher-order
+        integration scheme.
+    """
+    return k_metric * range_per_bin
+
+
 def _make_drag_filter(drag_k_bins: float):
     """Build (f, F_jacobian) callables for a quadratic-drag motion model
     operating in range-bin space.

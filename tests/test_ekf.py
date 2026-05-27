@@ -4,6 +4,69 @@ import numpy as np
 import pytest
 
 
+def test_drag_k_metric_to_bins_matches_simulator_euler_decay():
+    """The k_metric → k_bins conversion should produce a filter whose per-frame
+    Euler velocity decay equals the simulator's per-frame Euler velocity decay
+    in metric units. This is the calibration the user gets via the helper.
+
+    Derivation reminder:
+      Filter:    Δv_bins = -k_bins × v_bins²
+      Simulator: Δv_mps  ≈ -k_metric × v_mps² × Δt   (Euler form)
+    With v_bins = v_mps × Δt / range_per_bin, matching gives:
+      k_bins = k_metric × range_per_bin
+    """
+    from processing.tracking import drag_k_metric_to_bins, _make_drag_filter
+
+    k_metric = 0.5
+    range_per_bin = 0.0375
+    frame_period_s = 0.05
+    k_bins = drag_k_metric_to_bins(k_metric, range_per_bin)
+    f, _ = _make_drag_filter(k_bins)
+
+    for v_mps in (1.0, 3.0, 5.0):
+        v_bins = v_mps * frame_period_s / range_per_bin
+        state_out = f(np.array([0.0, v_bins]))
+        filter_dv_bins = state_out[1] - v_bins
+
+        # Simulator's per-frame Euler decay
+        sim_dv_mps = -k_metric * v_mps ** 2 * frame_period_s
+        sim_dv_bins = sim_dv_mps * frame_period_s / range_per_bin
+
+        # These should match exactly (tiny float-precision tolerance only)
+        np.testing.assert_allclose(filter_dv_bins, sim_dv_bins, rtol=1e-12)
+
+
+def test_drag_k_metric_to_bins_close_to_analytic_decay():
+    """The Euler-calibrated k_bins should produce per-frame decay close to —
+    but not exactly equal to — the simulator's actual analytic decay. The
+    gap is the Euler-vs-analytic discretization error and is bounded by
+    O(k·v·Δt) ≈ 12% at v=5 m/s for our radar config."""
+    from processing.tracking import drag_k_metric_to_bins, _make_drag_filter
+
+    k_metric = 0.5
+    range_per_bin = 0.0375
+    frame_period_s = 0.05
+    k_bins = drag_k_metric_to_bins(k_metric, range_per_bin)
+    f, _ = _make_drag_filter(k_bins)
+
+    for v_mps in (1.0, 3.0, 5.0):
+        v_bins = v_mps * frame_period_s / range_per_bin
+        state_out = f(np.array([0.0, v_bins]))
+        filter_v_bins_next = state_out[1]
+
+        # Analytic v(t+Δt) under simulator's drag law
+        v_mps_next_analytic = v_mps / (1.0 + k_metric * v_mps * frame_period_s)
+        analytic_v_bins_next = v_mps_next_analytic * frame_period_s / range_per_bin
+
+        # Should agree within Euler-vs-analytic discretization error
+        # (Euler over-predicts decay slightly at higher v)
+        rel_err = abs(filter_v_bins_next - analytic_v_bins_next) / abs(analytic_v_bins_next)
+        assert rel_err < 0.15, (
+            f"v_mps={v_mps}: filter v={filter_v_bins_next:.4f}, "
+            f"analytic v={analytic_v_bins_next:.4f}, rel_err={rel_err:.3f}"
+        )
+
+
 def test_drag_filter_f_steps_velocity_down_per_drag_law():
     """f_drag should reduce velocity by k*v*|v| per step."""
     from processing.tracking import _make_drag_filter

@@ -42,6 +42,46 @@ def _kf_predict(state: np.ndarray, cov: np.ndarray, q: float):
     return new_state, new_cov
 
 
+def _ekf_predict(state: np.ndarray, cov: np.ndarray,
+                  f, F_jacobian_fn, q: float):
+    """EKF prediction: nonlinear f for state, Jacobian for covariance.
+
+    f: callable mapping state -> next_state
+    F_jacobian_fn: callable mapping state -> 2x2 Jacobian matrix
+    """
+    new_state = f(state)
+    F_jac = F_jacobian_fn(state)
+    new_cov = F_jac @ cov @ F_jac.T + q * _Q_BASE
+    return new_state, new_cov
+
+
+def _make_drag_filter(drag_k_bins: float):
+    """Build (f, F_jacobian) callables for a quadratic-drag motion model
+    operating in range-bin space.
+
+    Motion law: dv/dt = -k*v*|v| where k is in bin-units per frame.
+    Discrete one-step: new_vel = vel - k*vel*|vel|.
+
+    Returns:
+        f(state) -> new_state          # nonlinear motion function
+        F_jac(state) -> 2x2 ndarray    # Jacobian at `state`
+    """
+    def f(state: np.ndarray) -> np.ndarray:
+        pos, vel = state[0], state[1]
+        new_vel = vel - drag_k_bins * vel * abs(vel)
+        new_pos = pos + vel
+        return np.array([new_pos, new_vel])
+
+    def F_jacobian(state: np.ndarray) -> np.ndarray:
+        vel = state[1]
+        return np.array([
+            [1.0, 1.0],
+            [0.0, 1.0 - 2.0 * drag_k_bins * abs(vel)],
+        ])
+
+    return f, F_jacobian
+
+
 def _kf_update(state: np.ndarray, cov: np.ndarray, z_range: float, sigma_r2: float):
     R = np.array([[sigma_r2]])
     y = np.array([z_range]) - _H @ state
@@ -65,13 +105,32 @@ class Tracker:
         self.cfg = config
         self._next_id = 0
         self.tracks: list = []
+        # Optional nonlinear motion model. When None, _kf_predict is used.
+        # See design doc: drag_coefficient_k is in bin-units in this
+        # sub-project; metric→bin conversion is a documented follow-up.
+        if config.motion_model == "drag":
+            self._predict_ekf_f, self._predict_ekf_F_jac = _make_drag_filter(
+                drag_k_bins=config.drag_coefficient_k
+            )
+        else:
+            self._predict_ekf_f = None
+            self._predict_ekf_F_jac = None
 
     # ---- Public API ----
 
     def step(self, detections: list) -> list:
         # 1) Predict. Clear last frame's association.
         for t in self.tracks:
-            t.state, t.cov = _kf_predict(t.state, t.cov, self.cfg.process_noise_q)
+            if self._predict_ekf_f is not None:
+                t.state, t.cov = _ekf_predict(
+                    t.state, t.cov,
+                    self._predict_ekf_f, self._predict_ekf_F_jac,
+                    self.cfg.process_noise_q,
+                )
+            else:
+                t.state, t.cov = _kf_predict(
+                    t.state, t.cov, self.cfg.process_noise_q
+                )
             t.age += 1
             t.assoc_det_idx = None
 

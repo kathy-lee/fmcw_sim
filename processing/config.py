@@ -90,8 +90,20 @@ class TrackerConfig:
     max_misses_tentative: int = 2
     max_coast: int = 5
     history_len: int = 10
+    motion_model: str = "cv"             # "cv" or "drag"
+    drag_coefficient_k: float = 0.5     # only used when motion_model == "drag"
 
     def __post_init__(self):
+        if self.motion_model not in ("cv", "drag"):
+            raise ValueError(
+                f"TrackerConfig.motion_model must be 'cv' or 'drag', "
+                f"got {self.motion_model!r}"
+            )
+        if self.drag_coefficient_k <= 0:
+            raise ValueError(
+                f"TrackerConfig.drag_coefficient_k must be > 0, "
+                f"got {self.drag_coefficient_k}"
+            )
         if self.method not in _TRACKER_METHODS:
             raise ValueError(
                 f"TrackerConfig.method must be one of {sorted(_TRACKER_METHODS)}, "

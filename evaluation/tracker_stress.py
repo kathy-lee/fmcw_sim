@@ -280,6 +280,8 @@ def run_pipeline(
     n_frames: int,
     max_coast: int | None = None,
     process_noise_q: float | None = None,
+    motion_model: str = "cv",
+    drag_coefficient_k: float = 0.5,
 ) -> list:
     """Run generate_frame -> range_doppler -> cfar_2d -> cluster -> Tracker.step
     for n_frames, with the lens chosen for this pilot:
@@ -294,8 +296,13 @@ def run_pipeline(
     This is the hook the C.2 hypothesis sweep uses to vary tracker behavior
     across runs without editing config files. Leave both at None to get
     default tracker tuning.
+
+    motion_model selects "cv" (linear KF) or "drag" (quadratic-drag EKF).
+    drag_coefficient_k is in bin-units (see design doc unit note).
     """
-    tracker_kwargs = {"method": "gnn"}
+    tracker_kwargs = {"method": "gnn",
+                       "motion_model": motion_model,
+                       "drag_coefficient_k": drag_coefficient_k}
     if max_coast is not None:
         tracker_kwargs["max_coast"] = max_coast
     if process_noise_q is not None:
@@ -496,6 +503,13 @@ def main() -> None:
                    help="output PNG path (default: derived from scenario name)")
     p.add_argument("--max-coast", type=int, default=None,
                    help="override TrackerConfig.max_coast (default: 5)")
+    p.add_argument("--motion-model", type=str, default="cv",
+                   choices=["cv", "drag"],
+                   help="motion model the tracker assumes (default: cv). "
+                        "Drag triggers EKF predict step.")
+    p.add_argument("--drag-coefficient-k", type=float, default=0.5,
+                   help="drag coefficient k in bin-units (only used when "
+                        "--motion-model=drag; default: 0.5)")
     p.add_argument("--process-noise-q", type=float, default=None,
                    help="override TrackerConfig.process_noise_q (default: 0.5)")
     args = p.parse_args()
@@ -512,6 +526,8 @@ def main() -> None:
     tracks_history = run_pipeline(
         radar_cfg, initial_targets, args.frames,
         max_coast=args.max_coast, process_noise_q=args.process_noise_q,
+        motion_model=args.motion_model,
+        drag_coefficient_k=args.drag_coefficient_k,
     )
 
     association_history = []

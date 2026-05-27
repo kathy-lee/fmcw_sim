@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 _CFAR_METHODS = {"ca", "os", "go", "so"}
@@ -135,4 +135,84 @@ class TrackerConfig:
         if self.history_len < 1:
             raise ValueError(
                 f"TrackerConfig.history_len must be >= 1, got {self.history_len}"
+            )
+
+
+@dataclass
+class MotionModelSpec:
+    """Specification of one IMM constituent's motion model.
+
+    Uses the same vocabulary as Target.motion_model / Target.motion_params so
+    a scenario reads symmetrically on both sides (what the target does vs.
+    what the tracker assumes the target does).
+    """
+    motion_model: str               # "cv" or "drag"
+    motion_params: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        if self.motion_model not in ("cv", "drag"):
+            raise ValueError(
+                f"MotionModelSpec.motion_model must be 'cv' or 'drag', "
+                f"got {self.motion_model!r}"
+            )
+
+
+@dataclass
+class IMMConfig:
+    """Configuration for an IMM (Interacting Multiple Model) meta-tracker.
+
+    `models` is the list of constituent motion-model specs; len(models) >= 2.
+    `transition_matrix` is an N×N row-stochastic matrix giving the per-frame
+    probability of switching between modes.
+    `initial_mode_probs` is the starting mode-probability vector for new
+    tracks (sums to 1).
+
+    The remaining fields are shared filter/tracker parameters applied
+    uniformly across all constituents (gating, measurement variances,
+    lifecycle thresholds, etc.).
+    """
+    models: list                          # list[MotionModelSpec]
+    transition_matrix: list               # list[list[float]], N×N rows sum to 1
+    initial_mode_probs: list              # list[float], length N, sums to 1
+
+    gate_threshold: float = 9.21
+    range_meas_var: float = 0.5
+    doppler_meas_var: float = 1.0
+    process_noise_q: float = 0.5
+    init_velocity_var: float = 4.0
+    doppler_smoothing_beta: float = 0.5
+    confirm_M: int = 3
+    confirm_N: int = 5
+    max_misses_tentative: int = 2
+    max_coast: int = 5
+    history_len: int = 10
+
+    def __post_init__(self):
+        n = len(self.models)
+        if n < 2:
+            raise ValueError(
+                f"IMMConfig.models must have >= 2 entries, got {n}"
+            )
+        if len(self.transition_matrix) != n:
+            raise ValueError(
+                f"transition_matrix shape mismatch: "
+                f"{len(self.transition_matrix)} rows != {n} models"
+            )
+        for i, row in enumerate(self.transition_matrix):
+            if len(row) != n:
+                raise ValueError(
+                    f"transition_matrix row {i} has length {len(row)} != {n}"
+                )
+            if abs(sum(row) - 1.0) > 1e-6:
+                raise ValueError(
+                    f"transition_matrix row {i} sums to {sum(row)}, not 1"
+                )
+        if len(self.initial_mode_probs) != n:
+            raise ValueError(
+                f"initial_mode_probs length {len(self.initial_mode_probs)} != {n}"
+            )
+        if abs(sum(self.initial_mode_probs) - 1.0) > 1e-6:
+            raise ValueError(
+                f"initial_mode_probs sums to {sum(self.initial_mode_probs)}, "
+                f"not 1"
             )

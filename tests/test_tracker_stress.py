@@ -396,3 +396,57 @@ def test_pilot_smoke_run_10_frames():
     # coast_frames is reported per GT; non-negative integer.
     for gt_id in summary["per_gt"]:
         assert summary["per_gt"][gt_id]["coast_frames"] >= 0
+
+
+def test_pilot_smoke_run_imm_10_frames():
+    """End-to-end smoke test with IMMTracker driving the harness.
+
+    Verifies that IMMTrack exposes the same field interface the harness
+    reads off Track (id, state, last_doppler_bin, status) so the existing
+    snapshot / association / plotting code 'just works'.
+    """
+    import numpy as np
+
+    from processing.config import IMMConfig, MotionModelSpec
+    from processing.imm import IMMTracker
+    from processing.cfar import cfar_2d
+    from processing.clustering import cluster
+    from processing.range_doppler import range_doppler
+
+    radar_cfg, initial_targets = load_scenario(
+        "scenarios/scenario_crossing_targets.json"
+    )
+    gen = FMCWBeatSignalGenerator(radar_cfg)
+
+    imm_cfg = IMMConfig(
+        models=[
+            MotionModelSpec(motion_model="cv"),
+            MotionModelSpec(motion_model="drag",
+                            motion_params={"drag_coefficient_k": 0.05}),
+        ],
+        transition_matrix=[[0.95, 0.05], [0.05, 0.95]],
+        initial_mode_probs=[0.5, 0.5],
+    )
+    tracker = IMMTracker(imm_cfg)
+
+    for frame_idx in range(10):
+        frame = gen.generate_frame(initial_targets, frame_index=frame_idx)
+        rd = range_doppler(frame, window="hann", dc_removal=True,
+                           clutter_removal=False)
+        rd_db = 20.0 * np.log10(np.abs(rd) + 1e-12)
+        mask = cfar_2d(rd_db, method="os", pfa=1e-4, window="hann",
+                       dc_removal=True, clutter_removal=False)
+        mask[:, 0] = False
+        dets = cluster(mask, rd_db, method="peak", min_cells=2,
+                       peak_neighborhood=3)
+        tracks = tracker.step(dets)
+
+        for t in tracks:
+            # Fields the harness reads off any Track-like object:
+            assert hasattr(t, "id")
+            assert hasattr(t, "state")
+            assert t.state.shape == (2,)
+            assert hasattr(t, "last_doppler_bin")
+            assert hasattr(t, "status")
+            # IMM-specific invariant
+            assert abs(sum(t.mode_probs) - 1.0) < 1e-6

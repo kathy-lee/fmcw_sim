@@ -280,10 +280,10 @@ def run_pipeline(
     n_frames: int,
     max_coast: int | None = None,
     process_noise_q: float | None = None,
-    motion_model: str = "cv",
+    algorithm: str = "kf",
     drag_coefficient_k: float = 0.5,
 ) -> list:
-    """Run generate_frame -> range_doppler -> cfar_2d -> cluster -> Tracker.step
+    """Run generate_frame -> range_doppler -> cfar_2d -> cluster -> tracker.step
     for n_frames, with the lens chosen for this pilot:
         CFAR=os, clustering=peak(min_cells=2), tracker=gnn (defaults).
 
@@ -292,23 +292,51 @@ def run_pipeline(
     TrackSnapshot is an immutable per-frame copy of the relevant Track fields,
     needed because Tracker mutates Track objects in place across frames.
 
-    max_coast / process_noise_q override TrackerConfig defaults when not None.
-    This is the hook the C.2 hypothesis sweep uses to vary tracker behavior
-    across runs without editing config files. Leave both at None to get
-    default tracker tuning.
+    max_coast / process_noise_q override defaults when not None. This is the
+    hook the C.2 hypothesis sweep uses to vary tracker behavior across runs
+    without editing config files. Leave both at None to get default tuning.
 
-    motion_model selects "cv" (linear KF) or "drag" (quadratic-drag EKF).
-    drag_coefficient_k is in bin-units (see design doc unit note).
+    algorithm selects one of three tracker configurations:
+        "kf"  → single Tracker with CV motion model (linear Kalman filter).
+        "ekf" → single Tracker with drag motion model (Extended Kalman
+                filter). drag_coefficient_k tunes the drag rate (bin units).
+        "imm" → IMMTracker blending {CV, drag-EKF}. drag_coefficient_k
+                tunes the drag-EKF constituent.
     """
-    tracker_kwargs = {"method": "gnn",
-                       "motion_model": motion_model,
-                       "drag_coefficient_k": drag_coefficient_k}
-    if max_coast is not None:
-        tracker_kwargs["max_coast"] = max_coast
-    if process_noise_q is not None:
-        tracker_kwargs["process_noise_q"] = process_noise_q
+    if algorithm == "imm":
+        from processing.config import IMMConfig, MotionModelSpec
+        from processing.imm import IMMTracker
+        imm_kwargs = {
+            "models": [
+                MotionModelSpec(motion_model="cv"),
+                MotionModelSpec(
+                    motion_model="drag",
+                    motion_params={"drag_coefficient_k": drag_coefficient_k},
+                ),
+            ],
+            "transition_matrix": [[0.95, 0.05], [0.05, 0.95]],
+            "initial_mode_probs": [0.5, 0.5],
+        }
+        if max_coast is not None:
+            imm_kwargs["max_coast"] = max_coast
+        if process_noise_q is not None:
+            imm_kwargs["process_noise_q"] = process_noise_q
+        tracker = IMMTracker(IMMConfig(**imm_kwargs))
+    elif algorithm in ("kf", "ekf"):
+        motion_model = "cv" if algorithm == "kf" else "drag"
+        tracker_kwargs = {"method": "gnn",
+                           "motion_model": motion_model,
+                           "drag_coefficient_k": drag_coefficient_k}
+        if max_coast is not None:
+            tracker_kwargs["max_coast"] = max_coast
+        if process_noise_q is not None:
+            tracker_kwargs["process_noise_q"] = process_noise_q
+        tracker = Tracker(TrackerConfig(**tracker_kwargs))
+    else:
+        raise ValueError(
+            f"algorithm must be one of 'kf', 'ekf', 'imm'; got {algorithm!r}"
+        )
     gen = FMCWBeatSignalGenerator(radar_cfg)
-    tracker = Tracker(TrackerConfig(**tracker_kwargs))
     tracks_history = []
     for frame_idx in range(n_frames):
         frame = gen.generate_frame(initial_targets, frame_index=frame_idx)
@@ -503,13 +531,14 @@ def main() -> None:
                    help="output PNG path (default: derived from scenario name)")
     p.add_argument("--max-coast", type=int, default=None,
                    help="override TrackerConfig.max_coast (default: 5)")
-    p.add_argument("--motion-model", type=str, default="cv",
-                   choices=["cv", "drag"],
-                   help="motion model the tracker assumes (default: cv). "
-                        "Drag triggers EKF predict step.")
+    p.add_argument("--algorithm", type=str, default="kf",
+                   choices=["kf", "ekf", "imm"],
+                   help="tracker algorithm: kf (linear Kalman, CV motion), "
+                        "ekf (Extended Kalman, drag motion), imm "
+                        "(IMM blending CV+drag). Default: kf.")
     p.add_argument("--drag-coefficient-k", type=float, default=0.5,
-                   help="drag coefficient k in bin-units (only used when "
-                        "--motion-model=drag; default: 0.5)")
+                   help="drag coefficient k in bin-units (used by ekf and "
+                        "imm algorithms; default: 0.5)")
     p.add_argument("--process-noise-q", type=float, default=None,
                    help="override TrackerConfig.process_noise_q (default: 0.5)")
     args = p.parse_args()
@@ -526,7 +555,7 @@ def main() -> None:
     tracks_history = run_pipeline(
         radar_cfg, initial_targets, args.frames,
         max_coast=args.max_coast, process_noise_q=args.process_noise_q,
-        motion_model=args.motion_model,
+        algorithm=args.algorithm,
         drag_coefficient_k=args.drag_coefficient_k,
     )
 

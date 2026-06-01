@@ -1,0 +1,32 @@
+{
+  "_comment": "IMM switching demonstration scenario v2 for sub-project A. Amplified divergence: CV-phase v0=3.5 m/s (was 2.5), drag-phase k=2.0 (was 0.5), amplitude=0.00045 (was 0.0005). Trajectory: CV phase frames 0-40 covers r=1m→8m. Drag phase frames 40-80: v(t)=3.5/(1+7t), r(t)=8+0.5*ln(1+7t); r(79)≈9.34m (stays under ~9.6m unambiguous range). KF-CV freezes its v=3.5 m/s estimate during drag-phase coasts and overshoots the rapidly decelerating truth; drag-EKF mispredicts CV-phase deceleration that isn't happening; IMM should crisply switch mode probabilities near frame 40 and track both phases.",
+  "radar": {
+    "fc_hz": 77000000000.0,
+    "bandwidth_hz": 2000000000.0,
+    "ramp_duration_s": 0.00004,
+    "chirp_period_s": 0.00005,
+    "n_range": 256,
+    "n_chirps": 64,
+    "noise_power": 0.0001,
+    "leakage_amplitude": 0.0,
+    "frame_period_s": 0.05,
+    "seed": 99999
+  },
+  "targets": [
+    {
+      "range_m": 1.0,
+      "velocity_mps": 3.5,
+      "amplitude": 0.00045,
+      "motion_model": "piecewise",
+      "motion_params": {
+        "phases": [
+          {"motion_model": "constant_velocity",
+           "start_frame": 0, "end_frame": 40},
+          {"motion_model": "drag",
+           "start_frame": 40, "end_frame": 80,
+           "motion_params": {"drag_coefficient_k": 2.0}}
+        ]
+      }
+    }
+  ]
+}

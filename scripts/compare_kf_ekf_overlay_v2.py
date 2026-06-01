@@ -1,0 +1,124 @@
+"""V2 of compare_kf_ekf_overlay.py with amplified KF-vs-EKF divergence.
+
+Points at scenario_drag_decel_v2.json (v0=12 m/s, k=2.0) and bumps the
+tracker's range_meas_var to 5.0 (matching the IMM v2 script) so the Kalman
+gain drops and the predict step weighs more — that is where KF and EKF
+actually differ.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+from processing.cfar import cfar_2d
+from processing.clustering import cluster
+from processing.config import TrackerConfig
+from processing.range_doppler import range_doppler
+from processing.tracking import Tracker, drag_k_metric_to_bins
+from simulator.beat_signal_generator import (
+    FMCWBeatSignalGenerator, load_scenario,
+)
+from simulator.motion_models import range_at
+
+
+SCENARIO = "scenarios/scenario_drag_decel_v2.json"
+FRAMES = 30
+MAX_COAST = 15
+K_METRIC = 0.5  # matches the v2 scenario's drag_coefficient_k
+RANGE_MEAS_VAR = 5.0  # lowers Kalman gain → predict step weighs more
+OUT = Path("docs/tracker_stress_drag_decel_overlay_v2.png")
+
+
+def run(motion_model: str):
+    radar_cfg, initial_targets = load_scenario(SCENARIO)
+    gen = FMCWBeatSignalGenerator(radar_cfg)
+    range_per_bin = float(gen.range_axis_m()[1] - gen.range_axis_m()[0])
+    drag_k_bins = drag_k_metric_to_bins(K_METRIC, range_per_bin)
+    cfg = TrackerConfig(method="gnn", motion_model=motion_model,
+                        drag_coefficient_k=drag_k_bins,
+                        max_coast=MAX_COAST,
+                        range_meas_var=RANGE_MEAS_VAR)
+    tracker = Tracker(cfg)
+    frames_data = []
+    for frame_idx in range(FRAMES):
+        frame = gen.generate_frame(initial_targets, frame_index=frame_idx)
+        rd = range_doppler(frame, window="hann", dc_removal=True,
+                           clutter_removal=False)
+        rd_db = 20.0 * np.log10(np.abs(rd) + 1e-12)
+        mask = cfar_2d(rd_db, method="os", pfa=1e-4, window="hann",
+                       dc_removal=True, clutter_removal=False)
+        mask[:, 0] = False
+        dets = cluster(mask, rd_db, method="peak", min_cells=2,
+                       peak_neighborhood=3)
+        tracker.step(dets)
+        if tracker.tracks:
+            truth_r, _ = range_at(initial_targets[0], frame_idx,
+                                  radar_cfg.frame_period_s)
+            candidates = [t for t in tracker.tracks
+                          if t.status in ("confirmed", "coasting")]
+            if not candidates:
+                continue
+            best = min(candidates,
+                       key=lambda t: abs(float(t.state[0]) * range_per_bin
+                                           - truth_r))
+            best_pos_m = float(best.state[0]) * range_per_bin
+            if abs(best_pos_m - truth_r) > 3.0:
+                continue
+            frames_data.append({
+                "frame": frame_idx,
+                "pos_m": best_pos_m,
+                "status": best.status,
+            })
+    return frames_data, range_per_bin
+
+
+def main():
+    kf_data, range_per_bin = run("cv")
+    ekf_data, _ = run("drag")
+
+    radar_cfg, initial_targets = load_scenario(SCENARIO)
+    truth = []
+    for fi in range(FRAMES):
+        r, _ = range_at(initial_targets[0], fi, radar_cfg.frame_period_s)
+        truth.append((fi, r))
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    ax.plot([f for f, _ in truth], [r for _, r in truth],
+            color="lightskyblue", linewidth=3, alpha=0.7, label="Truth")
+
+    for data, color, name in [(kf_data, "tab:red", "KF (CV)"),
+                                (ekf_data, "tab:green", "EKF (drag)")]:
+        frames = [d["frame"] for d in data]
+        pos = [d["pos_m"] for d in data]
+        statuses = [d["status"] for d in data]
+        ax.plot(frames, pos, color=color, linewidth=1.5,
+                alpha=0.8, label=name)
+        for f, p, s in zip(frames, pos, statuses):
+            if s == "coasting":
+                ax.scatter([f], [p], color=color, s=40, marker="o",
+                           facecolors="white", edgecolors=color, linewidth=1.5)
+            else:
+                ax.scatter([f], [p], color=color, s=40, marker="o")
+
+    ax.set_xlabel("frame")
+    ax.set_ylabel("range [m]")
+    ax.set_title(
+        "KF vs EKF on drag-decel v2 (amplified divergence)\n"
+        f"v0=12 m/s · k={K_METRIC} · meas_var={RANGE_MEAS_VAR} · "
+        "filled=confirmed, hollow=coasting"
+    )
+    ax.legend(loc="upper left")
+    ax.grid(True, alpha=0.3)
+
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(OUT, dpi=120)
+    print(f"wrote {OUT}")
+
+
+if __name__ == "__main__":
+    main()

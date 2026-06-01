@@ -68,15 +68,41 @@ def test_drag_k_metric_to_bins_close_to_analytic_decay():
 
 
 def test_drag_filter_f_steps_velocity_down_per_drag_law():
-    """f_drag should reduce velocity by k*v*|v| per step."""
+    """f_drag should reduce velocity by k*v*|v| per step, and advance position
+    by the midpoint of old and new velocity."""
     from processing.tracking import _make_drag_filter
     f, _ = _make_drag_filter(drag_k_bins=0.1)
     state = np.array([10.0, 2.0])
     new = f(state)
     # new_vel = 2 - 0.1*2*|2| = 2 - 0.4 = 1.6
     assert new[1] == pytest.approx(1.6)
-    # new_pos = 10 + 2 = 12
-    assert new[0] == pytest.approx(12.0)
+    # new_pos = 10 + 0.5*(2 + 1.6) = 11.8 (midpoint rule)
+    assert new[0] == pytest.approx(11.8)
+
+
+def test_drag_filter_position_update_uses_midpoint_rule():
+    """Position update should use the midpoint of old and new velocity, not
+    just old velocity. Otherwise the drag knowledge is wasted on position in
+    a single step and KF and EKF produce identical positions for any 1-step
+    predict (drag effect only enters via the next step's reduced velocity).
+
+    Midpoint Euler matches the Taylor expansion of the analytic drag solution
+    to O(Δt³).
+
+    With state=(10, 2), k=0.1:
+        new_vel = 2 - 0.1·2·|2| = 1.6
+        midpoint new_pos = 10 + 0.5·(2 + 1.6) = 11.8
+        (compare to forward-Euler new_pos = 10 + 2 = 12.0)
+    One-step KF-EKF position gap = 0.5·k·v² = 0.2.
+    """
+    from processing.tracking import _make_drag_filter
+    f, _ = _make_drag_filter(drag_k_bins=0.1)
+    new = f(np.array([10.0, 2.0]))
+    assert new[0] == pytest.approx(11.8), (
+        f"expected midpoint position 11.8, got {new[0]:.4f}; "
+        "position update appears to use forward Euler (pos + vel), which "
+        "leaves no 1-step divergence between KF and EKF predict."
+    )
 
 
 def test_drag_filter_jacobian_matches_numerical_diff():

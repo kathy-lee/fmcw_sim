@@ -93,7 +93,15 @@ def _make_drag_filter(drag_k_bins: float):
     operating in range-bin space.
 
     Motion law: dv/dt = -k*v*|v| where k is in bin-units per frame.
-    Discrete one-step: new_vel = vel - k*vel*|vel|.
+    Discrete one-step:
+        new_vel = vel - k*vel*|vel|
+        new_pos = pos + 0.5*(vel + new_vel)    # midpoint rule
+
+    The midpoint position update matches the Taylor expansion of the analytic
+    drag solution to O(Δt³). Forward Euler (pos + vel) wastes the drag
+    information on the position update — KF and EKF would produce identical
+    positions after a 1-step predict, and divergence would only appear after
+    step 2 via the smaller next-step velocity.
 
     Returns:
         f(state) -> new_state          # nonlinear motion function
@@ -102,13 +110,13 @@ def _make_drag_filter(drag_k_bins: float):
     def f(state: np.ndarray) -> np.ndarray:
         pos, vel = state[0], state[1]
         new_vel = vel - drag_k_bins * vel * abs(vel)
-        new_pos = pos + vel
+        new_pos = pos + 0.5 * (vel + new_vel)
         return np.array([new_pos, new_vel])
 
     def F_jacobian(state: np.ndarray) -> np.ndarray:
         vel = state[1]
         return np.array([
-            [1.0, 1.0],
+            [1.0, 1.0 - drag_k_bins * abs(vel)],
             [0.0, 1.0 - 2.0 * drag_k_bins * abs(vel)],
         ])
 

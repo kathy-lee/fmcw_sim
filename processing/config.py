@@ -92,6 +92,14 @@ class TrackerConfig:
     history_len: int = 10
     motion_model: str = "cv"             # "cv" or "drag"
     drag_coefficient_k: float = 0.5     # only used when motion_model == "drag"
+    # Doppler-aware spawn (optional). When both are set, _spawn initializes
+    # the track's velocity from the detection's doppler bin instead of 0:
+    #   v_bins_per_frame = (doppler_bin - doppler_bin_center) * scale
+    # Caller computes these from radar params (typically:
+    # scale = lambda_m * frame_period_s / (2 * n_chirps * chirp_period_s * range_per_bin),
+    # center = n_chirps / 2 for an fftshifted Doppler axis).
+    doppler_to_vel_bins_scale: float | None = None
+    doppler_bin_center: float | None = None
 
     def __post_init__(self):
         if self.motion_model not in ("cv", "drag"):

@@ -286,9 +286,15 @@ class Tracker:
 
     def _spawn(self, det: Detection, det_idx: int) -> None:
         cfg = self.cfg
+        if (cfg.doppler_to_vel_bins_scale is not None
+                and cfg.doppler_bin_center is not None):
+            v_init = (det.doppler_bin - cfg.doppler_bin_center) \
+                * cfg.doppler_to_vel_bins_scale
+        else:
+            v_init = 0.0
         t = Track(
             id=self._next_id,
-            state=np.array([det.range_bin, 0.0]),
+            state=np.array([det.range_bin, v_init]),
             cov=np.diag([cfg.range_meas_var, cfg.init_velocity_var]),
             last_doppler_bin=det.doppler_bin,
             hits=1,

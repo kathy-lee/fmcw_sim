@@ -31,6 +31,7 @@ SCENARIO = "scenarios/scenario_drag_demo.json"
 FRAMES = 30
 MAX_COAST = 15
 K_METRIC = 0.5  # matches the simulator's drag_coefficient_k in scenario JSON
+DOPPLER_AWARE_SPAWN = False
 OUT = Path("docs/tracker_stress_drag_demo_overlay.png")
 
 
@@ -39,8 +40,18 @@ def run(motion_model: str):
     gen = FMCWBeatSignalGenerator(radar_cfg)
     range_per_bin = float(gen.range_axis_m()[1] - gen.range_axis_m()[0])
     drag_k_bins = drag_k_metric_to_bins(K_METRIC, range_per_bin)
+    if DOPPLER_AWARE_SPAWN:
+        lam = 3e8 / radar_cfg.fc_hz
+        v_per_dop_mps = lam / (2.0 * radar_cfg.n_chirps * radar_cfg.chirp_period_s)
+        dop_scale = v_per_dop_mps * radar_cfg.frame_period_s / range_per_bin
+        dop_center = radar_cfg.n_chirps / 2.0
+    else:
+        dop_scale = None
+        dop_center = None
     cfg = TrackerConfig(method="gnn", motion_model=motion_model,
-                        drag_coefficient_k=drag_k_bins, max_coast=MAX_COAST)
+                        drag_coefficient_k=drag_k_bins, max_coast=MAX_COAST,
+                        doppler_to_vel_bins_scale=dop_scale,
+                        doppler_bin_center=dop_center)
     tracker = Tracker(cfg)
     frames_data = []
     for frame_idx in range(FRAMES):

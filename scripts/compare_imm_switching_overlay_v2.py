@@ -30,7 +30,11 @@ K_METRIC = 2.0  # matches the v2 scenario's drag-phase coefficient
 MAX_COAST = 15
 TRANSITION_FRAME = 40
 RANGE_MEAS_VAR = 5.0
-OUT = Path("docs/tracker_stress_imm_switching_overlay_v2.png")
+# Forced coast windows: one in the CV phase, one in the drag phase. Each
+# window forces predict-only behaviour so KF/EKF/IMM divergence reflects
+# motion-model choice, not stochastic CFAR misses.
+FORCED_COAST_FRAMES = set(range(20, 28)) | set(range(50, 58))
+OUT = Path("docs/tracker_stress_imm_switching_overlay_v2_forced_coast.png")
 
 
 def run(tracker, gen, initial_targets, range_per_bin, radar_cfg):
@@ -45,6 +49,8 @@ def run(tracker, gen, initial_targets, range_per_bin, radar_cfg):
         mask[:, 0] = False
         dets = cluster(mask, rd_db, method="peak", min_cells=2,
                        peak_neighborhood=3)
+        if frame_idx in FORCED_COAST_FRAMES:
+            dets = []
         tracker.step(dets)
         if not tracker.tracks:
             continue

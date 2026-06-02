@@ -30,7 +30,11 @@ MAX_COAST = 15
 K_METRIC = 0.5  # matches the v2 scenario's drag_coefficient_k
 RANGE_MEAS_VAR = 5.0  # lowers Kalman gain → predict step weighs more
 DOPPLER_AWARE_SPAWN = True
-OUT = Path("docs/tracker_stress_drag_decel_overlay_v2_doppler.png")
+# Force coast frames: on these frames, discard detections and let the tracker
+# predict-only. Decouples the KF-vs-EKF demonstration from CFAR/amplitude
+# tuning — pick a window during the high-v early phase.
+FORCED_COAST_FRAMES = set(range(5, 13))
+OUT = Path("docs/tracker_stress_drag_decel_overlay_v2_forced_coast.png")
 
 
 def run(motion_model: str):
@@ -64,6 +68,8 @@ def run(motion_model: str):
         mask[:, 0] = False
         dets = cluster(mask, rd_db, method="peak", min_cells=2,
                        peak_neighborhood=3)
+        if frame_idx in FORCED_COAST_FRAMES:
+            dets = []
         tracker.step(dets)
         if tracker.tracks:
             truth_r, _ = range_at(initial_targets[0], frame_idx,

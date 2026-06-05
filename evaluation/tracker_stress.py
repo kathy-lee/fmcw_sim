@@ -255,6 +255,98 @@ def evaluate_run(
     }
 
 
+def track_position_rmse(
+    gt_trajectory: list,
+    tracks_history: list,
+    association_history: list,
+    range_per_bin: float,
+) -> float:
+    """RMSE (metres) of each GT-owning track's range estimate vs the GT range.
+
+    Averaged over every frame where a track is associated with a GT. This is
+    the *continuous* estimate-quality metric that the process_noise_q sweep
+    needs: the discrete metrics in evaluate_run (Pd, distinct IDs,
+    classification) are blind to estimate quality, whereas q trades estimate
+    smoothness for responsiveness and shows up here.
+
+    Args:
+        gt_trajectory: list of (frame_idx, [(gt_id, range_m, ...), ...]) --
+            output of build_gt_trajectory().
+        tracks_history: list of (frame_idx, [TrackSnapshot, ...]) -- output of
+            run_pipeline().
+        association_history: list of (frame_idx, {gt_id: track_id_or_None}).
+        range_per_bin: metres per range bin, used to convert a track's
+            state[0] (range-bin units) into metres.
+
+    Returns: RMSE in metres over all associated GT-frames, or NaN when no
+        frame had an association (nothing to average).
+    """
+    sq_errors = []
+    for (_, gts), (_, snaps), (_, mapping) in zip(
+            gt_trajectory, tracks_history, association_history):
+        snap_by_id = {s.id: s for s in snaps}
+        gt_range = {gt_id: range_m for gt_id, range_m, *_ in gts}
+        for gt_id, track_id in mapping.items():
+            if track_id is None:
+                continue
+            snap = snap_by_id.get(track_id)
+            if snap is None:
+                continue
+            est_m = float(snap.state[0]) * range_per_bin
+            sq_errors.append((est_m - gt_range[gt_id]) ** 2)
+    if not sq_errors:
+        return float("nan")
+    return float(np.sqrt(np.mean(sq_errors)))
+
+
+def count_false_confirmed_tracks(
+    association_history: list,
+    tracks_history: list,
+) -> dict:
+    """Count confirmed tracks that never associate with any GT (clutter-born).
+
+    A track ID is *false* if it reaches status 'confirmed' in some frame yet is
+    never the associated track of any GT anywhere in association_history. These
+    are the spurious tracks the clutter spawns -- the suppression target of the
+    confirm_M/confirm_N sweep (A.3.2). Tentative tracks are excluded: only a
+    *confirmed* clutter track is a real false alarm at the track level.
+
+    Args:
+        association_history: list of (frame_idx, {gt_id: track_id_or_None}) --
+            output of associate_per_frame() per frame.
+        tracks_history: list of (frame_idx, [TrackSnapshot, ...]) -- output of
+            run_pipeline().
+
+    Returns:
+        {"n_false_confirmed": int, "max_simultaneous_false": int}
+          n_false_confirmed      — distinct false confirmed track IDs over the
+                                    whole run (the clutter false-track count).
+          max_simultaneous_false — peak number of distinct false confirmed
+                                    tracks alive in any single frame.
+    """
+    real_ids = {
+        track_id
+        for _, mapping in association_history
+        for track_id in mapping.values()
+        if track_id is not None
+    }
+
+    false_ids = set()
+    max_simultaneous = 0
+    for _, snapshots in tracks_history:
+        frame_false = {
+            s.id for s in snapshots
+            if s.status == "confirmed" and s.id not in real_ids
+        }
+        false_ids |= frame_false
+        max_simultaneous = max(max_simultaneous, len(frame_false))
+
+    return {
+        "n_false_confirmed": len(false_ids),
+        "max_simultaneous_false": max_simultaneous,
+    }
+
+
 from collections import namedtuple
 
 # Immutable per-frame track snapshot. Storing live Track references would
@@ -280,6 +372,8 @@ def run_pipeline(
     n_frames: int,
     max_coast: int | None = None,
     process_noise_q: float | None = None,
+    confirm_M: int | None = None,
+    confirm_N: int | None = None,
     algorithm: str = "kf",
     drag_coefficient_k: float = 0.5,
 ) -> list:
@@ -292,9 +386,10 @@ def run_pipeline(
     TrackSnapshot is an immutable per-frame copy of the relevant Track fields,
     needed because Tracker mutates Track objects in place across frames.
 
-    max_coast / process_noise_q override defaults when not None. This is the
-    hook the C.2 hypothesis sweep uses to vary tracker behavior across runs
-    without editing config files. Leave both at None to get default tuning.
+    max_coast / process_noise_q / confirm_M / confirm_N override defaults when
+    not None. This is the hook the hyperparameter sweeps use to vary tracker
+    behavior across runs without editing config files; confirm_M/confirm_N drive
+    the A.3.2 confirmation sweep. Leave them at None to get default tuning.
 
     algorithm selects one of three tracker configurations:
         "kf"  → single Tracker with CV motion model (linear Kalman filter).

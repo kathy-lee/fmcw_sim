@@ -450,3 +450,105 @@ def test_pilot_smoke_run_imm_10_frames():
             assert hasattr(t, "status")
             # IMM-specific invariant
             assert abs(sum(t.mode_probs) - 1.0) < 1e-6
+
+
+def test_track_position_rmse_constant_offset():
+    """RMSE equals a known constant range offset; unassociated frames are
+    excluded from the average."""
+    import numpy as np
+    from evaluation.tracker_stress import track_position_rmse, TrackSnapshot
+
+    range_per_bin = 0.1
+    # Single GT at 4.0 m every frame (range_bin/doppler fields unused here).
+    gt_trajectory = [
+        (0, [(0, 4.0, 0.0, 0.0, 0.0)]),
+        (1, [(0, 4.0, 0.0, 0.0, 0.0)]),
+        (2, [(0, 4.0, 0.0, 0.0, 0.0)]),
+    ]
+    # Track id=7 sits at 45 bins -> 4.5 m -> a constant 0.5 m offset from GT.
+    snap = TrackSnapshot(id=7, state=np.array([45.0, 0.0]),
+                         last_doppler_bin=0.0, status="confirmed")
+    tracks_history = [(0, [snap]), (1, [snap]), (2, [snap])]
+    # Frame 1 has no association and must be excluded; frames 0 and 2 count.
+    association_history = [(0, {0: 7}), (1, {0: None}), (2, {0: 7})]
+
+    rmse = track_position_rmse(gt_trajectory, tracks_history,
+                               association_history, range_per_bin)
+    assert rmse == pytest.approx(0.5)
+
+
+def test_track_position_rmse_no_associations_is_nan():
+    """With no associated frames the RMSE is NaN (no data to average)."""
+    import math
+    from evaluation.tracker_stress import track_position_rmse
+
+    gt_trajectory = [(0, [(0, 4.0, 0.0, 0.0, 0.0)])]
+    tracks_history = [(0, [])]
+    association_history = [(0, {0: None})]
+
+    rmse = track_position_rmse(gt_trajectory, tracks_history,
+                               association_history, range_per_bin=0.1)
+    assert math.isnan(rmse)
+
+
+def test_count_false_confirmed_tracks_counts_clutter_only():
+    """A confirmed track never associated with any GT is 'false' (clutter-born);
+    the real track (ever associated) and tentative tracks are excluded."""
+    import numpy as np
+    from evaluation.tracker_stress import (
+        count_false_confirmed_tracks, TrackSnapshot,
+    )
+
+    state = np.array([10.0, 0.0])
+
+    def snap(i, status):
+        return TrackSnapshot(id=i, state=state, last_doppler_bin=0.0,
+                             status=status)
+
+    # Track 1 = the real target (it is associated below). 99 and 100 = clutter
+    # tracks (confirmed, never associated). 50 = a tentative clutter track that
+    # must NOT count (only confirmed tracks are false-confirmed).
+    tracks_history = [
+        (0, [snap(1, "confirmed"), snap(99, "confirmed"),
+             snap(50, "tentative")]),
+        (1, [snap(1, "confirmed"), snap(99, "confirmed"),
+             snap(100, "confirmed")]),
+    ]
+    association_history = [(0, {0: 1}), (1, {0: 1})]
+
+    result = count_false_confirmed_tracks(association_history, tracks_history)
+    # 99 and 100 are false-confirmed; 1 is real, 50 is tentative.
+    assert result["n_false_confirmed"] == 2
+    # Peak simultaneous: frame 1 carries 99 and 100 together.
+    assert result["max_simultaneous_false"] == 2
+
+
+def test_count_false_confirmed_tracks_zero_when_all_associated():
+    """No false tracks when every confirmed track is the associated GT track."""
+    import numpy as np
+    from evaluation.tracker_stress import (
+        count_false_confirmed_tracks, TrackSnapshot,
+    )
+
+    snap = TrackSnapshot(id=1, state=np.array([10.0, 0.0]),
+                         last_doppler_bin=0.0, status="confirmed")
+    tracks_history = [(0, [snap]), (1, [snap])]
+    association_history = [(0, {0: 1}), (1, {0: 1})]
+
+    result = count_false_confirmed_tracks(association_history, tracks_history)
+    assert result["n_false_confirmed"] == 0
+    assert result["max_simultaneous_false"] == 0
+
+
+def test_run_pipeline_confirm_overrides_reach_tracker_config():
+    """confirm_M/confirm_N plumb through run_pipeline to TrackerConfig, whose
+    validation rejects confirm_M > confirm_N -- proving the override is wired
+    (it raises at tracker construction, before any frame is generated)."""
+    from evaluation.tracker_stress import run_pipeline
+
+    radar_cfg, targets = load_scenario(
+        "scenarios/scenario_missed_detections.json"
+    )
+    with pytest.raises(ValueError):
+        run_pipeline(radar_cfg, targets, n_frames=1,
+                     confirm_M=5, confirm_N=3)

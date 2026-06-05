@@ -552,3 +552,31 @@ def test_run_pipeline_confirm_overrides_reach_tracker_config():
     with pytest.raises(ValueError):
         run_pipeline(radar_cfg, targets, n_frames=1,
                      confirm_M=5, confirm_N=3)
+
+
+def test_run_pipeline_seed_override_reseeds_realization():
+    """The seed override re-seeds the radar noise: passing the scenario's own
+    seed reproduces the no-override run exactly, while a different seed changes
+    the (marginal-SNR) realization."""
+    from evaluation.tracker_stress import run_pipeline
+
+    radar_cfg, targets = load_scenario(
+        "scenarios/scenario_missed_detections.json"
+    )
+
+    def confirmed_signature(tracks_history):
+        # Scalar summary sensitive to the noise realization: total confirmed
+        # snapshots across all frames.
+        return sum(1 for _, snaps in tracks_history for s in snaps
+                   if s.status == "confirmed")
+
+    baseline = confirmed_signature(run_pipeline(radar_cfg, targets, 80))
+    same = confirmed_signature(
+        run_pipeline(radar_cfg, targets, 80, seed=radar_cfg.seed)
+    )
+    different = confirmed_signature(
+        run_pipeline(radar_cfg, targets, 80, seed=radar_cfg.seed + 4242)
+    )
+
+    assert same == baseline          # same seed -> identical realization
+    assert different != baseline     # different seed -> different realization

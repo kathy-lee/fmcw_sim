@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -374,6 +375,7 @@ def run_pipeline(
     process_noise_q: float | None = None,
     confirm_M: int | None = None,
     confirm_N: int | None = None,
+    seed: int | None = None,
     algorithm: str = "kf",
     drag_coefficient_k: float = 0.5,
 ) -> list:
@@ -390,6 +392,11 @@ def run_pipeline(
     not None. This is the hook the hyperparameter sweeps use to vary tracker
     behavior across runs without editing config files; confirm_M/confirm_N drive
     the A.3.2 confirmation sweep. Leave them at None to get default tuning.
+
+    seed (when not None) re-seeds the radar noise via dataclasses.replace on the
+    radar config, leaving the scenario JSON untouched. This is the hook the A.4
+    Monte Carlo matrix uses to draw independent noise realizations per run; the
+    GT trajectory is noise-independent, so only the detector input changes.
 
     algorithm selects one of three tracker configurations:
         "kf"  → single Tracker with CV motion model (linear Kalman filter).
@@ -439,6 +446,8 @@ def run_pipeline(
         raise ValueError(
             f"algorithm must be one of 'kf', 'ekf', 'imm'; got {algorithm!r}"
         )
+    if seed is not None:
+        radar_cfg = dataclasses.replace(radar_cfg, seed=seed)
     gen = FMCWBeatSignalGenerator(radar_cfg)
     tracks_history = []
     for frame_idx in range(n_frames):

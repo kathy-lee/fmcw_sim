@@ -45,3 +45,22 @@ def test_q_sweep_n_assoc_constant_across_q():
     assert low["n_assoc"] == high["n_assoc"]
     # ... while the RMSE does differ (q is not inert on the estimate).
     assert low["rmse_m"] != high["rmse_m"]
+
+
+CLUTTER_SCENARIO = "scenarios/scenario_intermittent_clutter.json"
+
+
+def test_confirm_sweep_run_one_returns_joint_row():
+    """The confirm sweep pairs clutter-suppression columns with the true
+    target's survival columns in one row."""
+    from evaluation.tracker_stress_confirm_mn_sweep import run_one
+
+    row = run_one(CLUTTER_SCENARIO, n_frames=30, confirm_M=3, confirm_N=5)
+    assert set(row) == {"confirm_M", "confirm_N", "false_confirmed_tracks",
+                        "max_simultaneous_false", "pd", "distinct_tracks",
+                        "classification"}
+    assert row["confirm_M"] == 3 and row["confirm_N"] == 5
+    assert row["false_confirmed_tracks"] >= 0
+    assert row["max_simultaneous_false"] >= 0
+    assert 0.0 <= row["pd"] <= 1.0
+    assert row["classification"] in _VALID_CLASSES

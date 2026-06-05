@@ -416,6 +416,10 @@ def run_pipeline(
             imm_kwargs["max_coast"] = max_coast
         if process_noise_q is not None:
             imm_kwargs["process_noise_q"] = process_noise_q
+        if confirm_M is not None:
+            imm_kwargs["confirm_M"] = confirm_M
+        if confirm_N is not None:
+            imm_kwargs["confirm_N"] = confirm_N
         tracker = IMMTracker(IMMConfig(**imm_kwargs))
     elif algorithm in ("kf", "ekf"):
         motion_model = "cv" if algorithm == "kf" else "drag"
@@ -426,6 +430,10 @@ def run_pipeline(
             tracker_kwargs["max_coast"] = max_coast
         if process_noise_q is not None:
             tracker_kwargs["process_noise_q"] = process_noise_q
+        if confirm_M is not None:
+            tracker_kwargs["confirm_M"] = confirm_M
+        if confirm_N is not None:
+            tracker_kwargs["confirm_N"] = confirm_N
         tracker = Tracker(TrackerConfig(**tracker_kwargs))
     else:
         raise ValueError(

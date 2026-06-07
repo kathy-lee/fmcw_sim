@@ -1,8 +1,19 @@
-"""V2 of compare_imm_switching_overlay.py with amplified divergence.
+"""Overlay KF, EKF, and IMM tracks on a piecewise (CV→drag) switching scenario.
 
-Points at scenario_imm_switching_demo_v2.json (CV-phase v0=3.5 m/s,
-drag-phase k=2.0, amp=0.00045) so the regime mismatch is sharper in both
-phases. RANGE_MEAS_VAR=5.0 retained from v1 to keep the Kalman gain low.
+Scenario-driven: pass any scenario whose single target uses the `piecewise`
+motion model with a constant-velocity leg followed by a drag leg. The script
+reads the initial velocity, the regime-boundary frame, the drag coefficient, and
+the frame count straight from the scenario, so the tracker's drag model is always
+matched to the target's and the plot title always reflects the actual scenario.
+
+Examples (run from the repo root):
+    python -m scripts.compare_imm_switching \
+        --scenario scenarios/scenario_imm_switching.json           # gentle base
+    python -m scripts.compare_imm_switching                        # amplified v2
+    python -m scripts.compare_imm_switching --forced_coast         # forced coast
+
+`range_meas_var` is held at 5.0 to keep the Kalman gain low, so the predict step
+(where the motion models differ) carries weight.
 """
 
 from __future__ import annotations
@@ -25,23 +36,48 @@ from simulator.beat_signal_generator import (
 from simulator.motion_models import range_at
 
 
-SCENARIO = "scenarios/scenario_imm_switching_demo_v2.json"
-FRAMES = 80
-K_METRIC = 2.0  # matches the scenario's drag-phase coefficient
+DEFAULT_SCENARIO = "scenarios/scenario_imm_switching_v2.json"
 MAX_COAST = 15
-TRANSITION_FRAME = 40
-RANGE_MEAS_VAR = 5.0
+RANGE_MEAS_VAR = 5.0  # lowers Kalman gain → predict step weighs more
 # Forced coast windows: one in the CV phase, one in the drag phase. Each
 # window forces predict-only behaviour so KF/EKF/IMM divergence reflects
 # motion-model choice, not stochastic CFAR misses. Enabled via --forced_coast.
 FORCED_COAST_WINDOW = set(range(20, 28)) | set(range(50, 58))
-OUT = Path("docs/tracker_stress_imm_switching.png")
+
+
+def read_piecewise_motion(target):
+    """Pull (v0, transition_frame, drag_k_metric, n_frames) from a target whose
+    motion_model is `piecewise` (a constant-velocity leg then a drag leg)."""
+    v0 = float(target.velocity_mps)
+    phases = (target.motion_params or {}).get("phases", [])
+    drag_phase = next(
+        (p for p in phases if p.get("motion_model") == "drag"), None
+    )
+    if drag_phase is None:
+        raise ValueError(
+            "scenario target has no 'drag' phase; this script expects a "
+            "piecewise CV→drag target"
+        )
+    transition_frame = int(drag_phase["start_frame"])
+    drag_k = float(
+        drag_phase.get("motion_params", {}).get("drag_coefficient_k", 0.0)
+    )
+    n_frames = int(max(p["end_frame"] for p in phases))
+    return v0, transition_frame, drag_k, n_frames
+
+
+def default_plot_path(scenario_path: str) -> Path:
+    """Derive the output PNG path from the scenario filename, e.g.
+    scenarios/scenario_imm_switching_v2.json
+        -> docs/tracker_stress_imm_switching_v2.png"""
+    name = Path(scenario_path).stem.replace("scenario_", "", 1)
+    return Path("docs") / f"tracker_stress_{name}.png"
 
 
 def run(tracker, gen, initial_targets, range_per_bin, radar_cfg,
-        forced_coast_frames):
+        forced_coast_frames, n_frames):
     frames_data = []
-    for frame_idx in range(FRAMES):
+    for frame_idx in range(n_frames):
         frame = gen.generate_frame(initial_targets, frame_index=frame_idx)
         rd = range_doppler(frame, window="hann", dc_removal=True,
                            clutter_removal=False)
@@ -82,28 +118,42 @@ def run(tracker, gen, initial_targets, range_per_bin, radar_cfg,
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scenario", default=DEFAULT_SCENARIO,
+                        help="piecewise CV→drag scenario JSON "
+                             f"(default: {DEFAULT_SCENARIO})")
+    parser.add_argument("--out", default=None,
+                        help="output PNG path (default: derived from scenario)")
     parser.add_argument("--forced_coast", action="store_true", default=False,
                         help="force predict-only on frames 20-27 and 50-57")
     args = parser.parse_args()
 
+    radar_cfg, initial_targets = load_scenario(args.scenario)
+    v0, transition_frame, drag_k, n_frames = read_piecewise_motion(
+        initial_targets[0]
+    )
+
+    out = Path(args.out) if args.out else default_plot_path(args.scenario)
     if args.forced_coast:
         forced_coast_frames = FORCED_COAST_WINDOW
-        out = OUT.with_stem(OUT.stem + "_forced_coast")
+        out = out.with_stem(out.stem + "_forced_coast")
     else:
         forced_coast_frames = set()
-        out = OUT
 
-    radar_cfg, initial_targets = load_scenario(SCENARIO)
     gen = FMCWBeatSignalGenerator(radar_cfg)
     range_per_bin = float(gen.range_axis_m()[1] - gen.range_axis_m()[0])
-    k_bins = drag_k_metric_to_bins(K_METRIC, range_per_bin)
+    # Match the tracker's drag model to the target's: `drag_k` is read straight
+    # from the scenario's drag-phase `drag_coefficient_k`
+    # (read_piecewise_motion), so the filter's assumed coefficient always
+    # equals the value in the scenario JSON — no hand-set constant to keep in
+    # sync. We only convert metric → bin units for the filter here.
+    k_bins = drag_k_metric_to_bins(drag_k, range_per_bin)
 
     gen_kf = FMCWBeatSignalGenerator(radar_cfg)
     kf_tracker = Tracker(TrackerConfig(method="gnn", motion_model="cv",
                                         max_coast=MAX_COAST,
                                         range_meas_var=RANGE_MEAS_VAR))
     kf_data = run(kf_tracker, gen_kf, initial_targets, range_per_bin, radar_cfg,
-                  forced_coast_frames)
+                  forced_coast_frames, n_frames)
 
     gen_ekf = FMCWBeatSignalGenerator(radar_cfg)
     ekf_tracker = Tracker(TrackerConfig(
@@ -111,7 +161,7 @@ def main():
         max_coast=MAX_COAST, range_meas_var=RANGE_MEAS_VAR,
     ))
     ekf_data = run(ekf_tracker, gen_ekf, initial_targets, range_per_bin,
-                   radar_cfg, forced_coast_frames)
+                   radar_cfg, forced_coast_frames, n_frames)
 
     gen_imm = FMCWBeatSignalGenerator(radar_cfg)
     imm_cfg = IMMConfig(
@@ -127,11 +177,11 @@ def main():
     )
     imm_tracker = IMMTracker(imm_cfg)
     imm_data = run(imm_tracker, gen_imm, initial_targets, range_per_bin,
-                   radar_cfg, forced_coast_frames)
+                   radar_cfg, forced_coast_frames, n_frames)
 
     truth = [
         (fi, range_at(initial_targets[0], fi, radar_cfg.frame_period_s)[0])
-        for fi in range(FRAMES)
+        for fi in range(n_frames)
     ]
 
     fig, (ax_pos, ax_mu) = plt.subplots(
@@ -152,14 +202,14 @@ def main():
                     label=name)
         ax_pos.scatter(frames, pos, color=color, s=18)
 
-    ax_pos.axvline(TRANSITION_FRAME, color="orange", linestyle="--",
+    ax_pos.axvline(transition_frame, color="orange", linestyle="--",
                    linewidth=1.2, alpha=0.7,
-                   label=f"regime boundary (frame {TRANSITION_FRAME})")
+                   label=f"regime boundary (frame {transition_frame})")
     ax_pos.set_ylabel("range [m]")
     ax_pos.set_title(
         "KF vs EKF vs IMM on switching scenario\n"
-        f"CV phase: frames 0-{TRANSITION_FRAME} (v0=3.5 m/s) · drag phase: "
-        f"frames {TRANSITION_FRAME}-{FRAMES} (k={K_METRIC})"
+        f"CV phase: frames 0-{transition_frame} (v0={v0:g} m/s) · drag phase: "
+        f"frames {transition_frame}-{n_frames} (k={drag_k:g})"
     )
     ax_pos.legend(loc="upper left")
     ax_pos.grid(True, alpha=0.3)
@@ -173,7 +223,7 @@ def main():
                label="IMM µ_CV")
     ax_mu.plot(imm_frames, drag_probs, color="tab:olive", linewidth=1.8,
                label="IMM µ_drag")
-    ax_mu.axvline(TRANSITION_FRAME, color="orange", linestyle="--",
+    ax_mu.axvline(transition_frame, color="orange", linestyle="--",
                   linewidth=1.2, alpha=0.7)
     ax_mu.set_xlabel("frame")
     ax_mu.set_ylabel("IMM mode probability")

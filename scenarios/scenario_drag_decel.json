@@ -1,5 +1,5 @@
 {
-  "_comment": "Single-target drag-deceleration scenario for sub-project A. Target starts at 1m range moving at 5 m/s, decelerates under quadratic drag (k=0.5 in metric units, 1/(m·s)). Analytic trajectory over 4s (80 frames @ 20Hz): v(4) = 5/(1+0.5*5*4) ≈ 0.45 m/s, r(4) ≈ 5.80m. Amplitude is intentionally near the CFAR detection threshold so frames where CFAR misses force the tracker to predict from its motion model alone. Under those coast streaks the algorithm difference shows: CV-Kalman (algorithm=kf) overshoots (constant-velocity assumption), drag-EKF (algorithm=ekf) follows the drag curve, IMM (algorithm=imm) should lock onto its drag constituent.",
+  "_comment": "Drag-deceleration scenario v2 for sub-project A — amplified divergence on top of scenario_drag_demo.json. Bumps v0 from 7 → 12 m/s, keeps k=0.5 (k=2.0 was tried but caused truth to decelerate before tracks could confirm). Per-frame KF-vs-EKF mismatch ∝ k·v²: at t=0, k·v²=72 vs demo's 24.5 (3× larger initial mismatch); at t=0.5s when tracks typically confirm, k·v²=4.5 vs demo's 3.25 — divergence stays productive through the confirmation window. Trajectory: v(t)=12/(1+6t), r(t)=1+(1/0.5)·ln(1+6t)=1+2·ln(1+6t). r(1.5s, frame 30) ≈ 5.61m, stays well in range. Amplitude 0.00045 (was 0.0005) for slightly longer coast streaks.",
   "radar": {
     "fc_hz": 77000000000.0,
     "bandwidth_hz": 2000000000.0,
@@ -15,7 +15,7 @@
   "targets": [
     {
       "range_m": 1.0,
-      "velocity_mps": 5.0,
+      "velocity_mps": 12.0,
       "amplitude": 0.0006,
       "motion_model": "drag",
       "motion_params": {"drag_coefficient_k": 0.5}

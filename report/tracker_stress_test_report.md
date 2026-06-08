@@ -650,7 +650,7 @@ tracker's `range_meas_var` is raised to 5.0, lowering the Kalman gain so the
 filter leans on its prediction (where KF/EKF differ) instead of the measurement. Run through
 the standard pipeline:
 
-CMD: `python -m scripts.compare_kf_ekf_drag_decel` (run from the repo root)
+CMD: `python -m evaluation.compare_kf_ekf_drag_decel` (run from the repo root)
 
 ![KF vs EKF, natural CFAR-miss coasts](tracker_stress_drag_decel.png)
 
@@ -668,7 +668,7 @@ still.)
 
 To demonstrate it, we force a long coast to isolate and magnify the difference: a fixed coast window is imposed, detections are discarded on frames 5–12, so both filters run purely on prediction over a long stretch.
 
-CMD: `python -m scripts.compare_kf_ekf_drag_decel --forced_coast` (run from the repo root)
+CMD: `python -m evaluation.compare_kf_ekf_drag_decel --forced_coast` (run from the repo root)
 
 ![KF vs EKF, forced coast](tracker_stress_drag_decel_forced_coast.png)
 
@@ -741,7 +741,7 @@ need a target whose ground-truth motion is itself piecewise.
   on some frames and the tracker coasts on its motion model — the only place the
   CV/drag/IMM choice can show.
 
-CMD: `python -m scripts.compare_imm_switching --scenario scenarios/scenario_imm_switching.json` (run from the repo root)
+CMD: `python -m evaluation.compare_imm_switching --scenario scenarios/scenario_imm_switching.json` (run from the repo root)
 
 ![KF vs EKF vs IMM, base switching scenario](tracker_stress_imm_switching.png)
 
@@ -770,7 +770,7 @@ In the drag phase the target now decelerates as `v(t) = 3.5 / (1 + 7t)`,
 `r(t) = 8 + 0.5·ln(1 + 7t)`, reaching ~9.34 m by frame 79 (still inside the
 unambiguous range).
 
-CMD: `python -m scripts.compare_imm_switching` (run from the repo root)
+CMD: `python -m evaluation.compare_imm_switching  --scenario scenarios/scenario_imm_switching_v2.json` (run from the repo root)
 
 ![KF vs EKF vs IMM, amplified switching scenario](tracker_stress_imm_switching_v2.png)
 

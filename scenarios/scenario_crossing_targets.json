@@ -1,0 +1,29 @@
+{
+  "_comment": "Two-target crossing scenario for the tracker stress test (Approach 1, range-axis crossing with opposite-sign Doppler). Two targets approach each other along the range axis and meet at range = 4 m around frame ~20 (at 20 Hz frame rate). Their velocities have equal magnitude but opposite sign, so they remain Doppler-separable throughout — the crossing is in range only, not in (range, velocity). Used to test the tracker's data-association logic at the moment of closest approach. Amplitudes are well above the CFAR detection threshold, so detection itself is not the failure mode; the variable of interest is whether the tracker maintains stable track IDs through the crossing.",
+  "radar": {
+    "fc_hz": 77000000000.0,
+    "bandwidth_hz": 2000000000.0,
+    "ramp_duration_s": 0.00004,
+    "chirp_period_s": 0.00005,
+    "n_range": 256,
+    "n_chirps": 64,
+    "noise_power": 0.0001,
+    "leakage_amplitude": 0.0,
+    "frame_period_s": 0.05,
+    "seed": 99999
+  },
+  "targets": [
+    {
+      "range_m": 2.0,
+      "velocity_mps": 1.0,
+      "amplitude": 0.3,
+      "phase_rad": 0.0
+    },
+    {
+      "range_m": 6.0,
+      "velocity_mps": -1.0,
+      "amplitude": 0.3,
+      "phase_rad": 0.0
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "_comment": "IMM switching demonstration scenario for sub-project A. Target cruises at constant velocity for frames 0-40, then transitions to drag-coast for frames 40-80. Amplitude tuned to marginal SNR so probabilistic coast streaks occur; with --max-coast 15, those streaks survive long enough for the algorithm differences to manifest. Expected per-phase behavior: KF tracks CV phase, drifts in drag phase; EKF drifts in CV phase, tracks drag phase; IMM tracks both via mode-probability switching at frame ~40.",
+  "radar": {
+    "fc_hz": 77000000000.0,
+    "bandwidth_hz": 2000000000.0,
+    "ramp_duration_s": 0.00004,
+    "chirp_period_s": 0.00005,
+    "n_range": 256,
+    "n_chirps": 64,
+    "noise_power": 0.0001,
+    "leakage_amplitude": 0.0,
+    "frame_period_s": 0.05,
+    "seed": 99999
+  },
+  "targets": [
+    {
+      "range_m": 1.0,
+      "velocity_mps": 2.5,
+      "amplitude": 0.00045,
+      "motion_model": "piecewise",
+      "motion_params": {
+        "phases": [
+          {"motion_model": "constant_velocity",
+           "start_frame": 0, "end_frame": 40},
+          {"motion_model": "drag",
+           "start_frame": 40, "end_frame": 80,
+           "motion_params": {"drag_coefficient_k": 0.5}}
+        ]
+      }
+    }
+  ]
+}

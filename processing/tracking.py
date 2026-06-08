@@ -42,6 +42,87 @@ def _kf_predict(state: np.ndarray, cov: np.ndarray, q: float):
     return new_state, new_cov
 
 
+def _ekf_predict(state: np.ndarray, cov: np.ndarray,
+                  f, F_jacobian_fn, q: float):
+    """EKF prediction: nonlinear f for state, Jacobian for covariance.
+
+    f: callable mapping state -> next_state
+    F_jacobian_fn: callable mapping state -> 2x2 Jacobian matrix
+    """
+    new_state = f(state)
+    F_jac = F_jacobian_fn(state)
+    new_cov = F_jac @ cov @ F_jac.T + q * _Q_BASE
+    return new_state, new_cov
+
+
+def drag_k_metric_to_bins(k_metric: float, range_per_bin: float) -> float:
+    """Convert a metric-units drag coefficient to the bin-units coefficient
+    consumed by `TrackerConfig.drag_coefficient_k` and the corresponding
+    `MotionModelSpec.motion_params['drag_coefficient_k']` field for IMM.
+
+    Args:
+        k_metric: drag coefficient in 1/(m·s) — the value used by the
+            simulator's `Target.motion_params['drag_coefficient_k']` (matches
+            the continuous law `dv/dt = -k * v²`).
+        range_per_bin: physical width of one range bin, in metres
+            (e.g. `gen.range_axis_m()[1] - gen.range_axis_m()[0]`).
+
+    Returns:
+        k_bins suitable for the filter's per-frame Euler step
+        `Δv_bins = -k_bins × v_bins²`.
+
+    Derivation:
+        With v_bins = v_mps · Δt / Δr, equating per-frame Euler decays
+        gives k_bins = k_metric · Δr. The frame period Δt cancels because
+        the filter's "one step" implicitly represents one frame.
+
+    Caveat:
+        This matches the simulator's per-frame *Euler* decay. The simulator
+        actually advances ground truth via the *analytic* drag solution
+        `v(t+Δt) = v / (1 + k·v·Δt)`, which decays slightly slower than
+        Euler. The Euler-vs-analytic gap is O(k·v·Δt) — about 12% at
+        v=5 m/s with our 50 ms frame period — which is the residual
+        prediction error the filter can't avoid without a higher-order
+        integration scheme.
+    """
+    return k_metric * range_per_bin
+
+
+def _make_drag_filter(drag_k_bins: float):
+    """Build (f, F_jacobian) callables for a quadratic-drag motion model
+    operating in range-bin space.
+
+    Motion law: dv/dt = -k*v*|v| where k is in bin-units per frame.
+    Discrete one-step:
+        new_vel = vel - k*vel*|vel|
+        new_pos = pos + 0.5*(vel + new_vel)    # midpoint rule
+
+    The midpoint position update matches the Taylor expansion of the analytic
+    drag solution to O(Δt³). Forward Euler (pos + vel) wastes the drag
+    information on the position update — KF and EKF would produce identical
+    positions after a 1-step predict, and divergence would only appear after
+    step 2 via the smaller next-step velocity.
+
+    Returns:
+        f(state) -> new_state          # nonlinear motion function
+        F_jac(state) -> 2x2 ndarray    # Jacobian at `state`
+    """
+    def f(state: np.ndarray) -> np.ndarray:
+        pos, vel = state[0], state[1]
+        new_vel = vel - drag_k_bins * vel * abs(vel)
+        new_pos = pos + 0.5 * (vel + new_vel)
+        return np.array([new_pos, new_vel])
+
+    def F_jacobian(state: np.ndarray) -> np.ndarray:
+        vel = state[1]
+        return np.array([
+            [1.0, 1.0 - drag_k_bins * abs(vel)],
+            [0.0, 1.0 - 2.0 * drag_k_bins * abs(vel)],
+        ])
+
+    return f, F_jacobian
+
+
 def _kf_update(state: np.ndarray, cov: np.ndarray, z_range: float, sigma_r2: float):
     R = np.array([[sigma_r2]])
     y = np.array([z_range]) - _H @ state
@@ -65,13 +146,32 @@ class Tracker:
         self.cfg = config
         self._next_id = 0
         self.tracks: list = []
+        # Optional nonlinear motion model. When None, _kf_predict is used.
+        # See design doc: drag_coefficient_k is in bin-units in this
+        # sub-project; metric→bin conversion is a documented follow-up.
+        if config.motion_model == "drag":
+            self._predict_ekf_f, self._predict_ekf_F_jac = _make_drag_filter(
+                drag_k_bins=config.drag_coefficient_k
+            )
+        else:
+            self._predict_ekf_f = None
+            self._predict_ekf_F_jac = None
 
     # ---- Public API ----
 
     def step(self, detections: list) -> list:
         # 1) Predict. Clear last frame's association.
         for t in self.tracks:
-            t.state, t.cov = _kf_predict(t.state, t.cov, self.cfg.process_noise_q)
+            if self._predict_ekf_f is not None:
+                t.state, t.cov = _ekf_predict(
+                    t.state, t.cov,
+                    self._predict_ekf_f, self._predict_ekf_F_jac,
+                    self.cfg.process_noise_q,
+                )
+            else:
+                t.state, t.cov = _kf_predict(
+                    t.state, t.cov, self.cfg.process_noise_q
+                )
             t.age += 1
             t.assoc_det_idx = None
 
@@ -186,9 +286,15 @@ class Tracker:
 
     def _spawn(self, det: Detection, det_idx: int) -> None:
         cfg = self.cfg
+        if (cfg.doppler_to_vel_bins_scale is not None
+                and cfg.doppler_bin_center is not None):
+            v_init = (det.doppler_bin - cfg.doppler_bin_center) \
+                * cfg.doppler_to_vel_bins_scale
+        else:
+            v_init = 0.0
         t = Track(
             id=self._next_id,
-            state=np.array([det.range_bin, 0.0]),
+            state=np.array([det.range_bin, v_init]),
             cov=np.diag([cfg.range_meas_var, cfg.init_velocity_var]),
             last_doppler_bin=det.doppler_bin,
             hits=1,

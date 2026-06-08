@@ -16,6 +16,8 @@ from typing import Any
 import json
 import numpy as np
 
+from simulator.motion_models import range_at
+
 C = 299_792_458.0
 
 
@@ -25,6 +27,8 @@ class Target:
     velocity_mps: float
     amplitude: float = 1.0
     phase_rad: float = 0.0
+    motion_model: str = "constant_velocity"
+    motion_params: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -35,12 +39,19 @@ class ClutterRegion:
     contribution whose per-cell variance is `noise_power * 10^(cnr_db/10)`
     above the base noise. velocity bounds = None means unbounded
     (the region covers all Doppler — Level 1 in the clutter-edge eval).
+
+    Time window: frame_min / frame_max bracket the frames during which the
+    region is active (inclusive lower, exclusive upper, matching range()).
+    None means unbounded on that side. With both at None (the default), the
+    region is active for every frame — preserves prior behavior.
     """
     range_m_min: float
     range_m_max: float
     velocity_mps_min: float | None = None
     velocity_mps_max: float | None = None
     cnr_db: float = 10.0
+    frame_min: int | None = None
+    frame_max: int | None = None
 
     def __post_init__(self):
         if self.range_m_min >= self.range_m_max:
@@ -59,6 +70,20 @@ class ClutterRegion:
             raise ValueError(
                 f"ClutterRegion.cnr_db must be >= 0, got {self.cnr_db}"
             )
+        if (self.frame_min is not None and self.frame_max is not None
+                and self.frame_min >= self.frame_max):
+            raise ValueError(
+                f"ClutterRegion.frame_min ({self.frame_min}) must be < "
+                f"frame_max ({self.frame_max})"
+            )
+
+    def is_active(self, frame_index: int) -> bool:
+        """Return True when this region contributes clutter on `frame_index`."""
+        if self.frame_min is not None and frame_index < self.frame_min:
+            return False
+        if self.frame_max is not None and frame_index >= self.frame_max:
+            return False
+        return True
 
 
 @dataclass
@@ -163,12 +188,19 @@ class FMCWBeatSignalGenerator:
         x = np.zeros((cfg.n_chirps, cfg.n_range), dtype=np.complex128)
 
         for target in targets:
-            # Range at each chirp. Constant inside a chirp.
-            range_m = target.range_m + target.velocity_mps * t_slow
+            # Per-frame position/velocity from the target's motion model.
+            # Stop-and-hop approximation: velocity is constant within one
+            # frame (frames are ~3.2ms long, intra-frame drag/maneuver
+            # change is negligible), so range advances linearly across
+            # chirps within the frame using v_at_frame_start.
+            r_at_frame_start, v_at_frame_start = range_at(
+                target, frame_index, cfg.frame_period_s,
+            )
+            range_m = r_at_frame_start + v_at_frame_start * m * cfg.chirp_period_s
             range_m = np.maximum(range_m, 0.0)
 
             fb_hz = 2.0 * self.slope_hz_per_s * range_m / C
-            fd_hz = 2.0 * target.velocity_mps / self.lambda_m
+            fd_hz = 2.0 * v_at_frame_start / self.lambda_m
 
             phase = 2.0 * np.pi * (
                 fb_hz * t_fast +
@@ -181,6 +213,8 @@ class FMCWBeatSignalGenerator:
             x += cfg.leakage_amplitude
 
         for region in cfg.clutter:
+            if not region.is_active(frame_index):
+                continue
             x += self._generate_clutter_beat_signal(region)
 
         if cfg.noise_power > 0.0:
@@ -265,10 +299,16 @@ class FMCWBeatSignalGenerator:
         doppler_bin_spacing_hz = 1.0 / (cfg.n_chirps * cfg.chirp_period_s)
 
         out: list[dict[str, float]] = []
+        frame_center_offset = 0.5 * cfg.n_chirps * cfg.chirp_period_s
         for target in targets:
-            r = max(0.0, target.range_m + target.velocity_mps * frame_center_time)
+            r_start, v_start = range_at(
+                target, frame_index, cfg.frame_period_s,
+            )
+            # Frame-center position via the same stop-and-hop assumption
+            # generate_frame uses: velocity constant within one frame.
+            r = max(0.0, r_start + v_start * frame_center_offset)
             fb = 2.0 * self.slope_hz_per_s * r / C
-            fd = 2.0 * target.velocity_mps / self.lambda_m
+            fd = 2.0 * v_start / self.lambda_m
 
             range_bin = fb / range_bin_spacing_hz
             doppler_bin_unshifted = fd / doppler_bin_spacing_hz
@@ -276,7 +316,7 @@ class FMCWBeatSignalGenerator:
 
             out.append({
                 "range_m": float(r),
-                "velocity_mps": float(target.velocity_mps),
+                "velocity_mps": float(v_start),
                 "amplitude": float(target.amplitude),
                 "beat_frequency_hz": float(fb),
                 "doppler_frequency_hz": float(fd),

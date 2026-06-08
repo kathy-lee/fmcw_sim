@@ -153,6 +153,119 @@ def test_ground_truth_range_bin_matches_argmax_after_range_fft():
     assert abs(peak - gt["range_bin"]) <= 1
 
 
+# --- Target motion_model extension ---
+
+def test_target_default_motion_model_is_constant_velocity():
+    from simulator.beat_signal_generator import Target
+    t = Target(range_m=1.0, velocity_mps=2.0)
+    assert t.motion_model == "constant_velocity"
+    assert t.motion_params == {}
+
+
+def test_target_accepts_drag_motion_model():
+    from simulator.beat_signal_generator import Target
+    t = Target(
+        range_m=1.0, velocity_mps=5.0,
+        motion_model="drag",
+        motion_params={"drag_coefficient_k": 0.5},
+    )
+    assert t.motion_model == "drag"
+    assert t.motion_params == {"drag_coefficient_k": 0.5}
+
+
+def test_ground_truth_drag_target_position_matches_analytic():
+    """ground_truth() with a drag target should report the analytic
+    drag-decelerated range, not the linear CV formula."""
+    import math
+    from simulator.beat_signal_generator import (
+        FMCWBeatSignalGenerator, RadarConfig, Target,
+    )
+
+    cfg = RadarConfig(seed=42)
+    target = Target(
+        range_m=4.0, velocity_mps=2.0, amplitude=1.0,
+        motion_model="drag",
+        motion_params={"drag_coefficient_k": 0.5},
+    )
+    gen = FMCWBeatSignalGenerator(cfg)
+
+    # Compute analytic drag position at frame 40's start, plus the within-frame
+    # carry-over using stop-and-hop (the simulator's motion model).
+    t_frame_start = 40 * cfg.frame_period_s
+    denom_start = 1.0 + 0.5 * 2.0 * t_frame_start
+    r_start = 4.0 + math.log(denom_start) / 0.5
+    v_start = 2.0 / denom_start
+    # ground_truth reports the frame-center position
+    frame_center_offset = 0.5 * cfg.n_chirps * cfg.chirp_period_s
+    expected_r_center = r_start + v_start * frame_center_offset
+
+    gts = gen.ground_truth([target], frame_index=40)
+    assert gts[0]["range_m"] == pytest.approx(expected_r_center, rel=1e-6)
+
+
+def test_load_scenario_parses_drag_target(tmp_path):
+    import json
+    from simulator.beat_signal_generator import load_scenario
+
+    scenario = {
+        "radar": {"seed": 42},
+        "targets": [
+            {
+                "range_m": 1.0,
+                "velocity_mps": 5.0,
+                "amplitude": 0.3,
+                "motion_model": "drag",
+                "motion_params": {"drag_coefficient_k": 0.5},
+            }
+        ],
+    }
+    path = tmp_path / "drag_scenario.json"
+    path.write_text(json.dumps(scenario))
+
+    cfg, targets = load_scenario(str(path))
+    assert len(targets) == 1
+    assert targets[0].motion_model == "drag"
+    assert targets[0].motion_params == {"drag_coefficient_k": 0.5}
+
+
+def test_load_scenario_defaults_motion_model_when_unset(tmp_path):
+    """Existing scenarios without motion_model should default to CV."""
+    import json
+    from simulator.beat_signal_generator import load_scenario
+
+    scenario = {
+        "radar": {"seed": 42},
+        "targets": [{"range_m": 1.0, "velocity_mps": 1.0, "amplitude": 0.3}],
+    }
+    path = tmp_path / "legacy_scenario.json"
+    path.write_text(json.dumps(scenario))
+
+    cfg, targets = load_scenario(str(path))
+    assert targets[0].motion_model == "constant_velocity"
+    assert targets[0].motion_params == {}
+
+
+def test_generate_frame_cv_target_reproducible():
+    """A CV target with default motion_model should produce a reproducible
+    frame across runs (regression: the refactor doesn't change CV behavior)."""
+    import numpy as np
+    from simulator.beat_signal_generator import (
+        FMCWBeatSignalGenerator, RadarConfig, Target,
+    )
+
+    cfg = RadarConfig(seed=42)
+    target = Target(range_m=2.0, velocity_mps=1.0, amplitude=0.3)
+
+    gen1 = FMCWBeatSignalGenerator(cfg)
+    frame1 = gen1.generate_frame([target], frame_index=5)
+
+    cfg2 = RadarConfig(seed=42)
+    gen2 = FMCWBeatSignalGenerator(cfg2)
+    frame2 = gen2.generate_frame([target], frame_index=5)
+
+    np.testing.assert_array_equal(frame1, frame2)
+
+
 # --- ClutterRegion ---
 
 def test_clutter_region_valid_inputs():
@@ -192,6 +305,86 @@ def test_clutter_region_rejects_negative_cnr():
     from simulator.beat_signal_generator import ClutterRegion
     with pytest.raises(ValueError, match="cnr_db"):
         ClutterRegion(range_m_min=4.0, range_m_max=6.0, cnr_db=-1.0)
+
+
+def test_clutter_region_default_frame_window_is_unbounded():
+    from simulator.beat_signal_generator import ClutterRegion
+    r = ClutterRegion(range_m_min=4.0, range_m_max=6.0)
+    assert r.frame_min is None
+    assert r.frame_max is None
+    # Active at any frame index when both bounds are None.
+    assert r.is_active(0)
+    assert r.is_active(123)
+    assert r.is_active(-1)
+
+
+def test_clutter_region_is_active_respects_frame_window():
+    from simulator.beat_signal_generator import ClutterRegion
+    r = ClutterRegion(range_m_min=4.0, range_m_max=6.0,
+                      frame_min=10, frame_max=20)
+    assert not r.is_active(9)
+    assert r.is_active(10)        # inclusive lower
+    assert r.is_active(19)
+    assert not r.is_active(20)    # exclusive upper
+    assert not r.is_active(100)
+
+
+def test_clutter_region_is_active_half_open_windows():
+    from simulator.beat_signal_generator import ClutterRegion
+    # Only upper bound.
+    r_upper = ClutterRegion(range_m_min=4.0, range_m_max=6.0, frame_max=5)
+    assert r_upper.is_active(0)
+    assert r_upper.is_active(4)
+    assert not r_upper.is_active(5)
+    # Only lower bound.
+    r_lower = ClutterRegion(range_m_min=4.0, range_m_max=6.0, frame_min=5)
+    assert not r_lower.is_active(4)
+    assert r_lower.is_active(5)
+    assert r_lower.is_active(100)
+
+
+def test_clutter_region_rejects_inverted_frame_window():
+    from simulator.beat_signal_generator import ClutterRegion
+    with pytest.raises(ValueError, match="frame_min"):
+        ClutterRegion(range_m_min=4.0, range_m_max=6.0,
+                      frame_min=20, frame_max=10)
+
+
+def test_inactive_clutter_region_does_not_contribute_to_frame():
+    """A region outside its active window must produce a frame identical to
+    one generated with cfg.clutter=[] (same seed). This guarantees frame-level
+    intermittence and not just a weaker contribution."""
+    from simulator.beat_signal_generator import ClutterRegion
+    region = ClutterRegion(range_m_min=4.0, range_m_max=6.0, cnr_db=20.0,
+                           frame_min=10, frame_max=20)
+
+    cfg_with = RadarConfig(seed=42, clutter=[region])
+    gen_with = FMCWBeatSignalGenerator(cfg_with)
+    frame_inactive = gen_with.generate_frame(targets=[], frame_index=0)
+
+    cfg_without = RadarConfig(seed=42, clutter=[])
+    gen_without = FMCWBeatSignalGenerator(cfg_without)
+    frame_baseline = gen_without.generate_frame(targets=[], frame_index=0)
+
+    np.testing.assert_array_equal(frame_inactive, frame_baseline)
+
+
+def test_active_clutter_region_does_contribute_to_frame():
+    """The same region, evaluated inside its window, must produce a frame
+    that differs from the no-clutter baseline."""
+    from simulator.beat_signal_generator import ClutterRegion
+    region = ClutterRegion(range_m_min=4.0, range_m_max=6.0, cnr_db=20.0,
+                           frame_min=10, frame_max=20)
+
+    cfg_with = RadarConfig(seed=42, clutter=[region])
+    gen_with = FMCWBeatSignalGenerator(cfg_with)
+    frame_active = gen_with.generate_frame(targets=[], frame_index=15)
+
+    cfg_without = RadarConfig(seed=42, clutter=[])
+    gen_without = FMCWBeatSignalGenerator(cfg_without)
+    frame_baseline = gen_without.generate_frame(targets=[], frame_index=15)
+
+    assert not np.array_equal(frame_active, frame_baseline)
 
 
 def test_radar_config_clutter_defaults_to_empty_list():

@@ -1,0 +1,4 @@
+scenario,algorithm,n_seeds,pd_mean,pd_std,distinct_mean,distinct_std,coast_mean,coast_std,switches_mean,switches_std,false_confirmed_mean,false_confirmed_std,pct_clean,pct_id_switch,pct_track_break,pct_total_confusion
+missed_detections,kf,30,0.6695833333333332,0.04912604253912132,1.1,0.30000000000000004,22.9,4.1340053217188775,0.1,0.3,0.0,0.0,0.9,0.1,0.0,0.0
+crossing_targets,kf,30,0.975,0.0,1.0,0.0,0.0,0.0,0.0,0.0,3.0,0.8563488385776752,1.0,0.0,0.0,0.0
+intermittent_clutter,kf,30,0.974166666666667,0.003118047822311606,3.8,2.023198787399136,21.2,14.466973883066677,1.3666666666666667,1.5162087220725544,34.96666666666667,2.738409919805449,0.4,0.6,0.0,0.0

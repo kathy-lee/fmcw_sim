@@ -1,0 +1,121 @@
+scenario,algorithm,seed,gt_id,pd,n_assoc_frames,distinct_track_ids,coast_frames,run_n_switches,run_false_confirmed_tracks,run_classification
+missed_detections,kf,1,0,0.6,48,2,24,1,0,ID SWITCH
+missed_detections,kf,2,0,0.6875,55,1,21,0,0,CLEAN
+missed_detections,kf,3,0,0.6875,55,1,22,0,0,CLEAN
+missed_detections,kf,4,0,0.6375,51,1,26,0,0,CLEAN
+missed_detections,kf,5,0,0.7125,57,1,17,0,0,CLEAN
+missed_detections,kf,6,0,0.675,54,1,24,0,0,CLEAN
+missed_detections,kf,7,0,0.6375,51,1,27,0,0,CLEAN
+missed_detections,kf,8,0,0.6625,53,1,23,0,0,CLEAN
+missed_detections,kf,9,0,0.575,46,1,32,0,0,CLEAN
+missed_detections,kf,10,0,0.675,54,1,18,0,0,CLEAN
+missed_detections,kf,11,0,0.6875,55,1,23,0,0,CLEAN
+missed_detections,kf,12,0,0.7875,63,1,14,0,0,CLEAN
+missed_detections,kf,13,0,0.65,52,2,21,1,0,ID SWITCH
+missed_detections,kf,14,0,0.7375,59,1,19,0,0,CLEAN
+missed_detections,kf,15,0,0.7125,57,1,20,0,0,CLEAN
+missed_detections,kf,16,0,0.6875,55,1,22,0,0,CLEAN
+missed_detections,kf,17,0,0.55,44,1,33,0,0,CLEAN
+missed_detections,kf,18,0,0.6375,51,2,21,1,0,ID SWITCH
+missed_detections,kf,19,0,0.6875,55,1,22,0,0,CLEAN
+missed_detections,kf,20,0,0.7125,57,1,20,0,0,CLEAN
+missed_detections,kf,21,0,0.75,60,1,18,0,0,CLEAN
+missed_detections,kf,22,0,0.7,56,1,22,0,0,CLEAN
+missed_detections,kf,23,0,0.6375,51,1,27,0,0,CLEAN
+missed_detections,kf,24,0,0.6625,53,1,25,0,0,CLEAN
+missed_detections,kf,25,0,0.625,50,1,27,0,0,CLEAN
+missed_detections,kf,26,0,0.65,52,1,26,0,0,CLEAN
+missed_detections,kf,27,0,0.7125,57,1,18,0,0,CLEAN
+missed_detections,kf,28,0,0.65,52,1,24,0,0,CLEAN
+missed_detections,kf,29,0,0.625,50,1,27,0,0,CLEAN
+missed_detections,kf,30,0,0.675,54,1,24,0,0,CLEAN
+crossing_targets,kf,1,0,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,1,1,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,2,0,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,2,1,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,3,0,0.975,78,1,0,0,4,CLEAN
+crossing_targets,kf,3,1,0.975,78,1,0,0,4,CLEAN
+crossing_targets,kf,4,0,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,4,1,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,5,0,0.975,78,1,0,0,5,CLEAN
+crossing_targets,kf,5,1,0.975,78,1,0,0,5,CLEAN
+crossing_targets,kf,6,0,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,6,1,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,7,0,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,7,1,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,8,0,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,8,1,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,9,0,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,9,1,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,10,0,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,10,1,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,11,0,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,11,1,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,12,0,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,12,1,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,13,0,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,13,1,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,14,0,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,14,1,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,15,0,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,15,1,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,16,0,0.975,78,1,0,0,4,CLEAN
+crossing_targets,kf,16,1,0.975,78,1,0,0,4,CLEAN
+crossing_targets,kf,17,0,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,17,1,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,18,0,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,18,1,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,19,0,0.975,78,1,0,0,4,CLEAN
+crossing_targets,kf,19,1,0.975,78,1,0,0,4,CLEAN
+crossing_targets,kf,20,0,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,20,1,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,21,0,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,21,1,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,22,0,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,22,1,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,23,0,0.975,78,1,0,0,4,CLEAN
+crossing_targets,kf,23,1,0.975,78,1,0,0,4,CLEAN
+crossing_targets,kf,24,0,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,24,1,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,25,0,0.975,78,1,0,0,4,CLEAN
+crossing_targets,kf,25,1,0.975,78,1,0,0,4,CLEAN
+crossing_targets,kf,26,0,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,26,1,0.975,78,1,0,0,3,CLEAN
+crossing_targets,kf,27,0,0.975,78,1,0,0,4,CLEAN
+crossing_targets,kf,27,1,0.975,78,1,0,0,4,CLEAN
+crossing_targets,kf,28,0,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,28,1,0.975,78,1,0,0,2,CLEAN
+crossing_targets,kf,29,0,0.975,78,1,0,0,4,CLEAN
+crossing_targets,kf,29,1,0.975,78,1,0,0,4,CLEAN
+crossing_targets,kf,30,0,0.975,78,1,0,0,4,CLEAN
+crossing_targets,kf,30,1,0.975,78,1,0,0,4,CLEAN
+intermittent_clutter,kf,1,0,0.975,78,5,29,1,34,ID SWITCH
+intermittent_clutter,kf,2,0,0.975,78,2,9,0,38,CLEAN
+intermittent_clutter,kf,3,0,0.975,78,3,23,3,34,ID SWITCH
+intermittent_clutter,kf,4,0,0.975,78,3,14,0,37,CLEAN
+intermittent_clutter,kf,5,0,0.975,78,6,29,3,31,ID SWITCH
+intermittent_clutter,kf,6,0,0.975,78,2,7,1,37,ID SWITCH
+intermittent_clutter,kf,7,0,0.975,78,3,13,0,37,CLEAN
+intermittent_clutter,kf,8,0,0.975,78,3,24,0,34,CLEAN
+intermittent_clutter,kf,9,0,0.975,78,6,39,4,31,ID SWITCH
+intermittent_clutter,kf,10,0,0.975,78,2,9,0,40,CLEAN
+intermittent_clutter,kf,11,0,0.975,78,2,7,1,38,ID SWITCH
+intermittent_clutter,kf,12,0,0.975,78,3,14,1,34,ID SWITCH
+intermittent_clutter,kf,13,0,0.9625,77,10,69,5,28,ID SWITCH
+intermittent_clutter,kf,14,0,0.975,78,6,37,4,31,ID SWITCH
+intermittent_clutter,kf,15,0,0.9625,77,6,30,3,32,ID SWITCH
+intermittent_clutter,kf,16,0,0.975,78,4,17,1,34,ID SWITCH
+intermittent_clutter,kf,17,0,0.975,78,3,16,1,37,ID SWITCH
+intermittent_clutter,kf,18,0,0.975,78,1,0,0,40,CLEAN
+intermittent_clutter,kf,19,0,0.975,78,5,33,1,35,ID SWITCH
+intermittent_clutter,kf,20,0,0.975,78,5,32,2,34,ID SWITCH
+intermittent_clutter,kf,21,0,0.975,78,2,9,0,37,CLEAN
+intermittent_clutter,kf,22,0,0.975,78,3,19,0,34,CLEAN
+intermittent_clutter,kf,23,0,0.975,78,3,14,1,35,ID SWITCH
+intermittent_clutter,kf,24,0,0.975,78,5,31,4,35,ID SWITCH
+intermittent_clutter,kf,25,0,0.975,78,8,47,3,32,ID SWITCH
+intermittent_clutter,kf,26,0,0.975,78,1,0,0,37,CLEAN
+intermittent_clutter,kf,27,0,0.975,78,3,16,0,35,CLEAN
+intermittent_clutter,kf,28,0,0.975,78,2,9,0,36,CLEAN
+intermittent_clutter,kf,29,0,0.975,78,3,20,0,38,CLEAN
+intermittent_clutter,kf,30,0,0.975,78,4,20,2,34,ID SWITCH

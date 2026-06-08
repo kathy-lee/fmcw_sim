@@ -6,10 +6,6 @@
 (OS-CFAR, Pfa = 1e-4) → `cluster` (peak-picking, min_cells = 2) → `Tracker`
 (GNN association, M-of-N confirmation, Kalman/EKF/IMM filtering).
 
-> **Status.** All experiments have been run; every section is grounded in
-> generated artifacts — Introduction, Methodology, A.1–A.4, B, and C. No section
-> is a placeholder and no numbers are fabricated.
-
 ---
 
 ## 1. Introduction
@@ -96,13 +92,13 @@ stress tests exercise most:
 - **`confirm_M`** (`3`) / **`confirm_N`** (`5`) — the M-of-N confirmation rule: a
   tentative track is promoted to *confirmed* once it has been hit on at least
   `confirm_M` of the last `confirm_N` frames. Stricter values suppress
-  clutter-born tracks but slow confirmation of real ones (the A.3.2 sweep).
+  clutter-born tracks but slow confirmation of real ones (the §3.3.2 sweep).
 - **`max_misses_tentative`** (`2`) — a *tentative* (not-yet-confirmed) track is
   deleted after this many consecutive misses, so spurious detections die quickly.
 - **`max_coast`** (`5`) — a *confirmed* track is kept alive, coasting on its
   prediction, for up to this many consecutive misses before deletion. This is
   the parameter that decides whether a track survives a missed-detection gap
-  (the A.1.2 sweep).
+  (the §3.1.2 sweep).
 - **`history_len`** (`10`) — number of past states retained per track (for
   trajectory output / plotting).
 
@@ -161,7 +157,7 @@ And per run:
   rejects one-frame Hungarian flip-flops).
 - **False confirmed tracks** — confirmed track IDs that *never* associated with
   any GT (i.e. tracks born from clutter). *Added for the clutter analysis; see
-  A.3.*
+  §3.3.*
 
 ### 2.3 Classification
 
@@ -178,8 +174,8 @@ Pd < 0.5):
 
 ### 2.4 Monte Carlo design (Family A matrix)
 
-The statistical comparison (A.4) runs each (scenario, algorithm) cell over **30
-seeds**. Varying the seed re-draws the measurement noise and the clutter
+The Family-A robustness check (§3.4) runs the **KF** tracker on each scenario over
+**30 seeds**. Varying the seed re-draws the measurement noise and the clutter
 placement; the GT trajectory is deterministic and unchanged across seeds.
 Numeric metrics are reported as mean ± std; the categorical classification is
 reported as a rate breakdown (e.g. "24/30 CLEAN"). The seed is overridden per
@@ -228,7 +224,7 @@ matrix run sees out-of-sample noise relative to the detector's calibration.
 
 ---
 
-## 3. Family A — Detection / Association Stress
+## 3. Family A Case Study — Detection / Association Stress
 
 **Every run in this section uses the KF tracker — the linear Kalman filter with
 the constant-velocity (CV) motion model.** Family-A motion is ~constant
@@ -252,7 +248,7 @@ to drift while no detection is updating it.
 
 #### 3.1.1 Illustrative run
 
-**Scenario**(`scenario_missed_detections.json`): A single target at ~4 m moving at 0.5 m/s, with amplitude tuned to
+**Scenario** (`scenario_missed_detections.json`): A single target at ~4 m moving at 0.5 m/s, with amplitude tuned to
 sit near the CFAR threshold so random noise drops it below detection on a
 substantial fraction of frames. The tracker must bridge those misses by
 coasting.
@@ -262,7 +258,9 @@ CMD: `python -m evaluation.tracker_stress --scenario scenarios/scenario_missed_d
 ![Missed detections, KF](tracker_stress_missed_detections.png)
 
 With the default tracker (max_coast = 5), the single GT is held continuously as
-one track ID across the whole run. The Pd there is the track-level Pd = n_assoc_frames / total_frames, where total = 80 frames (computed in evaluate_run, tracker_stress.py)
+one track ID across the whole run. The Pd reported here is the track-level Pd —
+`n_assoc_frames / total_frames`, with `total = 80` frames (computed in
+`evaluate_run`, `tracker_stress.py`).
 
 | Metric | Value |
 |---|---|
@@ -465,7 +463,7 @@ promoted is the M-of-N confirmation rule (`confirm_M` hits of the last
 
 #### 3.3.1 Illustrative run
 
-**Scenario**(`scenario_intermittent_clutter.json`): A single high-SNR target crossing 3 → 6.4 m, while a clutter band
+**Scenario** (`scenario_intermittent_clutter.json`): A single high-SNR target crossing 3 → 6.4 m, while a clutter band
 (CNR 30 dB, 4–6 m) switches on for four ~10-frame windows (frames 10–20, 30–40,
 50–60, 70–80). When on, the clutter spawns spurious detections in the same range
 region the target passes through.
@@ -489,13 +487,13 @@ threads through it. The true target survives (Pd 0.97), but it is not untouched
 inside the first clutter burst, where a clutter-born track briefly steals the
 association.
 
-A separate pilot measurement (8 seeds, counting confirmed tracks more than 3
-range-bins from the GT) quantifies the clutter load: the bursts spawn on the
-order of **~39 distinct false confirmed tracks per run, up to ~10 alive
-simultaneously**. The clutter band is strong and persistent enough (fixed
+The clutter load is large: this run spawns **35 distinct false confirmed tracks,
+up to 9 alive simultaneously** — confirmed track IDs that *never* associate with
+the GT (`count_false_confirmed_tracks`, the same association-based metric used in
+§3.3.2 and §3.4). The clutter band is strong and persistent enough (fixed
 range/Doppler band, 30 dB CNR, present every frame of each ON window) that many
-of these spurious detections survive M-of-N confirmation. This sets up the
-sweep in A.3.2.
+of these spurious detections survive M-of-N confirmation; §3.4 shows the count
+holds at 35 ± 3 across 30 seeds. This sets up the sweep in §3.3.2.
 
 #### 3.3.2 Hyperparameter sweep — `confirm_M`-of-`confirm_N`
 
@@ -571,14 +569,15 @@ running the **KF** tracker on all three Family-A scenarios over **30 seeds**
 (`1…30`, see §2.5) and reporting the distribution of each metric.
 
 > *Why KF only, and not a KF/EKF/IMM comparison.* Family-A motion is ~constant
-> velocity, which is the one regime the three filters do **not** differ on — the
-> drag-EKF and the IMM's drag mode have nothing to correct, so they collapse onto
-> the CV filter and produce the same track associations (their estimates differ
-> only at the sub-centimetre, within-noise level here). Family A therefore cannot
-> meaningfully *compare* the filters; the genuine filter comparison, where the
-> motion violates CV and the estimates diverge by metres, is the subject of the
-> Family-B and Family-C case studies (§4–5). This section is a robustness check
-> on the tracker, not a filter contest.
+> velocity, which is the one regime the three filters do **not** meaningfully
+> differ on — the drag-EKF and the IMM's drag mode have no model mismatch to
+> correct, so they collapse onto the CV filter and produce the same track
+> associations. Any residual difference would live in the continuous estimate,
+> well below what the discrete metrics reported here can resolve, so we did not run
+> the comparison: Family A cannot meaningfully *compare* the filters. The genuine
+> filter comparison, where the motion violates CV and the estimates diverge by
+> metres, is the subject of the Family-B and Family-C case studies (§4–5). This
+> section is a robustness check on the tracker, not a filter contest.
 
 CMD: `python -m evaluation.tracker_stress_matrix`
 
@@ -684,7 +683,7 @@ estimate, and a wrong model fails exactly as the red curve shows.
 
 ## 5. Family C Case Study — Regime Switching (CV → drag)
 
-This case study push the scenario a bit further. Family B handles a *single* nonlinear regime, where a fixed drag-EKF wins. But if the target's dynamics *change* partway through the run, no single fixed model
+This case study pushes the scenario a bit further. Family B handles a *single* nonlinear regime, where a fixed drag-EKF wins. But if the target's dynamics *change* partway through the run, no single fixed model
 is correct end to end: a CV filter is right early and wrong late, a drag filter
 is wrong early and right late. The motion is **piecewise** — a sequence of
 distinct regimes — and that is precisely the condition the IMM exists for. This case study adds the IMM to the comparison besides KF and EKF.
@@ -738,7 +737,7 @@ CMD: `python -m scripts.compare_imm_switching --scenario scenarios/scenario_imm_
 
 *(The orange line marks the frame-40 regime boundary.)*
 
-The result is underwhelming: All three filters track the
+The result is underwhelming — all three filters track the
 truth tightly through both phases; in the natural coast streaks (e.g. frames
 ~22–35) the EKF dips at most ~0.5 m below truth before snapping back, and the KF
 shows no drag-phase overshoot worth the name. The lower panel is the tell:
@@ -753,7 +752,7 @@ To expose the IMM's advantage we sharpen the *model mismatch*, which per frame
 scales as **`k·v²`**. Two levers raise it (`scenario_imm_switching_v2.json`):
 the initial velocity **v₀ 2.5 → 3.5 m/s** and the drag coefficient **k 0.5 → 2.0**.
 Everything else — range, amplitude, seed, transition frame, frame count — is held
-identical to the scenario I, so the change in behavior is attributable to
+identical to scenario I, so the change in behavior is attributable to
 `k·v²` alone. The peak per-frame mismatch grows from ~`0.5·2.5² ≈ 3.1` to
 ~`2.0·3.5² ≈ 24.5`, roughly **8×**.
 
@@ -784,14 +783,15 @@ weight migrates to μ_drag (olive, ~0.6) in the drag phase. The switch lags the
 true boundary by a few frames — the filter needs evidence to re-weight — but it
 does adapt, which is precisely what neither fixed-model filter can do.
 
-**Why the scenario I was flat.** The IMM only earns its keep once coasting
+**Why scenario I was flat.** The IMM only earns its keep once coasting
 through the *wrong* model produces metres of error, and that error is set by
 `k·v²`. The gentle deceleration in scenario I (small `k·v²`) never pulls the CV
 prediction far from truth, so the IMM has nothing to switch *for*; only the
 amplified `k·v²` makes the mismatch — and the IMM's adaptive re-weighting — visible.
-(Amplitude is the wrong lever for this: it controls how often the tracker coasts,
-not the per-coast divergence — a separate run setting the base amplitude to the
-scenario II's value still produced no divergence and no switch.) The
+(Amplitude is not the lever: it controls how often the tracker coasts, not the
+per-coast divergence. Indeed scenarios I and II share the *same* amplitude
+(0.00045) — only `v₀` and `k` differ — yet only scenario II diverges, so the
+change cannot be an amplitude effect.) The
 divergence here is intrinsic to the scenario, not an artifact of forcing; the
 script can still impose a fixed coast window via `--forced_coast`, but it yields a
 nearly identical plot.
@@ -804,10 +804,9 @@ mid-track — and sharply enough that `k·v²` is large.
 
 ## 6. Cross-Cutting Discussion
 
-*(Partial — completed for the topics whose experiments have run; the
-algorithm-comparison thread depends on A.4.)*
+*(Cross-cutting synthesis across the experiments of §3–§5.)*
 
-**When does tracker tuning matter most?** The two A.1.2 sweeps show that
+**When does tracker tuning matter most?** The two §3.1.2 sweeps show that
 `max_coast` and `process_noise_q` act on orthogonal sub-systems: *coast
 tolerance* (`max_coast`) is the parameter that moves a run between CLEAN and
 TOTAL CONFUSION (track survival), while `process_noise_q` is inert on those
@@ -823,14 +822,17 @@ Doppler separation and fragile to overtakes that don't.
 
 **When is filter choice the lever?** Only when the *motion* violates the
 constant-velocity assumption — which is exactly what Families B and C stress, and
-where the EKF/IMM diverge from KF by metres (§4–5). Family A deliberately does
-**not** probe this: its motion is ~constant velocity, so the drag-EKF and the
-IMM's drag mode have nothing to correct and collapse onto the CV filter
-(estimates differ only at the sub-centimetre, within-noise level). Family A is
-therefore the wrong place to compare filters at all — it cannot separate them by
-any metric — which is why §3.4 reports KF robustness across seeds rather than a
-filter contest. The boundary this report locates: filter choice is immaterial
-under detection/association stress and decisive under motion-model stress.
+where the EKF/IMM diverge from KF by metres (§4–5). Family A's motion is
+~constant velocity by design, so the drag-EKF and the IMM's drag mode have no
+model mismatch to correct: there is no mechanism by which they could separate from
+the CV filter on the discrete tracking outcomes (Pd, classification, distinct
+tracks) that define Family A's failure modes. We therefore did **not** run a
+filter comparison in Family A at all — it would be unable to tell the filters
+apart — which is why §3 uses the KF throughout and §3.4 reports the KF's
+robustness across seeds rather than a filter contest. Filter choice is examined
+only where it can matter: the motion-model case studies of §4–5. The boundary this
+report locates: filter choice is immaterial under detection/association stress and
+decisive under motion-model stress.
 
 ---
 
@@ -842,6 +844,8 @@ under detection/association stress and decisive under motion-model stress.
 - **Bin-space association.** GT-track association and the gate are defined in
   (range-bin, doppler-bin) units; a metric-space association might score
   borderline cases differently.
+- **Confirm sweep (§3.3.2) is KF / single-seed.** Like the missed sweep, it
+  characterizes a parameter trend on one algorithm, not across the filter family.
 - **Families B and C are single-seed case studies.** The amplified-divergence
   demos illustrate the mechanism clearly but do not establish a statistical
   margin. Multi-seed Monte Carlo for B and C is deferred.
@@ -860,9 +864,21 @@ under detection/association stress and decisive under motion-model stress.
   second, independent constraint). A sensitivity sweep (assumed vs. true `k`), an
   online `k`-fit, or a multi-`k` IMM bank would replace the oracle and quantify the
   realistic gap; all are deferred.
-- **Confirm sweep (A.3.2) is KF / single-seed.** Like the missed sweep, it
-  characterizes a parameter trend on one algorithm, not across the filter family.
-- **Open follow-up:** the A.3.2 sweep established the *negative* — M-of-N
+- **Truth-aided track selection (§4–§5 plots).** The tracker itself runs in full —
+  GNN association, gating, M-of-N confirmation, coasting, birth/death all happen
+  normally. The oracle is only in the *plotting*: among the tracker's
+  confirmed/coasting output tracks, the overlay scripts draw, each frame, the one
+  whose range is *closest to ground truth*, and skip the frame if even that one is
+  more than 3 m off. So any false or duplicate tracks the tracker produced still
+  exist — they are simply not displayed; the overlay does not *prevent*
+  association/false-track failures, it just doesn't *show* them. The motion-model
+  conclusions (KF overshoots, EKF/IMM track the drag) are unaffected — they concern
+  the filter's estimate, not which track is picked — but the visual cleanliness of
+  the B/C overlays should not be read as track-management performance. (It also
+  matters little here because the B/C scenarios are single-target with negligible
+  clutter, so association is barely stressed.) An identity-based selection (lock
+  onto a track ID once and follow it) would remove the oracle.
+- **Open follow-up:** the §3.3.2 sweep established the *negative* — M-of-N
   confirmation depth is a weak clutter defense (false-track load is flat until
   the 5-of-5 corner, which then costs true-target Pd), and gating is no help
   either (tightening it spawns *more* clutter tracks, not fewer). Because the
@@ -886,8 +902,8 @@ under detection/association stress and decisive under motion-model stress.
 | `tracker_stress_crossing_targets.png` | `tracker_stress.py` | ✅ exists |
 | `tracker_stress_overtaking_targets.png` | `tracker_stress.py` | ✅ exists |
 | `tracker_stress_intermittent_clutter.png` | `tracker_stress.py` | ✅ exists |
-| `tracker_stress_drag_decel.png` (§4 Step 2, natural coast) | `scripts/compare_kf_ekf_drag_decel.py` (no forced coast) | ✅ exists |
-| `tracker_stress_drag_decel_forced_coast.png` (§4 Step 3, forced coast) | `scripts/compare_kf_ekf_drag_decel.py --forced_coast` | ✅ exists |
+| `tracker_stress_drag_decel.png` (§4.2, natural coast) | `scripts/compare_kf_ekf_drag_decel.py` (no forced coast) | ✅ exists |
+| `tracker_stress_drag_decel_forced_coast.png` (§4.2, forced coast) | `scripts/compare_kf_ekf_drag_decel.py --forced_coast` | ✅ exists |
 | `tracker_stress_imm_switching.png` (§5.2, scenario I) | `scripts/compare_imm_switching.py --scenario scenarios/scenario_imm_switching.json` | ✅ exists |
 | `tracker_stress_imm_switching_v2.png` (§5.3, scenario II) | `scripts/compare_imm_switching.py` (default; `--forced_coast` for the forced variant) | ✅ exists |
 | confirm sweep table (§3.3.2) | `tracker_stress_confirm_mn_sweep.py` | ✅ console table (not saved) |

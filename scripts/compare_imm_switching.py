@@ -92,6 +92,7 @@ def run(tracker, gen, initial_targets, range_per_bin, radar_cfg,
         tracker.step(dets)
         if not tracker.tracks:
             continue
+        # Pick the single track to plot for this frame and record its position/status/mode-probabilities
         truth_r, _ = range_at(initial_targets[0], frame_idx,
                               radar_cfg.frame_period_s)
         candidates = [t for t in tracker.tracks
@@ -102,6 +103,7 @@ def run(tracker, gen, initial_targets, range_per_bin, radar_cfg,
                    key=lambda t: abs(float(t.state[0]) * range_per_bin
                                        - truth_r))
         best_pos_m = float(best.state[0]) * range_per_bin
+        # If even the nearest track is more than 3 m off truth, treat it as "no real track this frame" and continue 
         if abs(best_pos_m - truth_r) > 3.0:
             continue
         mode_probs = (

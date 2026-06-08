@@ -1,6 +1,6 @@
 """KF multi-seed robustness matrix for Family A (A.4).
 
-Runs the **KF** tracker on the three Family-A stress scenarios over a fixed seed
+Runs the **KF** tracker on the four Family-A stress scenarios over a fixed seed
 list, then aggregates per scenario: mean ± std of the per-GT numeric metrics
 (Pd, distinct IDs, coast frames) and the run-level metrics (ID switches, false
 confirmed tracks), plus the classification-rate breakdown over the seeds.
@@ -43,7 +43,8 @@ from simulator.beat_signal_generator import (
 )
 
 
-SCENARIOS = ["missed_detections", "crossing_targets", "intermittent_clutter"]
+SCENARIOS = ["missed_detections", "crossing_targets", "overtaking_targets",
+             "intermittent_clutter"]
 # KF only: Family A is a robustness study, not a filter comparison (the filters
 # are indistinguishable on constant-velocity motion; see the module docstring
 # and report §3.4). The filter comparison lives in the Family-B/C case studies.

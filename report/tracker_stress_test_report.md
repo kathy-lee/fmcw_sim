@@ -440,11 +440,13 @@ CMD: `python -m evaluation.tracker_stress --scenario scenarios/scenario_overtaki
 | ID switches | **2** (frame 43: gt0 2→0; frame 48: gt1 0→6) | |
 | **Classification** | **⚠ ID SWITCH** | |
 
-Now the tracker fails exactly where the crossing succeeded. At the overtake the
+Now the tracker fails exactly where the crossing succeeded. At the overtake, the
 two targets are close in *both* range and Doppler, the gates overlap, and GNN
 swaps the assignments: GT 0's track ID jumps 2→0 at frame 43 and GT 1's jumps
 0→6 at frame 48 (two annotated switch events on the plot). Both GTs end up with
-2 distinct IDs.
+2 distinct IDs. This identity swap is *structural* — it follows from the two
+targets losing every separating dimension at the overtake, not from a particular
+noise draw (seed-robustness quantified in §3.4).
 
 **The contrast is the point.** Crossing vs. overtaking isolate the role of the
 Doppler dimension in association: a crossing that looks visually dramatic
@@ -565,7 +567,7 @@ tentative tracks, not fewer.
 
 The single-run illustrations in §3.1–3.3 each used one fixed seed. This
 subsection establishes that they are **representative**, not lucky draws, by
-running the **KF** tracker on all three Family-A scenarios over **30 seeds**
+running the **KF** tracker on all four Family-A scenarios over **30 seeds**
 (`1…30`, see §2.5) and reporting the distribution of each metric.
 
 > *Why KF only, and not a KF/EKF/IMM comparison.* Family-A motion is ~constant
@@ -581,9 +583,9 @@ running the **KF** tracker on all three Family-A scenarios over **30 seeds**
 
 CMD: `python -m evaluation.tracker_stress_matrix`
 
-The output is two CSVs: `tracker_stress_matrix_raw.csv` — 120 rows,
+The output is two CSVs: `tracker_stress_matrix_raw.csv` — 180 rows,
 one per (scenario, seed, GT), the auditable per-run source of truth, and
-`tracker_stress_matrix_summary.csv` — the 3-row per-scenario aggregate that the
+`tracker_stress_matrix_summary.csv` — the 4-row per-scenario aggregate that the
 table below is transcribed from, over the
 30 seeds — one row per scenario — with the classification-rate breakdown:
 
@@ -591,17 +593,25 @@ table below is transcribed from, over the
 |---|---|---|---|---|---|---|
 | missed_detections | 0.67±0.05 | 1.10±0.30 | 22.9±4.1 | 0.10±0.30 | 0.0±0.0 | 27 CLEAN, 3 ID SWITCH |
 | crossing_targets | 0.97±0.00 | 1.00±0.00 | 0.0±0.0 | 0.00±0.00 | 3.0±0.9 | 30 CLEAN |
+| overtaking_targets | 0.89±0.03 | 2.00±1.00 | 2.1±2.2 | 2.00±0.00 | 1.0±0.0 | 30 ID SWITCH |
 | intermittent_clutter | 0.97±0.00 | 3.80±2.02 | 21.2±14.5 | 1.37±1.52 | 35.0±2.7 | 12 CLEAN, 18 ID SWITCH |
 
 **The single-run figures are representative.** Each seed distribution brackets
 the KF value cited earlier: `missed_detections` 0.67±0.05 contains the §3.1.1
-figure of 0.61 (one draw at the canonical seed 99999), and both `crossing` and
-`clutter` sit at 0.97 as in §3.2.1/§3.3.1. So the illustrative runs were typical,
-not cherry-picked.
+figure of 0.61 (one draw at the canonical seed 99999); `crossing` and `clutter`
+sit at 0.97 as in §3.2.1/§3.3.1; and `overtaking` brackets the §3.2.2 run (per-GT
+Pd 0.86/0.93, two ID switches) at Pd 0.89±0.03 with exactly two switches on every
+seed. So the illustrative runs were typical, not cherry-picked.
 
 **What the spread says about each stressor.**
 - `crossing_targets` is the most **stable** — every seed is CLEAN, Pd 0.97 with
   zero variance. Doppler-separated association is robust to noise.
+- `overtaking_targets` is its **deterministic mirror image**: **30/30 ID SWITCH**,
+  every seed with exactly two switch events (switches 2.00±0.00) and no break (Pd
+  0.89±0.03, targets never lost). When the two targets share both range and
+  Doppler at the overtake there is no separating dimension, so the identity swap is
+  structural — noise never rescues it and never worsens it into a break. This
+  confirms the §3.2.2 single-run result is the rule, not a lucky draw.
 - `missed_detections` is **tight in Pd but occasionally fragile**: Pd 0.67±0.05,
   CLEAN on 27/30 seeds, with 3 seeds tipping into a single ID switch as the
   marginal target's miss pattern happens to fragment the track.
@@ -907,5 +917,5 @@ decisive under motion-model stress.
 | `tracker_stress_imm_switching.png` (§5.2, scenario I) | `scripts/compare_imm_switching.py --scenario scenarios/scenario_imm_switching.json` | ✅ exists |
 | `tracker_stress_imm_switching_v2.png` (§5.3, scenario II) | `scripts/compare_imm_switching.py` (default; `--forced_coast` for the forced variant) | ✅ exists |
 | confirm sweep table (§3.3.2) | `tracker_stress_confirm_mn_sweep.py` | ✅ console table (not saved) |
-| `tracker_stress_matrix_raw.csv` (KF, 120 rows) | `tracker_stress_matrix.py` | ✅ exists |
-| `tracker_stress_matrix_summary.csv` (KF, 3 rows) | `tracker_stress_matrix.py` | ✅ exists |
+| `tracker_stress_matrix_raw.csv` (KF, 180 rows) | `tracker_stress_matrix.py` | ✅ exists |
+| `tracker_stress_matrix_summary.csv` (KF, 4 rows) | `tracker_stress_matrix.py` | ✅ exists |

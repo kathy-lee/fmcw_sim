@@ -89,13 +89,13 @@ one-cell peak is rejected just as under `cc`.
 Every method's threshold is `α × noise_estimate`, and `α` is what makes the design
 Pfa meaningful. Rather than use the textbook closed-form `α` (which assumes
 independent, exponentially-distributed cells), this implementation **calibrates α
-empirically**:
+empirically** by:
 
-- Draw pure-noise range-Doppler power maps **through the same processing chain**
-  the live pipeline uses (the same Hann windowing, DC removal, and optional
+- **drawing** pure-noise range-Doppler power maps **through the same processing
+  chain** the live pipeline uses (the same Hann windowing, DC removal, and optional
   clutter removal), so adjacent cells carry the correct window-induced correlation
-  and the same "dead" cells (range bin 0, the clutter-removal Doppler bin).
-- Run each method's noise-estimate operator on those maps and take the
+  and the same "dead" cells (range bin 0, the clutter-removal Doppler bin);
+- **running** each method's noise-estimate operator on those maps and taking the
   `(1 − Pfa)` quantile of the cut/noise ratios as `α`.
 
 This matters because the Hann window's power autocorrelation spans a few bins, so
@@ -300,3 +300,160 @@ the closest (down to 0.3 m) but at ~20× the false-alarm rate — acceptable onl
 a downstream stage (clustering's `min_cells`, tracking confirmation) can absorb the
 clutter. **CA with `cc`** is the balanced middle: ~0.05 FA/frame and a ~0.9 m
 resolution floor, with only a one-point dip at 0.5 m.
+
+---
+
+## 5. Clutter edge — a target in and around a clutter region
+
+This experiment introduces the **second** classic non-homogeneous training
+environment: a **clutter edge**, where the training window straddles a transition
+between clean noise and a region of elevated power (the first, an interfering
+target, was §4). A target is swept across a fixed clutter region, and we ask which
+CFAR method holds it and which floods false alarms — the mirror of §4, where now
+the **GO↔SO trade-off inverts**.
+
+**Scenario** (`scenario_clutter_edge.json`): a single target whose amplitude is
+tuned to sit comfortably above the *clean-noise* threshold but only *marginally*
+above the *in-clutter* threshold (the regime where the operators separate); DC
+leakage is disabled so the range-0 column doesn't compete. The clutter region is
+set programmatically per level at **CNR = 10 dB**, and the target's position
+(range/velocity) is overridden per sweep point. Clustering here is using **`peak`**
+(`min_cells = 2`). Two clutter geometries are tested, plus an optional
+clutter-removal pass:
+
+- **Level 1 (§5.1)** — clutter fills a range band across *all* Doppler.
+- **Level 2 (§5.2)** — clutter is a (range × near-zero-Doppler) rectangle, so
+  clutter-free Doppler exists.
+- **Level 2 + clutter removal (§5.3)** — the same, with slow-time mean subtraction
+  (MTI) enabled.
+
+### 5.1 Level 1 — broad clutter (all Doppler)
+
+The clutter fills the **4–6 m range band across every Doppler bin**, and the
+target's **velocity is held at 2 m/s** (well off zero-Doppler) while its **range**
+is swept from 1.5 to 7.5 m, straight through the band (shaded on the plot).
+
+CMD: `python -m evaluation.sweep_clutter_edge --level 1 --frames 100`
+
+![Level 1 — broad clutter across all Doppler](sweep_clutter_edge_level1.png)
+
+**Broad clutter defeats every CFAR method in-band.** As the target enters the
+4–6 m band, Pd collapses for all four — from ~1.0 outside to ~0.1 at the band
+centre (r = 5 m: cell-level Pd CA 0.15, OS 0.13, GO 0.13, SO **0.00**). The reason
+is structural: when clutter spans *all* Doppler, a target inside the band has **no
+clutter-free training cells** — its entire training ring sits in clutter, leaving
+no clean reference for *any* noise-estimate operator. The CFAR *operator* cannot
+recover the target; only removing or avoiding the clutter can (§5.3).
+
+What the operator *does* change is the **false-alarm cost and the band-edge
+behaviour** — and here the §4 ranking flips:
+- **SO is catastrophic** — ~**3.4 false alarms/frame** at every range (vs ~0.4 for
+  CA/OS, ~0.2 for GO), and its centroid Pd is depressed *even outside* the band
+  (~0.63 at 1.5 m). Smallest-of takes the lowest training quadrant, badly
+  under-reading the noise at the clutter, so it floods detections — which then
+  fragment the target's own centroid everywhere. SO is unusable against clutter.
+- **GO has the lowest false-alarm rate** (~0.2/frame) — exactly the clutter-edge
+  suppression §1 advertised — but it pays in **edge Pd**: its cell Pd is already
+  down to ~0.37 at r = 3.5 m (vs CA 0.92, OS 1.0), because greatest-of locks onto
+  a clutter quadrant the moment one touches the band, masking the target on
+  approach.
+- **CA and OS are the least-bad in-band** (highest edge Pd, OS a touch ahead) at a
+  moderate ~0.4 FA/frame.
+
+So the **GO↔SO duality from §4 already inverts**: SO — the §4 masking champion — is
+the worst here, and GO — the §4 masking villain — has the cleanest false-alarm
+behaviour. But Level 1's headline is that *no* operator detects the in-band target,
+because all-Doppler clutter leaves no clean training. §5.2 restricts the clutter in
+Doppler so the target is detectable, sharpening the operator differences.
+
+### 5.2 Level 2 — restricted clutter (clutter-free Doppler exists)
+
+Level 2 confines the clutter to a **rectangle** — range 4–6 m **and** |v| ≤ 0.5 m/s
+(CNR 10 dB), so clutter-free Doppler now exists and a target can find clean
+training cells. The sweep is a **cross**:
+
+- **Slice A** sweeps the target's **range** at fixed **v = 0** (inside the
+  clutter's Doppler, left column);
+- **Slice B** sweeps its **velocity** at fixed **r = 5 m** (inside the clutter's
+  range, right column).
+
+The shaded bands in the following plot mark the clutter region in each slice.
+
+CMD: `python -m evaluation.sweep_clutter_edge --level 2 --frames 100`
+
+![Level 2 — restricted clutter, cross sweep](sweep_clutter_edge_level2_cross.png)
+
+**The target is detected again — because clutter-free Doppler now exists.** In
+Level 1 the clutter spanned every Doppler bin, so a target in the band had no clean
+training cells anywhere near it. Here the clutter is confined to |v| ≤ 0.5, so even
+a target sitting in the clutter's *range* still finds clean training cells — just
+at a different Doppler — and the CFAR estimates the noise from those. Cell-level Pd recovers
+accordingly: CA and OS detect the target essentially everywhere (≈ 1.0 across both
+slices), versus the ~0.1 in-band collapse of Level 1. What now separates the
+methods is the **false-alarm rate**, and here the §4 ranking *fully inverts*:
+
+- **GO is the clutter champion.** It holds the **lowest false-alarm rate** — down
+  to ~0.08/frame at the clutter core (r = 5, v = 0) and ~0.1–0.5 across the sweep
+  — because greatest-of raises the threshold over the clutter, exactly the
+  clutter-edge suppression §1 promised. Its Pd stays solid (cell 0.9–1.0), with
+  only a modest centroid dip (to ~0.62–0.7) right at the clutter core.
+- **OS pays the most in false alarms** (~1.3–1.7/frame), and **CA is elevated too**
+  (~0.6–1.5): ranking and averaging detect the target reliably but do little to
+  suppress the clutter's own false detections.
+- **SO is the clutter loser.** Its false-alarm rate here is only moderate (~0.24),
+  yet its **target retention is the worst**: cell Pd is degraded (0.6–0.99) and
+  centroid Pd collapses (0.10–0.72 in Slice A, 0.32–0.62 in Slice B). Smallest-of
+  under-reads the noise inconsistently at the clutter, so detection is patchy and
+  `peak` clustering often centroids a clutter peak instead of the target — the
+  cell-vs-centroid divergence §3 anticipated, now driven by clutter rather than
+  proximity.
+
+**The GO↔SO duality completes.** Across §4 and §5 the two opposites swap podiums
+exactly as theory predicts: **GO** — the §4 masking villain — is the §5 clutter
+champion (lowest false alarms, holds the target); **SO** — the §4 masking champion
+— is the §5 clutter loser (catastrophic in Level 1, poor retention in Level 2). CA
+and OS sit between: reliable detectors that don't suppress clutter false alarms.
+
+Still, even GO leaks ~0.1–0.5 false alarms/frame and loses centroid Pd at the
+clutter core. The decisive clutter defence is not a CFAR operator at all, but
+**clutter removal** — §5.3.
+
+### 5.3 Level 2 + clutter removal — the MTI fix and its blind spot
+
+The real defence against the clutter is a *separate pipeline stage*: **clutter
+removal** — subtracting the slow-time (across-chirp) mean before the Doppler FFT,
+the classic **MTI** canceller, which nulls the zero-Doppler bin where static
+clutter lives. This is **not** a CFAR method; it is an upstream toggle
+(`--clutter-removal`) whose effect dominates the operator choice. So here we do a comparison against §5.2, run the same Level-2 cross sweep but
+with clutter removal now switched **on**, measure what the *stage* buys.
+
+CMD: `python -m evaluation.sweep_clutter_edge --level 2 --clutter-removal --frames 100`
+
+![Level 2 + clutter removal — a hard null at zero Doppler](sweep_clutter_edge_level2_cross_clutterRemoval.png)
+
+**Clutter removal slashes false alarms and rescues movers.** Against the
+near-static Level-2 clutter (|v| ≤ 0.5), MTI cancels the clutter at the source and
+the false-alarm rate plummets, shown in the bottom Pfa subplots: CA from ~1.5 to **0.06**, OS from ~1.6 to **0.13**,
+GO from ~0.4 to **0.03** per frame (the worst leakers cut ~10–25×; SO was already
+low, ~0.2, since its clutter weakness was Pd, not false alarms). The top right subplot of **Slice B** shows: Any **moving**
+target (|v| ≳ 0.5, Slice B) is detected cleanly at Pd ≈ 1.0, and for movers the
+operator choice barely matters — CA, OS and GO all sit at Pd 1.0 with tiny
+false-alarm rates (SO alone still lags, centroid ~0.5–0.7).
+
+**But it blinds the radar to zero-Doppler targets.** The same subtraction that
+removes the static clutter removes any target *at* zero Doppler. **Slice A** — the
+target swept in range at **v = 0** — is a flat **Pd = 0 for all four methods at
+every range**: the target is cancelled along with the clutter. **Slice B** shows
+the null directly — a sharp notch at v = 0 (Pd → 0) that recovers to ~1.0 only once
+the target's velocity clears **|v| ≳ 0.5 m/s**. This is the fundamental MTI trade:
+clutter suppression at the price of a **blind notch at zero Doppler**, fatal to
+static or slow, near-radial targets.
+
+**The clutter-defence conclusion.** When the clutter is static (as in Level 2),
+clutter removal is far more effective than any CFAR-operator choice: it removes the
+clutter at the source, collapses the false-alarm rate, and erases most of the
+CA/OS/GO/SO differences for moving targets — at the cost of a zero-Doppler blind
+spot, so it is the right tool only when the targets of interest are moving. When
+the clutter is *not* concentrated at zero Doppler (Level 1's all-Doppler band), MTI
+has nothing to subtract and this fix does not apply — there, as §5.1 showed, no
+stage in this pipeline recovers the in-band target.

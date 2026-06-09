@@ -457,3 +457,60 @@ spot, so it is the right tool only when the targets of interest are moving. When
 the clutter is *not* concentrated at zero Doppler (Level 1's all-Doppler band), MTI
 has nothing to subtract and this fix does not apply — there, as §5.1 showed, no
 stage in this pipeline recovers the in-band target.
+
+---
+
+## 6. Cross-cutting discussion — which method when
+
+**The CFAR methods are a trade-off, not a ranking.** No
+operator wins everywhere; each result of §3–§5 places a method on the spectrum
+theory predicts:
+
+**CA** — optimal in homogeneous noise, degrades with interferers.
+- Theory: minimal CFAR loss in homogeneous noise; the averaged estimate inflates when a strong interferer sits in the training cells.
+- Measured: §3 — CA matches OS/GO and sets the false-alarm floor (~0.05/frame). §4 — a mild self-mask (cell Pd→0 at 0.5 m).
+
+**OS** — small homogeneous-noise loss, robust to interferers.
+- Theory: slightly behind CA in clean noise; the rank ignores a minority of contaminated training cells, so it resists masking.
+- Measured: §3 — indistinguishable from CA. §4 — never self-masks (cell Pd=1.0 at every separation); §5 — detects reliably in clutter.
+
+**GO** — good at clutter edges, bad at multi-target. (the key duality)
+- Theory: greatest-of raises the threshold when one window is in clutter → suppresses clutter-edge false alarms; but that same "take the bigger side" masks a target whose interferer is on 
+  one side. 
+- Measured: §4 — masks the weak target across the whole training window (cell Pd=0 at 0.5–0.9 m), the worst masker. §5 — the lowest false-alarm rate at clutter (e.g.
+  ~0.2/frame in the broad-clutter case vs SO's 3.4).
+  
+**SO** — bad at clutter edges, good at multi-target. (GO's mirror)
+- Theory: smallest-of ignores the contaminated side → resolves closely-spaced targets / resists masking; but taking the low side causes excessive false alarms at clutter edges and a real
+  loss in homogeneous noise.
+- Measured: §3 — the worst in homogeneous noise (~5–9 dB less sensitive, ~3× FA). §4 — never masks (cell Pd=1.0 everywhere). §5 — catastrophic false alarms at clutter (3.4/frame in Level 1).
+  
+The unifying structure is the **GO↔SO** duality: they are opposites, and the experiments demonstrate it cleanly:
+- §4 (masking / interfering target): GO fails, SO wins.
+- §5 (clutter edge): GO wins, SO fails.
+- §3 (homogeneous): CA ≈ OS ≈ GO, SO trails (its strength buys nothing when there's nothing to mask).
+
+
+| Situation | Best CFAR | Why |
+|---|---|---|
+| Clean noise, separated targets | **CA** (or OS) | optimal and simplest; the operator barely matters (§3) |
+| Closely-spaced targets | **OS** (or SO) + `peak` | masking-immune, and `peak` resolves the merge — at higher false alarms (§4) |
+| Static clutter present | **GO** for FA control | lowest clutter false alarms — but the real fix is upstream (below, §5) |
+| General-purpose default | **OS** | ≈ CA in clean noise, masking-immune like SO, good detection(Pd) in clutter edge case |
+
+**When does the clustering choice matter?** Only when targets are *close*. For
+well-separated targets all three clustering methods coincide; once two targets'
+detection cells touch, **`cc` and `dbscan` merge them** (a resolution floor of
+~0.9 m here) while **`peak` resolves them** by keeping distinct local maxima (down
+to 0.3 m, §4). `dbscan` adds an `eps` knob but no new behaviour — large `eps`
+merges like `cc`, small `eps` discards the target. So for the close-target problem
+the clustering lever (`peak`) is as decisive as the CFAR operator.
+
+**When is the CFAR operator the *wrong* lever?** Against **clutter**. §5 showed
+that even GO — the best operator at a clutter edge — still leaks false alarms and
+loses Pd at the clutter core. The decisive defence is upstream: **clutter removal
+(MTI)** cancels static clutter at the source, collapsing the false-alarm rate and
+rescuing moving targets (§5.3), at the price of a zero-Doppler blind spot. So when
+the clutter is static, reach for the *stage*, not the operator; and when it fills
+all Doppler (§5.1), neither operator nor removal in this pipeline recovers the
+in-band target — only a different waveform or geometry would.

@@ -205,7 +205,7 @@ at 5.0 m + *separation*, both at v = 0 — a range-only sweep. The separation is
 walked over `[0.3, 0.5, 0.7, 0.9, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0]` m, 100 frames per
 (method, separation). For the **weak** target, both **cell-level** Pd
 (did its cell cross threshold) and **centroid-level** Pd (did clustering emit a
-matching detection), plus false alarms/frame. The masker's own Pd stays ~1
+matching detection) are reported, plus false alarms/frame. The masker's own Pd stays ~1
 throughout (a sanity check). Clustering uses `cc` method.
 
 CMD: `python -m evaluation.sweep_masking --frames 100 --clustering cc`
@@ -261,7 +261,7 @@ under `cc` — their failures are upstream of clustering. The false-alarm panel 
 essentially unchanged from `cc` (OS/SO ~1.1, CA/GO ~0.05), since clustering does
 not alter what the CFAR stage detects.
 
-**The third clustering method, `dbscan`, offers no peak-like middle ground.** In theory, large eps → merges everything nearby (like cc); small eps → clusters fragment, and a blob too sparse to meet min_samples is discarded. 
+**The third clustering method, `dbscan`, offers no peak-like middle ground.** In theory, large `eps` → merges everything nearby (like `cc`); small `eps` → clusters fragment, and a blob too sparse to meet `min_samples` is discarded. 
 When sweeping its `eps`: at `eps = 1.0` and `1.5` it is *indistinguishable from `cc`*
 (OS recovers at 0.9 m, SO at 0.7 m — same merges, same floor), and shrinking
 `eps` to 0.5 does **not** separate the pair like `peak` — it drops the weak
@@ -416,8 +416,8 @@ The real defence against the clutter is a *separate pipeline stage*: **clutter
 removal** — subtracting the slow-time (across-chirp) mean before the Doppler FFT,
 the classic **MTI** canceller, which nulls the zero-Doppler bin where static
 clutter lives. This is **not** a CFAR method; it is an upstream toggle
-(`--clutter-removal`) whose effect dominates the operator choice. So here we do a comparison against §5.2, run the same Level-2 cross sweep but
-with clutter removal now switched **on**, measure what the *stage* buys.
+(`--clutter-removal`) whose effect dominates the operator choice. So here we compare against §5.2: run the same Level-2 cross sweep but
+with clutter removal now switched **on**, and measure what the *stage* buys.
 
 CMD: `python -m evaluation.sweep_clutter_edge --level 2 --clutter-removal --frames 100`
 
@@ -425,10 +425,11 @@ CMD: `python -m evaluation.sweep_clutter_edge --level 2 --clutter-removal --fram
 
 **Clutter removal slashes false alarms and rescues movers.** Against the
 near-static Level-2 clutter (|v| ≤ 0.5), MTI cancels the clutter at the source and
-the false-alarm rate plummets, shown in the bottom Pfa subplots: CA from ~1.5 to **0.06**, OS from ~1.6 to **0.13**,
+the false-alarm rate plummets, shown in the bottom false-alarm subplots: CA from ~1.5 to **0.06**, OS from ~1.6 to **0.13**,
 GO from ~0.4 to **0.03** per frame (the worst leakers cut ~10–25×; SO was already
-low, ~0.2, since its clutter weakness was Pd, not false alarms). The top right subplot of **Slice B** shows: Any **moving**
-target (|v| ≳ 0.5, Slice B) is detected cleanly at Pd ≈ 1.0, and for movers the
+low, ~0.2, since its clutter weakness was Pd, not false alarms). The Slice B Pd
+panel (top right) shows the upside: any **moving** target (|v| ≳ 0.5) is detected
+cleanly at Pd ≈ 1.0, and for movers the
 operator choice barely matters — CA, OS and GO all sit at Pd 1.0 with tiny
 false-alarm rates (SO alone still lags, centroid ~0.5–0.7).
 
@@ -524,7 +525,7 @@ in-band target — only a different waveform or geometry would.
   variance, so small gaps (e.g. OS vs CA in clean noise) should not be over-read. A
   multi-seed Monte Carlo — as in the companion *Tracker Stress Test* report — would
   put error bars on the curves.
-- **Hand-tuned, marginal scenarios.** The clutter target's amplitude is tuned to
+- **Hand-tuned, marginal scenarios.** In the clutter experiment (§5) the target's amplitude is tuned to
   the *marginal in-clutter* regime, and the masking amplitudes (1.0 / 0.3) and
   separations are fixed, precisely so the operators separate. The thresholds
   between regimes — which separation masks, which amplitude detects — are

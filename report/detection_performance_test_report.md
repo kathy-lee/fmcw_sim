@@ -9,10 +9,11 @@
 
 ## 1. Introduction
 
-Before a tracker can hold a target (the subject of the companion *Tracker Stress
-Test* report), the **detector** must first decide which range-Doppler cells
-contain a target and group them into discrete detections. That front-end is two
-stages:
+The **detector** turns each range-Doppler map into a discrete list of target
+detections: it decides which range-Doppler cells contain a target, then groups the
+detected cells into individual detections. Those per-frame detections are the input
+to the tracker (the subject of the companion *Tracker Stress Test* report), so the
+detector sits one stage upstream in the same pipeline. It works in two stages:
 
 1. **CFAR** (Constant False-Alarm Rate) — a per-cell threshold test. For each
    cell it estimates the local noise from surrounding *training* cells and
@@ -43,7 +44,7 @@ under three controlled experiments:
   discrete detections:
   1. **`cc`** — Connected-Components: label connected blobs of detected
      cells (8-connectivity), emit one detection per blob at its centroid.
-  2. **`dbscan`** — density-based: group cells by density,
+  2. **`dbscan`** — density-based: group cells by density(groups cells within eps that meet min_samples),
      discard sparse cells as noise.
   3. **`peak`** — Peak-Picking: keep only cells that are a local maximum within a
      neighbourhood; isolates distinct peaks rather than merging blobs.
@@ -243,11 +244,11 @@ estimates (a low rank, the smallest quadrant) read the masker's skirt as noise a
 spawn detections around it.
 
 Re-running the sweep with
-`peak` clustering **recovers OS and SO down to 0.3 m** —
+`peak` clustering, it nicely **recovers OS and SO down to 0.3 m** —
 peak-picking keeps both local maxima instead of fusing the blob, so their
 centroid Pd becomes 1.0 at *every* separation. But `peak` leaves **GO unchanged**
 (its cell never crosses — a CFAR failure no clustering can repair) and does not
-rescue **CA** at 0.7 m either. So the lever depends on the failure: a *merge* is
+rescue **CA** at 0.7 m either, where the weak target isn't a distinct local max — both consistent with "needs an above-threshold local maximum to pick." So the lever depends on the failure: a *merge* is
 fixed by the clustering stage (`peak`), a *mask* only by the CFAR stage (avoid GO).
 
 CMD: `python -m evaluation.sweep_masking --frames 100 --clustering peak`
@@ -260,46 +261,32 @@ under `cc` — their failures are upstream of clustering. The false-alarm panel 
 essentially unchanged from `cc` (OS/SO ~1.1, CA/GO ~0.05), since clustering does
 not alter what the CFAR stage detects.
 
-**The third clustering method, `dbscan`, offers no peak-like middle ground.**
-Sweeping its `eps`: at `eps = 1.0` and `1.5` it is *indistinguishable from `cc`*
+**The third clustering method, `dbscan`, offers no peak-like middle ground.** In theory, large eps → merges everything nearby (like cc); small eps → clusters fragment, and a blob too sparse to meet min_samples is discarded. 
+When sweeping its `eps`: at `eps = 1.0` and `1.5` it is *indistinguishable from `cc`*
 (OS recovers at 0.9 m, SO at 0.7 m — same merges, same floor), and shrinking
 `eps` to 0.5 does **not** separate the pair like `peak` — it drops the weak
 target's cells as density-noise at *every* separation (centroid Pd = 0 throughout,
 even at 4 m, though the false-alarm count also falls to ~0). So `eps` only trades
 blob-*merging* (eps ≥ 1, like `cc`) against wholesale *discarding* (small eps,
-target lost); no value recovers what `peak` does. For resolving close targets,
-`peak` is the clustering lever — `dbscan` is not.
+target lost). For resolving **a weak target beside a strong one**, `peak` is the clustering lever
+and `dbscan` is not — though that failure is specific to the *weak* target here
+(amplitude 0.3 → a sparse blob): the only `eps` small enough to split it from the
+masker also pushes it below `min_samples`, so it is dropped as density-noise rather
+than resolved. For two *comparable-strength* targets (both dense blobs), `dbscan`
+at a suitable `eps` *would* resolve them — so "`dbscan` can't resolve" really means
+"`dbscan` can't resolve a **sparse** target beside a strong one," itself textbook
+density-clustering behaviour.
 
-  cc (connected-components) — grouping by adjacency.
-  - Theory: it labels connected blobs of above-threshold cells and emits one centroid per blob. So two targets whose detection cells touch (8-connected) are merged into a single detection.
-  It can only resolve them once a gap of undetected cells separates the two blobs.
-  - Measured: §4 — merges the weak + masker until they're far enough to form disconnected blobs (centroid recovers at OS 0.9 m, SO 0.7 m). ✓ Exactly the connectivity-floor behavior theory
-  predicts.
-
-  peak (peak-picking) — local-maximum extraction.
-  - Theory: it keeps a cell only if it's the local maximum in a neighbourhood, so each target contributes its own peak even if their detection regions are connected — as long as there's a
-  dip between them. It should therefore resolve closer than cc.
-  - Measured: §4 — resolves OS/SO down to 0.3 m (every separation), well inside cc's floor. ✓ With the right nuance: it still can't conjure a peak where CFAR didn't detect (GO's masked
-  cells), and it fails the one CA-at-0.7 m geometry where the weak target isn't a distinct local max — both consistent with "needs an above-threshold local maximum to pick."
-
-  dbscan (density-based) — grouping by density, with noise rejection.
-  - Theory: it groups cells within eps that meet min_samples, and labels sparse cells as noise. Large eps → merges everything nearby (like cc); small eps → clusters fragment, and a blob too
-  sparse to meet min_samples is discarded. Crucially, it's a grouping method like cc, not a maximum-finder — so it should not reach peak's resolution.
-  - Measured: eps=1.0/1.5 ≡ cc (merge); eps=0.5 drops the weak target as density-noise at every separation. ✓ Matches DBSCAN's design exactly — with one honest nuance: the reason small-eps
-  discards rather than resolves is specific to the weak target (amplitude 0.3 → a sparse blob); shrinking eps enough to split it from the masker also pushes it below min_samples. For two
-  comparable-strength targets (both dense blobs), DBSCAN at a suitable eps would resolve them — so "dbscan can't resolve" is really "dbscan can't resolve a sparse target next to a strong
-  one," which is itself textbook density-clustering behaviour.
-
-  The unifying expectation, confirmed: cc and dbscan are both partitioning/grouping clusterers — they assign each detected cell to a group and therefore merge spatially-adjacent detections.
-  peak is the only maximum-extractor, and theoretically the only one of the three that can separate two connected detection regions into two points. So the predicted resolution ordering is
-  peak > cc ≈ dbscan(large-eps) > dbscan(small-eps, discards) 
-
-**Takeaway.** To resolve a weak target next to a strong one: **don't use GO** (it
-masks across the whole training window). **OS or SO + `peak` clustering** resolves
-the closest (down to 0.3 m) but at ~20× the false-alarm rate — acceptable only if
-a downstream stage (clustering's `min_cells`, tracking confirmation) can absorb the
-clutter. **CA with `cc`** is the balanced middle: ~0.05 FA/frame and a ~0.9 m
-resolution floor, with only a one-point dip at 0.5 m.
+**Takeaway.** Resolving a weak target next to a strong one needs *both* stages to
+cooperate. On the **CFAR** side, **don't use GO** — it masks the weak target across
+the whole training window; OS and SO never mask. On the **clustering** side, `cc`
+and `dbscan` are *grouping* clusterers that merge adjacent detections (a ~0.9 m
+floor), whereas **`peak` is the only *maximum-extractor*** — the one method that can
+split two *connected* detection regions — so it resolves down to 0.3 m. Combining
+the two: **OS or SO + `peak`** resolves the closest, but at ~20× the false-alarm
+rate (acceptable only if a downstream stage — `min_cells`, tracking confirmation —
+can absorb the clutter); **CA + `cc`** is the balanced middle (~0.05 FA/frame, a
+~0.9 m resolution floor, with only a one-point dip at 0.5 m).
 
 ---
 
@@ -314,8 +301,13 @@ the **GO↔SO trade-off inverts**.
 
 **Scenario** (`scenario_clutter_edge.json`): a single target whose amplitude is
 tuned to sit comfortably above the *clean-noise* threshold but only *marginally*
-above the *in-clutter* threshold (the regime where the operators separate); DC
-leakage is disabled so the range-0 column doesn't compete. The clutter region is
+above the *in-clutter* threshold. This tuning is deliberate: only when the target
+sits right at the in-clutter threshold does an operator's noise estimate tip it
+above or below the bar, so the **detection (Pd)** curves separate — a much stronger
+or weaker target would make every method look alike. (The **false-alarm**
+differences reported below do *not* depend on this tuning: false alarms come from
+clutter cells, not from the target.) DC leakage is disabled so the range-0 column
+doesn't compete. The clutter region is
 set programmatically per level at **CNR = 10 dB**, and the target's position
 (range/velocity) is overridden per sweep point. Clustering here is using **`peak`**
 (`min_cells = 2`). Two clutter geometries are tested, plus an optional
@@ -514,3 +506,66 @@ rescuing moving targets (§5.3), at the price of a zero-Doppler blind spot. So w
 the clutter is static, reach for the *stage*, not the operator; and when it fills
 all Doppler (§5.1), neither operator nor removal in this pipeline recovers the
 in-band target — only a different waveform or geometry would.
+
+---
+
+## 7. Limitations and future work
+
+- **Single radar configuration.** All experiments use one front-end (77 GHz,
+  2 GHz bandwidth, 256 × 64). Behaviour at other range/Doppler resolutions —
+  which change the cell correlation the α calibration corrects for — is untested.
+- **Fixed CFAR geometry and OS rank.** Guard `(2,4)`, training `(4,8)`, and the OS
+  rank (75th percentile) are held constant. The CA/OS/GO/SO trade-offs are measured
+  at *one* geometry; a different training-window size or OS rank would shift the
+  masking-vs-false-alarm balance (a lower OS rank, for instance, buys more
+  masking-immunity at the cost of sensitivity).
+- **Single-seed sweeps, no error bars.** Each sweep point is 100 frames at the
+  canonical seed (99999); the Pd / false-alarm curves carry no across-seed
+  variance, so small gaps (e.g. OS vs CA in clean noise) should not be over-read. A
+  multi-seed Monte Carlo — as in the companion *Tracker Stress Test* report — would
+  put error bars on the curves.
+- **Hand-tuned, marginal scenarios.** The clutter target's amplitude is tuned to
+  the *marginal in-clutter* regime, and the masking amplitudes (1.0 / 0.3) and
+  separations are fixed, precisely so the operators separate. The thresholds
+  between regimes — which separation masks, which amplitude detects — are
+  scenario-specific, not universal constants.
+- **Idealized clutter, and Pfa is not held in clutter.** Clutter is modelled as a
+  Gaussian region of elevated variance (a CNR), not physical ground returns or
+  discrete scatterers. And α is calibrated against *clean* noise, so the design
+  Pfa = 1e-4 holds only in homogeneous noise; inside clutter the actual false-alarm
+  rate rises (exactly the §5 effect). A clutter-adaptive threshold is out of scope.
+- **MTI scope.** Clutter removal is a single on/off toggle, tested only against the
+  near-static Level-2 clutter. The zero-Doppler null width, and removal against
+  spectrally-spread (moving) clutter, are untested; it does nothing for all-Doppler
+  clutter (§5.1).
+- **Clustering not exhaustively studied.** `cc` is the default, `peak` a contrast,
+  and `dbscan` probed at three `eps` values — enough to establish the
+  merge-vs-resolve mechanism, but not a full clustering study (`eps` sweeps,
+  parameter interactions). The report's primary axis is the CFAR operator.
+
+**Natural next steps:** multi-seed Monte Carlo with error bars; sweeping the
+guard/training geometry and OS rank; a physically-motivated clutter model; a
+clutter-adaptive (rather than clean-noise-calibrated) threshold; and coupling this
+detector study end-to-end with the tracker (the companion report) to see how the
+detection trade-offs propagate into track-level Pd and false tracks.
+
+---
+
+## Appendix — Artifact index
+
+All figures use the canonical seed (99999) and 100 frames per sweep point; each is
+reproducible by the command shown (run from the repo root).
+
+| Figure | Produced by | Status |
+|---|---|---|
+| `sweep_amplitude.png` (§3) | `python -m evaluation.sweep_amplitude --scenario scenarios/scenario_two_targets.json --frames 100` | ✅ exists |
+| `sweep_masking_cc.png` (§4) | `python -m evaluation.sweep_masking --frames 100 --clustering cc` | ✅ exists |
+| `sweep_masking_peak.png` (§4) | `python -m evaluation.sweep_masking --frames 100 --clustering peak` | ✅ exists |
+| `sweep_clutter_edge_level1.png` (§5.1) | `python -m evaluation.sweep_clutter_edge --level 1 --frames 100` | ✅ exists |
+| `sweep_clutter_edge_level2_cross.png` (§5.2) | `python -m evaluation.sweep_clutter_edge --level 2 --frames 100` | ✅ exists |
+| `sweep_clutter_edge_level2_cross_clutterRemoval.png` (§5.3) | `python -m evaluation.sweep_clutter_edge --level 2 --clutter-removal --frames 100` | ✅ exists |
+| `dbscan` masking note (§4) | `python -m evaluation.sweep_masking --frames 100 --clustering dbscan --eps {0.5, 1.0, 1.5}` | ✅ console only (not embedded) |
+
+**Scenarios** (`scenarios/`): `scenario_two_targets.json` (§3, and §4's radar
+config), `scenario_clutter_edge.json` (§5). **Implementation**: CFAR methods in
+`processing/cfar.py`, clustering in `processing/clustering.py`.

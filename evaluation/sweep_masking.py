@@ -195,7 +195,7 @@ def plot(
     ax_cell.set_ylabel("Pd (cell-level)")
     ax_cell.set_ylim(-0.05, 1.15)
     ax_cell.set_title(
-        f"CFAR target masking [clustering={config_label}]: "
+        f"CFAR target masking [clustering={config_label}]\n"
         f"masker (A={MASKER_AMPLITUDE}) fixed at {MASKER_RANGE_M} m; "
         f"weak (A={WEAK_AMPLITUDE}) at {MASKER_RANGE_M} m + separation"
     )

@@ -376,6 +376,7 @@ def run_pipeline(
     confirm_M: int | None = None,
     confirm_N: int | None = None,
     seed: int | None = None,
+    fluctuation_seed: int | None = None,
     algorithm: str = "kf",
     drag_coefficient_k: float = 0.5,
 ) -> list:
@@ -397,6 +398,12 @@ def run_pipeline(
     radar config, leaving the scenario JSON untouched. This is the hook the A.4
     Monte Carlo matrix uses to draw independent noise realizations per run; the
     GT trajectory is noise-independent, so only the detector input changes.
+
+    fluctuation_seed (when not None) re-seeds the Swerling fade stream the
+    same way `seed` re-seeds the noise: via dataclasses.replace on the radar
+    config. Sweeps that want independent fade realisations per run vary
+    both; leaving it None holds the scenario's fade pattern fixed across
+    noise seeds.
 
     algorithm selects one of three tracker configurations:
         "kf"  → single Tracker with CV motion model (linear Kalman filter).
@@ -448,6 +455,9 @@ def run_pipeline(
         )
     if seed is not None:
         radar_cfg = dataclasses.replace(radar_cfg, seed=seed)
+    if fluctuation_seed is not None:
+        radar_cfg = dataclasses.replace(
+            radar_cfg, fluctuation_seed=fluctuation_seed)
     gen = FMCWBeatSignalGenerator(radar_cfg)
     tracks_history = []
     for frame_idx in range(n_frames):

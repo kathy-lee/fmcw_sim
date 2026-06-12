@@ -17,6 +17,7 @@ import json
 import numpy as np
 
 from simulator.motion_models import range_at
+from simulator.fluctuation_models import amplitude_factors, validate_fluctuation
 
 C = 299_792_458.0
 
@@ -29,6 +30,10 @@ class Target:
     phase_rad: float = 0.0
     motion_model: str = "constant_velocity"
     motion_params: dict = field(default_factory=dict)
+    # Optional RCS fluctuation (Swerling), e.g.
+    # {"model": "swerling1", "frame_corr": 0.9}. None = steady amplitude.
+    # Treated as constant for the lifetime of a generator instance.
+    fluctuation: dict | None = None
 
 
 @dataclass
@@ -103,6 +108,12 @@ class RadarConfig:
     # makes any downstream Pfa measurement self-consistent with the calibration
     # data rather than out-of-sample.
     seed: int = 99999
+    # Seed for the per-target RCS-fluctuation stream (Swerling models): a
+    # THIRD RNG stream, independent of both the thermal-noise stream
+    # (`seed`) and CFAR's calibration stream (0). Decoupling it lets a
+    # Monte Carlo redraw the noise while holding the fade pattern fixed,
+    # or vary both. 77777 != 0 and != 99999 by design.
+    fluctuation_seed: int = 77777
     # Optional clutter regions; empty by default (existing behavior unchanged).
     clutter: list = field(default_factory=list)   # list[ClutterRegion]
 
@@ -115,6 +126,9 @@ class FMCWBeatSignalGenerator:
     def __init__(self, cfg: RadarConfig):
         self.cfg = cfg
         self.rng = np.random.default_rng(cfg.seed)
+        # Lazily-grown per-target fluctuation factor sequences, keyed by the
+        # target's index in the `targets` list passed to generate_frame().
+        self._fluct_factors: dict[int, np.ndarray] = {}
 
         self.fs_hz = cfg.n_range / cfg.ramp_duration_s
         self.slope_hz_per_s = cfg.bandwidth_hz / cfg.ramp_duration_s
@@ -166,6 +180,31 @@ class FMCWBeatSignalGenerator:
             return frame_index * self.cfg.frame_period_s
         return frame_index * self.cfg.n_chirps * self.cfg.chirp_period_s
 
+    def fluctuation_factor(
+        self, target_index: int, target: Target, frame_index: int
+    ) -> float:
+        """Per-frame amplitude factor for a fluctuating target (1.0 if steady).
+
+        Factors come from a dedicated stream seeded by
+        (cfg.fluctuation_seed, target_index) — independent of the
+        thermal-noise stream, so redrawing the noise (RadarConfig.seed)
+        leaves the fade pattern unchanged unless fluctuation_seed is also
+        changed. Sequences are cached per target index and regrown by
+        regenerating from a fresh identically-seeded rng; the
+        amplitude_factors prefix property guarantees history is preserved.
+        """
+        if target.fluctuation is None:
+            return 1.0
+        model, frame_corr = validate_fluctuation(target.fluctuation)
+        seq = self._fluct_factors.get(target_index)
+        if seq is None or seq.size <= frame_index:
+            n = max(128, 1 << (frame_index + 1).bit_length())
+            rng = np.random.default_rng(
+                [self.cfg.fluctuation_seed, target_index])
+            seq = amplitude_factors(model, n, rng, frame_corr)
+            self._fluct_factors[target_index] = seq
+        return float(seq[frame_index])
+
     def generate_frame(self, targets: list[Target], frame_index: int = 0) -> np.ndarray:
         """
         Returns a complex64 frame with shape [n_chirps, n_range].
@@ -187,7 +226,7 @@ class FMCWBeatSignalGenerator:
 
         x = np.zeros((cfg.n_chirps, cfg.n_range), dtype=np.complex128)
 
-        for target in targets:
+        for target_index, target in enumerate(targets):
             # Per-frame position/velocity from the target's motion model.
             # Stop-and-hop approximation: velocity is constant within one
             # frame (frames are ~3.2ms long, intra-frame drag/maneuver
@@ -207,7 +246,9 @@ class FMCWBeatSignalGenerator:
                 fd_hz * t_slow
             ) + target.phase_rad
 
-            x += target.amplitude * np.exp(1j * phase)
+            amp = target.amplitude * self.fluctuation_factor(
+                target_index, target, frame_index)
+            x += amp * np.exp(1j * phase)
 
         if cfg.leakage_amplitude != 0.0:
             x += cfg.leakage_amplitude

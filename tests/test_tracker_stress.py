@@ -580,3 +580,23 @@ def test_run_pipeline_seed_override_reseeds_realization():
 
     assert same == baseline          # same seed -> identical realization
     assert different != baseline     # different seed -> different realization
+
+
+def test_run_pipeline_fluctuation_seed_is_deterministic():
+    import numpy as np
+    from evaluation.tracker_stress import run_pipeline
+    from simulator.beat_signal_generator import RadarConfig, Target
+
+    cfg = RadarConfig(noise_power=1e-4, frame_period_s=0.05)
+    targets = [Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0009,
+                      fluctuation={"model": "swerling1"})]
+    h1 = run_pipeline(cfg, targets, 10, seed=3, fluctuation_seed=42)
+    h2 = run_pipeline(cfg, targets, 10, seed=3, fluctuation_seed=42)
+    assert len(h1) == len(h2) == 10
+    for (f1, s1), (f2, s2) in zip(h1, h2):
+        assert f1 == f2
+        assert len(s1) == len(s2)
+        for a, b in zip(s1, s2):
+            assert a.id == b.id
+            assert a.status == b.status
+            np.testing.assert_array_equal(a.state, b.state)

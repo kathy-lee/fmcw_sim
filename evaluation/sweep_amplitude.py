@@ -47,6 +47,7 @@ def run_one_point(
     targets: list[Target],
     cfar_method: str,
     n_frames: int,
+    advance_frame_index: bool = False,
 ) -> tuple[np.ndarray, float]:
     """Return (per-target Pd array, FA per frame) for one (method, scale)."""
     gen = FMCWBeatSignalGenerator(radar_cfg)
@@ -55,11 +56,20 @@ def run_one_point(
     hits = np.zeros(n_targets, dtype=int)
     fp_total = 0
 
-    # frame_index=0 every iteration: holds the target's position fixed
-    # (no inter-frame motion drift), while gen.rng still advances so each
-    # frame gets an independent noise realization.
-    for _ in range(n_frames):
-        frame = gen.generate_frame(targets, frame_index=0)
+    # advance_frame_index=False (the baseline sweep): frame_index=0 every
+    # iteration holds the target's position fixed (no inter-frame motion
+    # drift) while gen.rng still advances, so each frame gets an
+    # independent noise realization. advance_frame_index=True (the
+    # fluctuation sweep): frame_index advances so per-frame Swerling
+    # factors evolve; the truth bins are then recomputed per frame from
+    # gen.ground_truth() so the +/-1-bin matcher follows target motion.
+    for i in range(n_frames):
+        frame_index = i if advance_frame_index else 0
+        if advance_frame_index:
+            gts = gen.ground_truth(targets, frame_index=frame_index)
+            truth_bins = [(g["range_bin"], g["doppler_bin_shifted"])
+                          for g in gts]
+        frame = gen.generate_frame(targets, frame_index=frame_index)
         rd = range_doppler(frame, window="hann", dc_removal=True,
                            clutter_removal=False)
         rd_db = 20.0 * np.log10(np.abs(rd) + 1e-12)

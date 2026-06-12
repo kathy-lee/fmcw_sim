@@ -528,3 +528,128 @@ def test_load_scenario_without_clutter_field(tmp_path):
     path.write_text(json.dumps(scenario))
     radar_cfg, _ = load_scenario(str(path))
     assert radar_cfg.clutter == []
+
+
+def test_target_fluctuation_field_defaults_to_none():
+    from simulator.beat_signal_generator import Target
+    t = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0006)
+    assert t.fluctuation is None
+
+
+def test_radar_config_fluctuation_seed_default_is_decoupled():
+    from simulator.beat_signal_generator import RadarConfig
+    cfg = RadarConfig()
+    # Must differ from the CFAR calibration seed (0) and the noise seed.
+    assert cfg.fluctuation_seed == 77777
+    assert cfg.fluctuation_seed not in (0, cfg.seed)
+
+
+def test_load_scenario_parses_fluctuation(tmp_path):
+    import json
+    from simulator.beat_signal_generator import load_scenario
+    data = {
+        "radar": {"fluctuation_seed": 4242},
+        "targets": [{
+            "range_m": 4.0, "velocity_mps": 0.5, "amplitude": 0.0009,
+            "fluctuation": {"model": "swerling1", "frame_corr": 0.9},
+        }],
+    }
+    p = tmp_path / "scenario.json"
+    p.write_text(json.dumps(data))
+    cfg, targets = load_scenario(str(p))
+    assert cfg.fluctuation_seed == 4242
+    assert targets[0].fluctuation == {"model": "swerling1", "frame_corr": 0.9}
+
+
+def test_steady_target_fluctuation_factor_is_one():
+    from simulator.beat_signal_generator import (
+        FMCWBeatSignalGenerator, RadarConfig, Target,
+    )
+    gen = FMCWBeatSignalGenerator(RadarConfig())
+    t = Target(range_m=4.0, velocity_mps=0.5, amplitude=1.0)
+    assert gen.fluctuation_factor(0, t, 0) == 1.0
+    assert gen.fluctuation_factor(0, t, 99) == 1.0
+
+
+def test_fluctuation_does_not_touch_noise_stream():
+    """A fluctuating target must not consume the thermal-noise RNG.
+
+    Zero-amplitude targets contribute no signal, so the frames are pure
+    noise; if fluctuation drew from the main rng the noise would differ.
+    """
+    import numpy as np
+    from simulator.beat_signal_generator import (
+        FMCWBeatSignalGenerator, RadarConfig, Target,
+    )
+    cfg = RadarConfig(seed=12345)
+    steady = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0)
+    fluct = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0,
+                   fluctuation={"model": "swerling1"})
+    f_steady = FMCWBeatSignalGenerator(cfg).generate_frame(
+        [steady], frame_index=3)
+    f_fluct = FMCWBeatSignalGenerator(cfg).generate_frame(
+        [fluct], frame_index=3)
+    np.testing.assert_array_equal(f_steady, f_fluct)
+
+
+def test_fluctuating_frame_equals_amplitude_scaled_steady_frame():
+    """Noise-free: the fluctuating frame IS the steady frame with
+    amplitude scaled by that frame's factor. Pins down exactly where the
+    factor is applied."""
+    import numpy as np
+    from simulator.beat_signal_generator import (
+        FMCWBeatSignalGenerator, RadarConfig, Target,
+    )
+    cfg = RadarConfig(noise_power=0.0, leakage_amplitude=0.0)
+    base_amp = 0.0006
+    fluct_t = Target(range_m=4.0, velocity_mps=0.5, amplitude=base_amp,
+                     fluctuation={"model": "swerling1", "frame_corr": 0.5})
+    gen_f = FMCWBeatSignalGenerator(cfg)
+    gen_s = FMCWBeatSignalGenerator(cfg)
+    for frame_index in (0, 3, 10):
+        frame_fluct = gen_f.generate_frame([fluct_t],
+                                           frame_index=frame_index)
+        factor = gen_f.fluctuation_factor(0, fluct_t, frame_index)
+        steady_t = Target(range_m=4.0, velocity_mps=0.5,
+                          amplitude=base_amp * factor)
+        frame_steady = gen_s.generate_frame([steady_t],
+                                            frame_index=frame_index)
+        np.testing.assert_allclose(frame_fluct, frame_steady, rtol=1e-5)
+
+
+def test_fluctuation_factors_independent_of_radar_seed():
+    from simulator.beat_signal_generator import (
+        FMCWBeatSignalGenerator, RadarConfig, Target,
+    )
+    t = Target(range_m=4.0, velocity_mps=0.5, amplitude=1.0,
+               fluctuation={"model": "swerling1"})
+    g1 = FMCWBeatSignalGenerator(RadarConfig(seed=1))
+    g2 = FMCWBeatSignalGenerator(RadarConfig(seed=2))
+    fs1 = [g1.fluctuation_factor(0, t, f) for f in range(20)]
+    fs2 = [g2.fluctuation_factor(0, t, f) for f in range(20)]
+    assert fs1 == fs2
+
+
+def test_fluctuation_seed_changes_factors():
+    from simulator.beat_signal_generator import (
+        FMCWBeatSignalGenerator, RadarConfig, Target,
+    )
+    t = Target(range_m=4.0, velocity_mps=0.5, amplitude=1.0,
+               fluctuation={"model": "swerling1"})
+    g1 = FMCWBeatSignalGenerator(RadarConfig(fluctuation_seed=111))
+    g2 = FMCWBeatSignalGenerator(RadarConfig(fluctuation_seed=222))
+    fs1 = [g1.fluctuation_factor(0, t, f) for f in range(20)]
+    fs2 = [g2.fluctuation_factor(0, t, f) for f in range(20)]
+    assert fs1 != fs2
+
+
+def test_fluctuation_factor_cache_regrowth_is_consistent():
+    from simulator.beat_signal_generator import (
+        FMCWBeatSignalGenerator, RadarConfig, Target,
+    )
+    gen = FMCWBeatSignalGenerator(RadarConfig())
+    t = Target(range_m=4.0, velocity_mps=0.0, amplitude=1.0,
+               fluctuation={"model": "swerling3", "frame_corr": 0.7})
+    early = gen.fluctuation_factor(0, t, 5)
+    gen.fluctuation_factor(0, t, 300)  # force regrow past the initial 128
+    assert gen.fluctuation_factor(0, t, 5) == early

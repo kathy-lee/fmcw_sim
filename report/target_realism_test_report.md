@@ -27,8 +27,8 @@ model**: per-frame RCS fluctuation (Swerling 1/3).
 ## 1. Introduction
 
 The two baseline reports characterize the detector
-([report 1](detection_performance_test_report.md)) and the tracker
-([report 2](tracker_stress_test_report.md)) against **steady point
+([report 1: `detection_performance_test_report.md`](detection_performance_test_report.md)) and the tracker
+([report 2: `tracker_stress_test_report.md`](tracker_stress_test_report.md)) against **steady point
 targets**: the echo amplitude is a fixed constant, and every missed
 detection is driven by thermal noise alone. Real targets do not behave
 this way — a car, a pedestrian, a drone is a collection of scatterers
@@ -52,16 +52,33 @@ target occupying many cells) follows separately.
 
 All conventions of the baseline reports are inherited (fixed front-end
 lens, seed hygiene, classification taxonomy — see
-[report/README.md](README.md)). Three deltas:
+[report/README.md](README.md)). Two deltas:
 
 ### 2.1 The fluctuation model
 
-A target may now carry an optional `fluctuation` dict, e.g.
-`{"model": "swerling1", "frame_corr": 0.9}` (`None` = steady amplitude,
-the exact baseline behavior). Each Swerling case is realised physically,
-as the RMS magnitude of *k* complex-Gaussian scatterer voltages evolving
-across frames as a first-order AR process
-(`simulator/fluctuation_models.py`):
+Swerling models describe fluctuation about a mean RCS. The four classical Swerling cases form a 2×2 grid: fluctuation *speed*
+(cases 1/3 are constant within a scan and independent scan-to-scan;
+cases 2/4 are independent pulse-to-pulse) crossed with fluctuation
+*distribution* (cases 1/2 have exponential power; cases 3/4
+chi-squared-4 power). In this pipeline one **frame** plays the role of
+the scan — a 64-chirp CPI producing one RD map and one CFAR decision —
+and the chirps are the pulses. We model the scan-to-scan pair, Swerling
+1 and 3: the RCS is held constant within a frame and fluctuates from
+frame to frame. That choice keeps intra-frame coherent integration (the
+Doppler FFT) intact and puts all the action exactly where this report
+looks — the detection statistics across frames and the tracker's ability
+to survive them. 
+
+To realise the Swerling 1/3 cases, we use their textbook physical construction
+rather than sampling the power distributions directly. Swerling 1's
+exponential power law is classically *derived* from "many comparable
+scatterers": the summed echo voltage is complex-Gaussian, so its
+amplitude is Rayleigh and its power exponential. Swerling 3's
+chi-squared-4 power law (motivated by one dominant scatterer plus small
+ones) is exactly the distribution of the mean power of two independent
+complex-Gaussian scatterers. Each fluctuating target therefore carries
+*k* complex-Gaussian scatterer voltages (k = 1 → Swerling 1, k = 2 →
+Swerling 3), and its per-frame amplitude factor is their RMS magnitude:
 
 ```
 s_f = ρ·s_{f−1} + √(1−ρ²)·w_f,    w_f ~ CN(0, 1)
@@ -70,14 +87,44 @@ power_f  = mean_i |s_f[i]|²       (k=1 → Swerling 1, exponential power;
 factor_f = √power_f               (E[factor²] = 1: mean POWER preserved)
 ```
 
-The per-frame echo amplitude is `target.amplitude × factor_f`. Because
-the factors are unit-mean-**power**, adding fluctuation changes a
-target's *mean* SNR not at all — only its frame-to-frame distribution.
-`frame_corr` (ρ) is the frame-to-frame **voltage** correlation; the
-resulting power correlation is ρ², and the fade decorrelation time is
-−1/ln(ρ²) frames (ρ = 0.6 → ~1 frame, ρ = 0.9 → ~4.7 frames). ρ = 0
-reproduces the classic scan-to-scan-independent Swerling cases; ρ > 0
-produces multi-frame fade bursts at the same marginal distribution.
+The factors are normalized to **unit mean power** (E[factor²] = 1), the
+standard convention: Swerling models describe fluctuation *about* a mean
+RCS, so the per-frame echo amplitude is `target.amplitude × factor_f`
+and `amplitude` keeps its baseline meaning as the mean. Adding
+fluctuation therefore changes a target's *mean* SNR not at all, only its
+frame-to-frame distribution — which is what makes every comparison in
+§3–§4 attributable to fading alone.
+
+The last step, frame correlation, is our one extension beyond classical
+Swerling. The original cases are binary in correlation — fully
+correlated within a scan, fully independent between scans — with nothing
+in between. We instead evolve the scatterer voltages across frames as a
+first-order autoregressive (AR(1), Gauss-Markov) process with tunable ρ,
+the `s_f` recursion above — a well-precedented generalization (the same
+construction models correlated Rayleigh fading in communications), and
+one that reduces **exactly** to the classic scan-to-scan-independent
+Swerling 1/3 at ρ = 0, the setting the detection sweep (§3) uses — so
+§3's deltas are pure-textbook quantities. `frame_corr` (ρ) is the
+frame-to-frame **voltage** correlation; the resulting power correlation
+is ρ², and the fade decorrelation time is −1/ln(ρ²) frames (ρ = 0.6 →
+~1 frame, ρ = 0.9 → ~4.7 frames). ρ > 0 produces multi-frame fade bursts
+at the same marginal distribution — the knob §4 turns to separate how
+*long* each fade lasts from how *often* the target fades.
+
+In short: Swerling 1/3 is modeled as AR(1)-evolving complex-Gaussian scatterers,
+unit mean power — drawn from a dedicated prefix-property RNG stream,
+described next (§2.2).
+
+In implementation, we make it configurable in class `Target`through an optional `fluctuation` dict like below. `None` = steady amplitude, the exact baseline behavior.
+```
+{
+  ...
+  "fluctuation": {
+    "model": "swerling1", 
+    "frame_corr": 0.9
+  }
+}
+```
 
 ### 2.2 A third RNG stream
 
@@ -95,14 +142,32 @@ holding the fade pattern fixed, or redraw both. The tracker sweep (§4.2)
 redraws both per run — radar seed `s`, fade seed `1000+s` — an honest
 Monte Carlo over noise and fades together. Factors are drawn per
 `(fluctuation_seed, target_index)` and consumed strictly frame-by-frame,
-so a fade sequence is reproducible regardless of how many frames are
-generated or when the cache regrows.
+which gives the stream its **prefix property**: a longer sequence from
+the same seed always begins with the shorter one, so a fade sequence is
+reproducible regardless of how many frames are generated or when the
+generator's cache regrows.
 
-### 2.3 Frame-advancing Pd sweep
+## 3. Detection under RCS fluctuation
 
-The baseline amplitude sweep (report 1 §3) froze `frame_index=0` — the
-scene held fixed while the noise redrew, so Pd was measured at a
-stationary target position. Swerling factors are indexed by frame, so the
+Three cases — steady, Swerling 1, Swerling 3 — with both fluctuating
+cases at **ρ = 0**, i.e. the classic scan-to-scan-independent Swerling
+models, so the deltas measured here are textbook-comparable quantities.
+ρ is not swept in this section because it could not change the answer:
+Pd is a *marginal* quantity (the fraction of frames detected), and all ρ
+values share the same fade marginal — correlation only rearranges *when*
+the misses happen, which leaves the long-run Pd untouched and merely
+inflates its estimator variance. Burst structure starts to matter only
+once something downstream has memory (M-of-N confirmation, coasting),
+which is why ρ becomes the swept variable in the tracker experiment
+(§4).
+
+### 3.1 Sweep methodology 
+
+The sweep here is a frame-advancing variant of report 1 §3. The baseline amplitude sweep (report 1 §3) froze `frame_index=0`: every
+frame began from the same ground truth — the motion model evaluated at
+t = 0, target at its initial position — with only the noise redrawn, so
+Pd was measured at a fixed operating point with constant truth bins.
+Swerling factors are indexed by frame, so the
 fluctuation sweep must **advance** `frame_index` (a frozen index would
 reuse `factor[0]` forever and measure no fading at all). It uses the SAME
 `scenario_two_targets.json`, and recomputes the truth bins per frame from
@@ -125,29 +190,13 @@ averages over 300 fade draws per point, making the measured Pd a property
 of the Swerling marginal rather than of one lucky or unlucky fade
 sequence. The anchor comparison is unaffected — it is checked on the
 steady *curve*, not on per-point sample counts. (The longer run is also
-what exposed the FA undersampling discussed in §3.1.)
-
-One correction to the design discussion that preceded this report: we
-briefly believed a zero-velocity variant was impossible because "DC
-removal cancels a v = 0 target exactly." That conflates two different
-knobs in `range_doppler`: `dc_removal` subtracts the per-chirp
-**fast-time** mean (it kills range bin 0 only), while `clutter_removal`
-subtracts the **slow-time** mean across chirps — *that* is the operation
-which cancels a zero-Doppler echo exactly. The evaluation pipeline runs
-with `clutter_removal=False`, so a strong v = 0 target is in fact
-detected (pinned by
-`test_zero_velocity_cancellation_is_clutter_removal_not_dc_removal`).
-The sweep reuses the baseline's moving targets anyway — same-scenario
-comparability with report 1 is the stronger reason and was always the
-primary one.
-
-## 3. Detection under RCS fluctuation
+what exposed the FA undersampling discussed in §3.2.)
 
 CMD: `python -m evaluation.sweep_amplitude_fluctuation --frames 300`
 
 ![Pd vs mean SNR, steady vs Swerling](sweep_amplitude_fluctuation.png)
 
-### 3.1 Anchor check against the baseline
+### 3.2 Comparison against the baseline
 
 | Quantity | Report 1 §3 (steady, frozen-frame, 100 frames) | This sweep (steady, frame-advancing, 300 frames) |
 |---|---|---|
@@ -171,10 +220,9 @@ centroid-level FA rate of this lens is ~0.12/frame; report 1's
 canonical stream. None of the comparisons below are affected — FA is
 measured identically for all cases in this sweep and is flat across them.
 
-### 3.2 The fluctuation loss
-
-Headline SNR thresholds, target 0 (target 1 agrees within ~1 dB on every
-entry):
+With the anchor established, the Swerling deltas can now be read. The
+headline SNR thresholds for target 0 (target 1 agrees within ~1 dB on
+every entry):
 
 | Case | SNR@Pd=0.5 (Δ vs steady) | SNR@Pd=0.9 (Δ vs steady) |
 |---|---|---|
@@ -209,9 +257,8 @@ through the real CFAR/clustering chain rather than from a closed form:
 
 The practical consequence: a link budget sized on a steady-target curve
 overstates high-Pd performance against a real fluctuating target by the
-full §3.2 delta — at Pd 0.9, by ~8 dB for Swerling-1-like targets. This
-is why fluctuation models exist in every radar detection textbook: the
-steady-target Pd curve is the wrong curve to size margins on.
+full delta measured above — at Pd 0.9, by ~8 dB for Swerling-1-like
+targets. 
 
 ## 4. Tracking under correlated fades
 
@@ -229,7 +276,7 @@ CMD: `python -m evaluation.tracker_stress --scenario scenarios/scenario_missed_d
 ![Published steady baseline (report 2 §3.1.1)](tracker_stress_missed_detections.png)
 ![Swerling-1, frame_corr 0.9, same mean power](tracker_stress_missed_detections_swerling.png)
 
-| Variant (same mean power, amp 0.0006) | Pd | Distinct IDs | Coast | Switches | Classification |
+| Variant | Pd | Distinct IDs | Coast | Switches | Classification |
 |---|---|---|---|---|---|
 | steady (report 2 §3.1.1, quoted) | 0.61 | 1 | 28 | 0 | ✓ CLEAN |
 | swerling1, ρ=0.9 (this report) | **0.40** | 3 | 18 | 2 (frame 40: 2→6; frame 78: 6→7) | **⚠ TOTAL CONFUSION** |
@@ -261,7 +308,13 @@ The grid: fade correlation ρ ∈ {steady, 0.0, 0.6, 0.9} × max_coast ∈
 {1, 3, 5, 8}, six (radar seed, fade seed) pairs per cell, 80 frames,
 on the published `scenario_missed_detections.json` (fading injected per
 cell — the steady rows are literally report 2 §3.1.2 re-run multi-seed).
-Full summary (mean ± std over 6 seeds):
+The max_coast grid differs from report 2's {1, 2, 3, 5} in two points:
+2 is dropped (the published table shows it identical to 1 — the survival
+curve is flat there), and 8 is added, comfortably beyond the ~4.7-frame
+fade bursts at ρ = 0.9, so that "no practical budget suffices" is
+distinguishable from "budget merely too small"; the shared points
+{1, 3, 5} keep the steady rows directly comparable to the published
+table. Full summary (mean ± std over 6 seeds):
 
 | frame_corr | max_coast | Pd | distinct | coast | switches | classes |
 |---|---|---|---|---|---|---|
@@ -269,24 +322,30 @@ Full summary (mean ± std over 6 seeds):
 | steady | 3 | 0.62±0.05 | 2.8 | 18.0 | 1.83 | 1 CLEAN, 5 ID SWITCH |
 | steady | 5 | 0.67±0.04 | 1.2 | 22.3 | 0.17 | 5 CLEAN, 1 ID SWITCH |
 | steady | 8 | 0.67±0.03 | 1.0 | 22.8 | 0.00 | 6 CLEAN |
+| | | | | | | |
 | 0.0 | 1 | 0.20±0.07 | 5.3 | 7.8 | 2.50 | 6 TOTAL CONFUSION |
 | 0.0 | 3 | 0.25±0.09 | 4.5 | 17.3 | 2.50 | 6 TOTAL CONFUSION |
 | 0.0 | 5 | 0.32±0.09 | 2.7 | 28.0 | 1.33 | 6 TOTAL CONFUSION |
 | 0.0 | 8 | 0.36±0.07 | 1.8 | 38.5 | 0.83 | 5 TOTAL CONFUSION, 1 TRACK BREAK |
+| | | | | | | |
 | 0.6 | 1 | 0.24±0.09 | 5.7 | 9.7 | 2.67 | 5 TOTAL CONFUSION, 1 TRACK BREAK |
 | 0.6 | 3 | 0.28±0.10 | 4.7 | 18.3 | 2.33 | 6 TOTAL CONFUSION |
 | 0.6 | 5 | 0.37±0.07 | 2.3 | 33.3 | 1.33 | 5 TOTAL CONFUSION, 1 TRACK BREAK |
 | 0.6 | 8 | 0.40±0.08 | 1.7 | 39.3 | 0.67 | 1 CLEAN, 3 TOTAL CONFUSION, 2 TRACK BREAK |
+| | | | | | | |
 | 0.9 | 1 | 0.34±0.10 | 3.8 | 6.0 | 2.33 | 6 TOTAL CONFUSION |
 | 0.9 | 3 | 0.36±0.11 | 2.8 | 10.3 | 1.67 | 6 TOTAL CONFUSION |
 | 0.9 | 5 | 0.38±0.12 | 2.7 | 17.2 | 1.50 | 6 TOTAL CONFUSION |
 | 0.9 | 8 | 0.40±0.13 | 2.2 | 24.3 | 1.17 | 1 CLEAN, 5 TOTAL CONFUSION |
 
-Side-by-side with the baseline survival lever. Report 2 §3.1.2 swept
-max_coast on this very scenario minus the fluctuation block (steady
-marginal, amp 0.0006, single canonical seed) — quoted verbatim in the
-first column. The second column is this sweep's steady rows: the SAME
-experiment re-run over 6 seeds, the anchor:
+The second table places this sweep side-by-side with report 2 §3.1.2's
+max_coast sweep — the experiment that established max_coast as the
+tracker's survival lever, run on this very scenario minus the
+fluctuation block (steady marginal target, amp 0.0006, single canonical
+seed). Its published results are quoted verbatim in the first column.
+The second column is this sweep's steady rows — the SAME experiment
+re-run over 6 seeds, the anchor — and the fading columns follow, so each
+row reads across as "the same coast budget, as fading is added":
 
 | max_coast | report 2 §3.1.2: steady, 1 seed (Pd / class) | this sweep: steady, 6 seeds (Pd / classes) | this sweep, ρ=0 (Pd / classes) | this sweep, ρ=0.9 (Pd / classes) |
 |---|---|---|---|---|
@@ -309,18 +368,22 @@ pessimistic draw at low coast budgets — the same pattern §3.4 already
 documented at the default budget (canonical 0.61 at the low edge of
 0.67±0.05). The harness is validated; the fading columns can be read.
 
-**The rate effect (steady → ρ=0).** Same mean SNR, fades added: track-level
+**The miss-rate effect (steady → ρ=0): misses become more frequent, but
+stay scattered.** Same mean SNR, fades added: track-level
 Pd halves (0.67 → 0.32 at max_coast = 5) and every run fails. This is
 §3.2's fluctuation loss applied at a marginal operating point — the
 steady target sat near detector-Pd 0.6, where the Swerling-1 curve runs
 well below the steady curve, so the per-frame miss rate rises
-substantially with no change in mean power. The misses are still
+substantially with no change in mean power. Looking at the four rows with ρ=0 in the first table: The misses are still
 scan-to-scan independent, so max_coast retains its report-2 role
 monotonically (Pd 0.20 → 0.36, distinct 5.3 → 1.8 as the budget grows) —
-but it is recovering from a deeper hole and never reaches CLEAN on this
-grid.
+but the elevated miss rate lowers its starting point so far that even
+the largest budget tested falls short of CLEAN: at max_coast = 8 the
+best outcome is still 5 TOTAL CONFUSION + 1 TRACK BREAK over the 6
+seeds, where the steady column was all-CLEAN.
 
-**The duration effect (ρ=0 → ρ=0.9).** All ρ rows share the same fade
+**The fade-duration effect (ρ=0 → ρ=0.9): misses stay equally frequent,
+but arrive in bursts.** All ρ rows share the same fade
 marginal — the same long-run miss rate — and differ only in *when* the
 misses come (decorrelation ~1 frame at ρ = 0.6, ~4.7 frames at ρ = 0.9).
 The burst structure shows up in two ways. First, at small coast budgets
@@ -398,7 +461,7 @@ What changed relative to the two baseline reports, and why it matters:
   modify `generate_frame` itself, deliberately out of scope here.
 - **Fades are independent across targets** (per-target streams). No
   common-mode fading (e.g. shared propagation effects).
-- **FA baseline correction.** §3.1's anchor check found report 1's
+- **FA baseline correction.** §3.2's anchor check found report 1's
   FA ≈ 0.05–0.06/frame to be an undersampled 100-frame estimate; the
   stationary rate of the shared lens is ~0.12/frame. Report 1's
   method-vs-method FA comparisons are unaffected (all methods measured

@@ -204,10 +204,10 @@ CMD: `python -m evaluation.sweep_amplitude_fluctuation --frames 300`
 | FA / frame (OS) | ~0.05–0.06 | 0.123 (see caveat below) |
 
 The steady Pd curves reproduce the baseline: both targets climb 0 → 1
-inside the same −35 → −18 dB window, with the stronger 3 m target leading
-the weaker 6 m target by the same few dB. The frame-advancing methodology
-change is benign, so the Swerling deltas below are attributable to
-fluctuation alone.
+inside the same −35 → −18 dB window, with the 3 m and 6 m target curves
+almost coinciding, each plotted against its own per-sample SNR. The
+frame-advancing methodology change is benign, so the Swerling deltas
+below are attributable to fluctuation alone.
 
 The FA row deserves an honest caveat: it is the **baseline's** number
 that is off, not this sweep's. Under the published condition (100 frames,
@@ -402,13 +402,95 @@ through max_coast = 8 (5/6 runs). Where uncorrelated misses can be
 coasted through, correlated fades must be *survived*, and a fixed coast
 budget is the wrong tool.
 
-**Partial saturation, reported as a finding.** At this marginal operating
-point (the published amp 0.0006), no fading cell reaches CLEAN reliably
+**Partial saturation at marginal SNR: every fading cell fails, but the
+trends still hold.** At this marginal operating point (the published
+amp 0.0006), no fading cell reaches CLEAN reliably
 even at max_coast = 8 — burst fading at marginal SNR exceeds any
 practical coast budget. This is a property of the operating point, not a
 measurement failure: the steady anchor rows behave exactly as published,
 and the fading rows retain readable structure (monotone in max_coast,
-ordered in ρ at fixed budget).
+ordered in ρ at fixed budget). §4.3 re-runs the sweep at a stronger
+amplitude to show what the max_coast lever can do once the target has SNR
+headroom.
+
+### 4.3 The same sweep with SNR headroom
+
+§4.2's operating point is marginal by design — the published baseline
+sits at detector-Pd ≈ 0.6 — which is what makes the fading rows fail so
+hard that the max_coast lever can barely move them. To see whether that
+is a property of *fading* or of the *operating point*, this section
+repeats the sweep on `scenario_missed_detections_strong.json`: identical
+to the baseline except the amplitude is raised 0.0006 → 0.0009 (+3.5 dB
+mean SNR). There is **no published baseline at this amplitude**, so the
+steady rows here are not an anchor — they are an in-experiment control,
+showing what the lever does when the steady target is comfortably above
+threshold.
+
+CMD: `python -m evaluation.tracker_stress_swerling_sweep --scenario scenarios/scenario_missed_detections_strong.json`
+
+| frame_corr | max_coast | Pd | distinct | coast | switches | classes |
+|---|---|---|---|---|---|---|
+| steady | 1 | 0.96±0.01 | 1.0 | 0.8 | 0.00 | 6 CLEAN |
+| steady | 3 | 0.96±0.01 | 1.0 | 0.8 | 0.00 | 6 CLEAN |
+| steady | 5 | 0.96±0.01 | 1.0 | 0.8 | 0.00 | 6 CLEAN |
+| steady | 8 | 0.96±0.01 | 1.0 | 0.8 | 0.00 | 6 CLEAN |
+| | | | | | | |
+| 0.0 | 1 | 0.51±0.04 | 5.3 | 13.3 | 4.00 | 4 ID SWITCH, 2 TOTAL CONFUSION |
+| 0.0 | 3 | 0.59±0.04 | 2.5 | 20.8 | 1.50 | 6 ID SWITCH |
+| 0.0 | 5 | 0.63±0.04 | 1.3 | 25.2 | 0.33 | 4 CLEAN, 2 ID SWITCH |
+| 0.0 | 8 | 0.64±0.03 | 1.0 | 25.7 | 0.00 | 6 CLEAN |
+| | | | | | | |
+| 0.6 | 1 | 0.53±0.06 | 5.3 | 12.5 | 3.17 | 4 ID SWITCH, 2 TOTAL CONFUSION |
+| 0.6 | 3 | 0.60±0.05 | 3.2 | 19.5 | 1.67 | 1 CLEAN, 5 ID SWITCH |
+| 0.6 | 5 | 0.65±0.04 | 1.5 | 23.5 | 0.50 | 3 CLEAN, 3 ID SWITCH |
+| 0.6 | 8 | 0.66±0.04 | 1.0 | 24.3 | 0.00 | 6 CLEAN |
+| | | | | | | |
+| 0.9 | 1 | 0.60±0.12 | 4.2 | 6.7 | 2.50 | 5 ID SWITCH, 1 TOTAL CONFUSION |
+| 0.9 | 3 | 0.62±0.10 | 3.3 | 10.3 | 2.33 | 5 ID SWITCH, 1 TOTAL CONFUSION |
+| 0.9 | 5 | 0.66±0.10 | 1.8 | 14.8 | 0.83 | 2 CLEAN, 3 ID SWITCH, 1 TOTAL CONFUSION |
+| 0.9 | 8 | 0.68±0.08 | 1.3 | 18.5 | 0.33 | 4 CLEAN, 2 ID SWITCH |
+
+Four things change relative to §4.2, and together they pin the
+fading-vs-operating-point question:
+
+- **The steady control saturates.** Pd 0.96, one ID, CLEAN at *every*
+  max_coast, with only 0.8 coast frames — the strong steady target is
+  almost never missed, so the survival lever has nothing to act on. This
+  is the control: any structure in the fading rows below is the effect of
+  fading, not of the raised amplitude.
+- **The CLEAN boundary now migrates with ρ — the picture §4.2 could not
+  show.** With headroom the lever recovers track *identity* in an orderly
+  way, and the budget it needs grows with fade duration: ρ = 0 reaches
+  all-CLEAN by max_coast = 8 (mostly already at 5), ρ = 0.6 likewise at 8,
+  while ρ = 0.9 still leaves 2/6 runs non-CLEAN at 8. This is the
+  report-2 survival-lever story restored, but with the lever's required
+  setting now a function of the fade correlation time — exactly the
+  practitioner takeaway §4.2 could only assert by its absence.
+- **Coasting recovers identity, not detections.** Even where
+  classifications return to CLEAN, fading Pd plateaus at ≈ 0.64–0.68
+  against the steady control's 0.96 — a ~0.3 absolute loss that no coast
+  budget buys back, because coasting bridges gaps, it does not
+  manufacture detections. The §3.2 fluctuation loss persists at the track
+  level even when the track "survives." A clean track and a high Pd are
+  different things: the tracker can hold one ID through the fades and
+  still see the target on only two-thirds of frames.
+- **Failures are milder, and the low-budget Pd inversion replicates.**
+  The dominant failure mode is now ID SWITCH rather than the marginal
+  point's TOTAL CONFUSION — the track recovers its lock after each fade
+  rather than dissolving — confirming that §4.2's severity came from the
+  marginal SNR, not from fading per se. And the ρ = 0.9 > ρ = 0 Pd
+  inversion at small budgets reappears (0.60 vs 0.51 at max_coast = 1),
+  for the same reason: bursts clump the hits into long clean stretches.
+
+The two operating points together make the cross-cutting point: **fading's
+cost to the tracker depends on where you sit on the detection curve.**
+With SNR headroom (§4.3) it is a tuning problem — size max_coast to the
+fade correlation time and identity is recovered, though the per-frame
+detection loss remains. At marginal SNR (§4.2) it is not tunable at all —
+the miss rate is high enough that bursts defeat every practical budget.
+(One caveat: the ρ = 0.9 rows here carry wide error bars — Pd ±0.08–0.12
+over 6 seeds — so read their CLEAN counts as a trend, not a precise
+boundary.)
 
 ## 5. Cross-cutting discussion
 
@@ -424,15 +506,22 @@ What changed relative to the two baseline reports, and why it matters:
    collapses. Margins must be sized on the fluctuating curve.
 
 2. **Report 2's missed-detection story survives, but the lever must be
-   re-sized.** "max_coast is the survival lever" (report 2 §3.1.2) holds
-   verbatim under *uncorrelated* fading — the steady→ρ=0 columns differ
-   in miss rate, not in mechanism. Under *correlated* fading the lever
-   loses most of its authority: i.i.d.-miss intuition (coast budget ≈ a
-   few expected consecutive misses) underestimates the budget needed by
-   the full fade duration, and at ρ = 0.9 (~4.7-frame bursts) even
-   max_coast = 8 leaves 5/6 runs in TOTAL CONFUSION. Coast tolerance
-   must be sized against the fade correlation **time**, not the average
-   miss rate — and beyond some correlation time, no fixed budget works.
+   re-sized — and only works with SNR headroom.** "max_coast is the
+   survival lever" (report 2 §3.1.2) holds verbatim under *uncorrelated*
+   fading — the steady→ρ=0 columns differ in miss rate, not in mechanism.
+   Under *correlated* fading the budget the lever needs grows with the
+   fade correlation **time**, not the average miss rate: i.i.d.-miss
+   intuition (coast budget ≈ a few expected consecutive misses)
+   underestimates it. Whether the lever can reach that budget depends on
+   the operating point. With SNR headroom (§4.3, +3.5 dB) it can: the
+   CLEAN boundary migrates outward with ρ and identity is recovered
+   (ρ = 0 clean by max_coast = 8, ρ = 0.9 nearly so). At marginal SNR
+   (§4.2) it cannot: the miss rate is high enough that ρ = 0.9's
+   ~4.7-frame bursts defeat every budget on the grid (5/6 TOTAL CONFUSION
+   even at max_coast = 8). Two further caveats from §4.3 temper even the
+   headroom case: coasting recovers track *identity* but not the lost
+   detections (fading Pd plateaus ~0.3 below the steady control), and
+   beyond some correlation time no fixed budget suffices at any SNR.
 
 3. **The M-of-N / coasting machinery is the right defense layer, used at
    its limit.** Frame-to-frame binary integration (M-of-N confirmation +
@@ -445,17 +534,20 @@ What changed relative to the two baseline reports, and why it matters:
    track level in practice. Against long correlated fades the remaining
    options are structural: slower fade dynamics relative to the frame
    rate (faster frame rate), frequency agility to decorrelate the fades
-   (turning ρ = 0.9 into ρ ≈ 0, which §4.2 shows is recoverable), or
-   accepting reacquisition and handling identity at a higher level.
+   (turning ρ = 0.9 into ρ ≈ 0, which §4.3 shows is recoverable given SNR
+   headroom), or accepting reacquisition and handling identity at a
+   higher level.
 
 ## 6. Limitations and future work
 
-- **Seed budget.** Illustrative runs are single-seed; the sweep uses 6
+- **Seed budget.** Illustrative runs are single-seed; both sweeps use 6
   (radar, fade) seed pairs per cell — smaller than report 2's 30-seed
   matrix. The ρ = 0.9 cells in particular carry high variance
-  (Pd ±0.10–0.13; only ~17 fade decorrelation times per 80-frame run),
-  so their Pd means are coarse. The classification counts (24/24 fading
-  cells failing below max_coast = 8) are the robust readout.
+  (Pd ±0.08–0.13; only ~17 fade decorrelation times per 80-frame run),
+  so their Pd means and CLEAN-count boundaries are coarse — read the §4.3
+  ρ = 0.9 CLEAN counts as a trend, not a precise boundary. The coarse
+  classification *direction* (all fading cells failing at marginal SNR;
+  boundary migrating with ρ at +3.5 dB) is the robust readout.
 - **Swerling 2/4 not modeled.** Chirp-to-chirp (fast) fluctuation breaks
   *intra-frame* coherent integration — a detector-level study that would
   modify `generate_frame` itself, deliberately out of scope here.
@@ -479,4 +571,5 @@ What changed relative to the two baseline reports, and why it matters:
 | `sweep_amplitude_fluctuation.png` / `.csv` | `evaluation/sweep_amplitude_fluctuation.py` | ✅ |
 | `tracker_stress_missed_detections.png` (baseline, report 2) | `evaluation/tracker_stress.py` | ✅ pre-existing |
 | `tracker_stress_missed_detections_swerling.png` | `evaluation/tracker_stress.py` | ✅ |
-| `tracker_stress_swerling_raw.csv` / `_summary.csv` | `evaluation/tracker_stress_swerling_sweep.py` | ✅ |
+| `tracker_stress_swerling_raw.csv` / `_summary.csv` (§4.2, marginal amp 0.0006) | `evaluation/tracker_stress_swerling_sweep.py` | ✅ |
+| `tracker_stress_swerling_raw_strong.csv` / `_summary_strong.csv` (§4.3, amp 0.0009) | `evaluation/tracker_stress_swerling_sweep.py --scenario scenarios/scenario_missed_detections_strong.json` | ✅ |

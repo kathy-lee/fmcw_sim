@@ -116,11 +116,26 @@ def main() -> None:
     p.add_argument("--frames", type=int, default=DEFAULT_FRAMES)
     p.add_argument("--seeds", type=int, default=len(DEFAULT_SEEDS),
                    help="number of (radar, fluctuation) seed pairs per cell")
+    p.add_argument("--scenario", default=SCENARIO,
+                   help="scenario JSON to sweep. Default is the published "
+                        "report-2 baseline, whose steady rows anchor against "
+                        "report 2 §3.1.2; any other scenario has no published "
+                        "anchor, so its steady rows are an in-experiment "
+                        "control only. Non-default scenarios get their stem "
+                        "suffixed onto the output CSV names, keeping the "
+                        "baseline artifacts intact.")
     args = p.parse_args()
     seeds = list(range(1, args.seeds + 1))
 
-    radar_cfg, base_targets = load_scenario(SCENARIO)
-    print(f"loaded {SCENARIO}: grid {len(GRID_FRAME_CORR)} frame_corr x "
+    radar_cfg, base_targets = load_scenario(args.scenario)
+    raw_csv, summary_csv = RAW_CSV, SUMMARY_CSV
+    if args.scenario != SCENARIO:
+        suffix = "_" + Path(args.scenario).stem.removeprefix(
+            "scenario_missed_detections_")
+        raw_csv = RAW_CSV.with_name(RAW_CSV.stem + suffix + RAW_CSV.suffix)
+        summary_csv = SUMMARY_CSV.with_name(
+            SUMMARY_CSV.stem + suffix + SUMMARY_CSV.suffix)
+    print(f"loaded {args.scenario}: grid {len(GRID_FRAME_CORR)} frame_corr x "
           f"{len(GRID_MAX_COAST)} max_coast x {len(seeds)} seeds, "
           f"{args.frames} frames")
 
@@ -160,17 +175,17 @@ def main() -> None:
                   f"{np.mean([r['n_switches'] for r in rows]):>6.2f}  "
                   f"{class_str}")
 
-    RAW_CSV.parent.mkdir(parents=True, exist_ok=True)
-    with open(RAW_CSV, "w", newline="") as f:
+    raw_csv.parent.mkdir(parents=True, exist_ok=True)
+    with open(raw_csv, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(raw_rows[0].keys()))
         w.writeheader()
         w.writerows(raw_rows)
-    print(f"\nwrote {RAW_CSV}")
-    with open(SUMMARY_CSV, "w", newline="") as f:
+    print(f"\nwrote {raw_csv}")
+    with open(summary_csv, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(summary_rows[0].keys()))
         w.writeheader()
         w.writerows(summary_rows)
-    print(f"wrote {SUMMARY_CSV}")
+    print(f"wrote {summary_csv}")
 
 
 if __name__ == "__main__":

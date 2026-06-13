@@ -1,0 +1,23 @@
+{
+  "_comment": "Strong variant of scenario_missed_detections.json (target realism report, Part I): IDENTICAL to the published tracker-report baseline except amplitude raised 0.0006 -> 0.0009 (+3.5 dB mean SNR). Provides a second operating point for the fade-correlation x max_coast sweep where the steady target is comfortably above threshold, so fading cells have dynamic range to show the CLEAN boundary moving with frame_corr. No published baseline exists at this amplitude; the sweep's steady rows serve as the in-experiment control.",
+  "radar": {
+    "fc_hz": 77000000000.0,
+    "bandwidth_hz": 2000000000.0,
+    "ramp_duration_s": 0.00004,
+    "chirp_period_s": 0.00005,
+    "n_range": 256,
+    "n_chirps": 64,
+    "noise_power": 0.0001,
+    "leakage_amplitude": 0.0,
+    "frame_period_s": 0.05,
+    "seed": 99999
+  },
+  "targets": [
+    {
+      "range_m": 4.0,
+      "velocity_mps": 0.5,
+      "amplitude": 0.0009,
+      "phase_rad": 0.0
+    }
+  ]
+}

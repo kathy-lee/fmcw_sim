@@ -8,7 +8,7 @@
 model**: per-frame RCS fluctuation (Swerling 1/3).
 
 ---
-## 0. TL;DR
+## TL;DR (Part I)
 
   Added Code:
   - simulator/fluctuation_models.py — Swerling 1/3 as AR(1)-evolving complex-Gaussian scatterers, unit mean power, prefix-property RNG
@@ -584,6 +584,21 @@ What changed relative to the two baseline reports, and why it matters:
 object of K coherent point scatterers spread over a range extent (point target =
 K = 1).
 
+## TL;DR (Part II)
+
+  Added Code:
+  - simulator/extended_target.py — extended target as K coherent complex-Gaussian scatterers over a range extent, equal total power (Σ|aᵢ|²=amplitude²), drawn once from a fourth RNG stream; K=1 = point target
+  - Target.extent + RadarConfig.extent_seed (555); generator coherent-sum integration (point path byte-identical); ground_truth reports the object's range half-width
+  - evaluation/sweep_amplitude.py detect_frame shared lens (golden-pinned); evaluation/sweep_extent.py (detection) and evaluation/tracker_stress_extent_sweep.py (tracking, σ_glint + matched R)
+  - tracker_stress.py: distance-to-span scorer in `associate_per_frame()`, track_position_rmse with GOSPA cutoff in `track_position_rmse()`, run_pipeline R / clustering-method overrides
+  - scenarios/scenario_extended_detection.json + scenario_extended_tracking.json, report/README.md, this report (Part II), plus all CSV/PNG artifacts
+
+  Headline results (all anchors passed; detector/tracker never see ground truth at runtime):
+  - Detection: spreading loss is a *per-cell* effect (per-cell fraction 0.42 → 0.02 across extents at −26.9 dB); object-level Pd is robust — even improves — at moderate extent (cell multiplicity) and collapses only at 1.2 m; the steady point curve crosses Pd 0.5 at −25.3 dB (Part I: −25.4).
+  - Fragmentation peak > cc > dbscan (1.2 m: 3.71 / 2.32 / 1.99 clusters/object) while object-Pd is flat at 1.00 across methods — clustering changes how many *pieces* the object is reported as, not whether it is detected.
+  - Tracking: point row reproduces report 2 (CLEAN); cc → dbscan fixes fragmentation (0.3 m: ID SWITCH → CLEAN); matched R (from measured σ_glint) sharpens identity at 1.2 m (distinct 2.0 → 1.7, 2 → 4 of 6 CLEAN) but residual localization RMSE stays ~0.58 m — identity recovered, accuracy not.
+  - Lesson: "size the parameter to the extent" (OS-CFAR guard, DBSCAN eps, tracker R). Point-tracking of an extended object works at small/moderate extent and takes the large one most of the way, not all — motivating the EOT sequel.
+
 ## 7. Introduction (Part II)
 
 Part I kept the target a single point that scintillated in time. Real targets are
@@ -636,7 +651,8 @@ blob — it was built to *split* close point targets, the opposite of what we wa
 The extended-target experiments instead use **DBSCAN**, whose `eps` bridges the
 sub-threshold gaps between scatterers to merge the blob into one centroid;
 connected-components (`cc`) merges only strictly-adjacent cells and splits at the
-gaps. The pipeline default is unchanged — clustering is selected per experiment —
+gaps. The **peak > cc > dbscan** fragmentation ordering is measured in §9.3 (and
+its downstream tracker consequence in §10.2). The pipeline default is unchanged — clustering is selected per experiment —
 so reports 1/2 stay byte-identical. A thematic parallel runs through Part II: just
 as OS-CFAR's **guard cells** must be sized to the extent (§9.2), DBSCAN's **`eps`**
 must be sized to the inter-scatterer gap (§10.2) — "size the parameter to the
@@ -756,11 +772,29 @@ masking *itself*.)
 
 ### 9.3 Fragmentation
 
-Clusters-per-object grows with extent at high SNR (DBSCAN, `eps = 2`,
-`min_cells = 2`): point and ≤0.6 m stay near 1, but the 1.2 m object fragments
-into ~2 clusters (≈2.0 at −13.6 dB). A fixed `eps` cannot bridge the wider gaps of
-the largest object — the detector-level cause of the tracker churn in §10, and the
-first sign that `eps` must scale with the extent.
+Clusters-per-object grows with extent — and the clustering method decides how
+badly. At a fixed high SNR (scale 2.1e-3, −13.6 dB, where every method detects the
+object on every frame, object-Pd = 1.00), with matched `min_cells = 2`:
+
+| extent | `peak` | `cc` | `dbscan` |
+|---|---|---|---|
+| point | 1.00 | 1.00 | 1.00 |
+| 0.3 m | 2.00 | 1.00 | 1.00 |
+| 0.6 m | 2.13 | 1.89 | 1.01 |
+| 1.2 m | 3.71 | 2.32 | 1.99 |
+
+This is the **peak > cc > dbscan** ordering, measured: `peak` (the pipeline
+*default*, one detection per local maximum) shatters worst — even the 0.3 m object
+splits in two; `cc` (strict 8-adjacency) splits at the sub-threshold gaps;
+`dbscan` (`eps = 2`) bridges them and stays near one cluster up to 0.6 m. Crucially
+**object-Pd is 1.00 across all three methods** — clustering does not change whether
+the object is *detected*, only into how many pieces it is *reported*. So the
+method difference is purely fragmentation, whose consequence is downstream
+tracker churn (§10), not detection.
+
+`dbscan` still leaves ~2 clusters on the 1.2 m object: a fixed `eps = 2` cannot
+bridge the widest gaps, the first sign that `eps` must scale with the extent
+(§11). (Same CMD as above; also writes `sweep_extent_fragmentation.csv`.)
 
 ## 10. Tracking under extended targets
 
@@ -782,6 +816,19 @@ confirming glint scales with extent. It is measured with the same `min_cells = 2
 clustering the tracker uses (so it is the wander of the centroid the tracker
 actually receives, not of singleton noise cells), and these values set the matched
 R used in the matrix below.
+
+**Calibration hygiene (and its scope).** σ_glint is measured on a held-out noise
+seed set (101–103), disjoint from the evaluation seeds (1–6), so matched R is *not*
+fit to the test noise — the same calibrate-then-evaluate-out-of-sample discipline
+report 1 uses for the CFAR α. One honest scope limit: calibration and evaluation
+share the *object* realization (`extent_seed = 555`), so matched R is tuned to this
+object's glint (held-out noise), not to a fresh object of the same extent class.
+This is the faithful offline proxy for the deployable analogue — innovation-based
+R, which adapts to *the object being tracked* — but it means the reported
+matched-R benefit is "R adapted to this object," not "a fixed R that generalises
+across object realisations." A stricter test would hold out `extent_seed` too. The
+tracker itself never sees ground truth at runtime; σ_glint enters only as a frozen
+config value.
 
 ### 10.2 Fragmentation and glint vs the two fixes
 
@@ -870,4 +917,5 @@ Reading it (left→right applies the two fixes; top→bottom grows the stressor)
 | Artifact | Produced by | Status |
 |---|---|---|
 | `sweep_extent.png` / `.csv` | `evaluation/sweep_extent.py` | ✅ |
+| `sweep_extent_fragmentation.csv` (peak/cc/dbscan, §9.3) | `evaluation/sweep_extent.py` | ✅ |
 | `tracker_stress_extent_raw.csv` / `_summary.csv` | `evaluation/tracker_stress_extent_sweep.py` | ✅ |

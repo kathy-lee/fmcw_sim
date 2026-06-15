@@ -120,6 +120,41 @@ def run_sweep(scenario, amplitudes, extents, n_frames):
     return results
 
 
+def fragmentation_by_method(scenario, amplitude_scale, extents, methods,
+                            n_frames):
+    """Clusters-per-object and object-Pd vs extent for several clustering
+    methods, at a single (high-SNR) amplitude. All methods use min_cells=2
+    (via object_metrics), so this is a fair fragmentation comparison: it shows
+    peak shatters, cc partial, dbscan bridges, while object-Pd stays ~flat
+    (clustering is fragmentation-differentiating, not Pd-differentiating).
+
+    Returns {method: {extent_key: {"pd": float, "clusters": float}}}.
+    """
+    radar_cfg, base_targets = load_scenario(str(scenario))
+    base = base_targets[0]
+    results = {}
+    for method in methods:
+        per_extent = {}
+        for extent in extents:
+            t = dataclasses.replace(
+                base, amplitude=base.amplitude * amplitude_scale,
+                extent=extent)
+            gen = FMCWBeatSignalGenerator(radar_cfg)
+            hits = 0
+            frag = 0.0
+            for i in range(n_frames):
+                m = object_metrics(gen, t, 0, i, CFAR_METHOD, method)
+                hits += int(m["detected"])
+                frag += m["cluster_count"]
+            per_extent[_case_key(extent)] = {"pd": hits / n_frames,
+                                             "clusters": frag / n_frames}
+        results[method] = per_extent
+        print(f"  {method:7s} " + "  ".join(
+            f"{k}:{v['clusters']:.2f}cl/{v['pd']:.2f}Pd"
+            for k, v in per_extent.items()))
+    return results
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--scenario", type=Path,
@@ -164,6 +199,22 @@ def main() -> None:
                             f"{r['cell_fraction'][i]:.4f}",
                             f"{r['cluster_count'][i]:.4f}"])
     print(f"wrote {args.csv}")
+
+    # Fragmentation comparison: peak/cc/dbscan at a fixed high-SNR amplitude.
+    print("\nFragmentation by method (clusters/object, object-Pd) at "
+          f"scale={amplitudes[-2]:.2e}:")
+    frag = fragmentation_by_method(
+        args.scenario, amplitudes[-2], extents,
+        ["peak", "cc", "dbscan"], args.frames)
+    frag_csv = args.csv.with_name("sweep_extent_fragmentation.csv")
+    with open(frag_csv, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["method", "case", "clusters_per_object", "object_pd"])
+        for method, per_extent in frag.items():
+            for key, v in per_extent.items():
+                w.writerow([method, key, f"{v['clusters']:.4f}",
+                            f"{v['pd']:.4f}"])
+    print(f"wrote {frag_csv}")
 
 
 if __name__ == "__main__":

@@ -135,3 +135,21 @@ def test_run_cell_smoke():
     assert set(r) >= {"pd", "distinct", "n_switches", "rmse_m",
                       "classification"}
     assert 0.0 <= r["pd"] <= 1.0
+
+
+def test_fragmentation_by_method_smoke():
+    """peak/cc/dbscan fragmentation comparison at a fixed amplitude: each
+    method reports clusters-per-object and object-Pd per extent."""
+    from pathlib import Path
+    from evaluation.sweep_extent import fragmentation_by_method
+    res = fragmentation_by_method(
+        Path("scenarios/scenario_extended_detection.json"),
+        amplitude_scale=2.1e-3,
+        extents=[None, {"n_scatterers": 10, "range_extent_m": 0.6}],
+        methods=["peak", "cc", "dbscan"], n_frames=5)
+    assert set(res.keys()) == {"peak", "cc", "dbscan"}
+    for method in res:
+        assert set(res[method].keys()) == {"point", "ext_0.6"}
+        for key in res[method]:
+            assert res[method][key]["clusters"] >= 0
+            assert 0.0 <= res[method][key]["pd"] <= 1.0

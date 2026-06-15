@@ -573,3 +573,301 @@ What changed relative to the two baseline reports, and why it matters:
 | `tracker_stress_missed_detections_swerling.png` | `evaluation/tracker_stress.py` | ✅ |
 | `tracker_stress_swerling_raw.csv` / `_summary.csv` (§4.2, marginal amp 0.0006) | `evaluation/tracker_stress_swerling_sweep.py` | ✅ |
 | `tracker_stress_swerling_raw_strong.csv` / `_summary_strong.csv` (§4.3, amp 0.0009) | `evaluation/tracker_stress_swerling_sweep.py --scenario scenarios/scenario_missed_detections_strong.json` | ✅ |
+
+
+---
+
+# Target Realism Test — Part II: Extended Targets
+
+**Date:** 2026-06-15
+**Pipeline under test:** unchanged front-end lens; the **target model** is now an
+object of K coherent point scatterers spread over a range extent (point target =
+K = 1).
+
+## 7. Introduction (Part II)
+
+Part I kept the target a single point that scintillated in time. Real targets are
+also extended in *space*: a vehicle reflects from many scattering centres spread
+over metres, so its echo fills several range cells and its apparent centre hops
+between bright points as the geometry changes (glint). This part adds an
+extended-target model — K coherent complex-Gaussian scatterers over a range
+extent — and re-measures the detector and tracker, anchored on report 1 / Part I
+(detection) and report 2 (tracking).
+
+The treatment is **point-tracking of an extended object**: cluster the blob to one
+centroid measurement and track it as a point — the standard automotive approach,
+and what report 2's tracker already does. Full extended-object tracking (EOT),
+which models *multiple* measurements per object per scan and estimates shape, is
+out of scope (§12).
+
+## 8. Methodology — deltas only (Part II)
+
+All baseline conventions are inherited (front-end lens, seed hygiene,
+classification taxonomy — see report/README.md). Deltas:
+
+### 8.1 The extended-target model
+
+A target may carry an optional `extent` dict,
+`{"n_scatterers": K, "range_extent_m": L}` (`None` = point target → today's exact
+behaviour). The generator draws, **once per target**, K point scatterers at
+random range offsets over `[−L/2, +L/2]` with complex-Gaussian (Rayleigh)
+voltages, and sums them coherently into the frame (`simulator/extended_target.py`,
+`beat_signal_generator.generate_frame`). Two design points:
+
+- **Equal total power:** scatterer magnitudes are normalised so Σ|aᵢ|² =
+  `amplitude²` — the extended object carries the *same total RCS* as the
+  equivalent point target, so "extended vs point" isolates spreading from a power
+  change.
+- **Glint is emergent, from motion.** Scatterers are static (drawn once); at
+  λ ≈ 3.9 mm even slow motion rotates their relative phases between frames, so the
+  power-weighted centroid wanders with no change to the true centre. The Swerling
+  `fluctuation` knob (Part I) remains an orthogonal *temporal* whole-object factor
+  — spatial (`extent`) ⟂ temporal (`fluctuation`).
+
+Scatterers are drawn from a **fourth RNG stream**, `RadarConfig.extent_seed`
+(default `555`), keyed by `(extent_seed, target_index)` — independent of the
+noise (`seed`), CFAR-calibration (`0`), and fade (`fluctuation_seed`) streams.
+
+### 8.2 Clustering for extended objects
+
+An extended object lights a contiguous-but-gappy patch of cells. The pipeline
+default `peak` clustering (one detection per local maximum) *shatters* such a
+blob — it was built to *split* close point targets, the opposite of what we want.
+The extended-target experiments instead use **DBSCAN**, whose `eps` bridges the
+sub-threshold gaps between scatterers to merge the blob into one centroid;
+connected-components (`cc`) merges only strictly-adjacent cells and splits at the
+gaps. The pipeline default is unchanged — clustering is selected per experiment —
+so reports 1/2 stay byte-identical. A thematic parallel runs through Part II: just
+as OS-CFAR's **guard cells** must be sized to the extent (§9.2), DBSCAN's **`eps`**
+must be sized to the inter-scatterer gap (§10.2) — "size the parameter to the
+target's extent."
+
+### 8.3 The two association gates (illustrated)
+
+Two distinct association steps are easy to conflate; Part II touches both, in
+different ways.
+
+**(a) The tracker's internal gate** (`processing/tracking.py`) decides which
+detection updates which track. It is a Mahalanobis / chi-square test,
+`d² = dr²/(range_meas_var + cov) + dd²/doppler_meas_var ≤ 9.21`. An extended
+object's centroid wanders (glint), so the measurement is noisier than a point's.
+The principled response is to tell the filter so via the **measurement
+covariance R**, not the gate threshold. We set a **matched R**:
+
+```
+R_matched = R_resolution + σ_glint²
+```
+
+where `σ_glint` is the *measured* std of the merged centroid about the true centre
+(§10.1) — a property of the target model, calibrated on a held-out seed set and
+then frozen and evaluated out-of-sample (the same calibrate-then-verify hygiene
+report 1 uses for the CFAR α). This is not a knob tuned against the score, and not
+the object's spatial spread (which would over-state R); the deployable, GT-free
+analogue is innovation-based R estimation. R remains a fixed config value — no new
+gating code; `max_coast` (misses) and `process_noise_q` (maneuver) keep their
+report-2 roles.
+
+**(b) The evaluation scorer** (`evaluation/tracker_stress.py:associate_per_frame`)
+decides, per frame, the binary *"is this track tracking the object?"* →
+`{object: track_id or None}`. Every report-2 metric is an aggregation of that
+binary sequence: track-level **Pd** (fraction of frames assigned a track),
+**distinct IDs**, **ID switches**, and the **classification** (CLEAN / ID SWITCH /
+TRACK BREAK / TOTAL CONFUSION). For an extended object the scorer measures
+distance to the object's occupied **range span** `[centre ± w]`, not its centroid:
+
+```
+w = (range_extent_m / range_bin_size) / 2          # object range half-width, bins
+range_bin_size = c/(2·BW) = 7.5 cm  →  L = 0.6 m → 8 bins wide → w = 4
+```
+
+```
+   range bins:   ...  46  47  48  49 [50] 51  52  53  54  ...
+   object span:           |<------- w=4 ------ centre ------ w=4 ------>|
+                              ^track here (edge): dist-to-span = 0  -> TRACKING
+   a track at bin 58 (4 beyond the edge) -> dist-to-span = 4 > 3 gate -> MISS
+```
+
+A track anywhere on the blob (up to `w` bins from the true centre) is scored as
+tracking it; a point target has `w = 0`, reducing exactly to the previous
+3-bins-to-centroid rule (baselines unchanged). Doppler stays tight (span is
+range-only), and fragmentation is counted **pre-association** (cluster count,
+§9.3) so a generous span cannot hide it.
+
+**Accuracy and its metric.** Identity metrics answer "did we hold one track" but
+not "how well did we locate the centre." Part II adds **localization RMSE**
+(metres) of the associated track's range estimate vs the true centre — the
+localization component of the standard GOSPA / OSPA / CLEAR-MOT-MOTP family —
+reported alongside the identity metrics rather than fused into a single GOSPA
+scalar, so report-2's vocabulary is preserved. It uses the **GOSPA cutoff
+convention**: a frame with no associated track is charged a fixed cutoff (1.0 m)
+rather than excluded, so accuracy cannot be gamed by dropping the hard (deep-
+glint) frames — and is always read together with Pd.
+
+The two gates are independent: matched R lets the *tracker* hold one track through
+glint; the span scorer + localization RMSE *measure* the result fairly for an
+object wider than the 3-bin ruler. Together they close the loop **σ_glint
+(characterise) → matched R (set the filter's R correctly) → localization RMSE
+(measure the recovered centre)**.
+
+## 9. Detection under extended targets
+
+CMD: `python -m evaluation.sweep_extent --frames 300`
+
+![Extended-target detection vs point](sweep_extent.png)
+
+### 9.1 Anchor check
+
+The `point` (extent = None) curve reproduces report 1 §3 / Part I steady: object-
+level Pd climbs 0 → 0.22 → 0.97 → 1.0 over −31 → −18 dB, crossing Pd ≈ 0.5 near
+**−25.3 dB** — essentially exactly Part I's steady −25.4 dB (measured the same way:
+OS-CFAR, CC/min_cells = 2). So the extended deltas below are attributable to the
+target model.
+
+### 9.2 Spreading loss and self-masking
+
+The clean spreading-loss signal is the **per-cell detection fraction** (of the
+mask cells in the object span, the fraction that crossed CFAR), which falls
+monotonically with extent at every SNR. At −26.9 dB mean SNR:
+
+| extent | per-cell fraction | object-level Pd |
+|---|---|---|
+| point | 0.42 | 0.22 |
+| 0.3 m | 0.21 | 0.38 |
+| 0.6 m | 0.13 | 0.46 |
+| 1.2 m | 0.02 | 0.05 |
+
+Equal total power spread over more cells lowers per-cell SNR, so each cell is
+harder to light — the per-cell fraction collapses (0.42 → 0.02). Object-level Pd
+(≥ 1 surviving cluster in the span) is *more lenient* for a wider span — more
+cells give more chances for a cluster to form — so at this marginal SNR the
+moderate extents actually sit *above* the point (0.38, 0.46 vs 0.22); but at
+1.2 m the per-cell SNR is so low that even object-level detection collapses
+(0.05 vs the point's 0.22). So spreading loss is unambiguous at the *per-cell*
+level everywhere, while *object-level* detectability is protected — even improved
+— by cell multiplicity until the extent is large enough that per-cell SNR caves.
+**Self-masking**
+contributes too: when the extent exceeds the OS-CFAR guard, the object's own
+scatterers leak into the training cells and raise the threshold; enlarging the
+guard to cover the extent recovers per-cell fraction (1.2 m, strong amplitude:
+0.51 → 0.54 as the range guard grows 4 → 20 cells) — a real but, at this operating
+point, secondary effect to spreading loss. (Contrast report 1 §4's *mutual*
+masking — a weak target masked by a strong *neighbour*; this is an object
+masking *itself*.)
+
+### 9.3 Fragmentation
+
+Clusters-per-object grows with extent at high SNR (DBSCAN, `eps = 2`,
+`min_cells = 2`): point and ≤0.6 m stay near 1, but the 1.2 m object fragments
+into ~2 clusters (≈2.0 at −13.6 dB). A fixed `eps` cannot bridge the wider gaps of
+the largest object — the detector-level cause of the tracker churn in §10, and the
+first sign that `eps` must scale with the extent.
+
+## 10. Tracking under extended targets
+
+CMD: `python -m evaluation.tracker_stress_extent_sweep`
+
+### 10.1 Glint characterization
+
+The measured centroid wander (std about the true centre) grows with extent:
+
+| extent | σ_glint (range bins) | matched R = 0.5 + σ_glint² |
+|---|---|---|
+| point | 0.10 | 0.51 |
+| 0.3 m | 0.28 | 0.58 |
+| 0.6 m | 1.98 | 4.41 |
+| 1.2 m | 2.10 | 4.89 |
+
+σ_glint jumps once the object spans several cells (0.6 m and 1.2 m → ~2 bins),
+confirming glint scales with extent. It is measured with the same `min_cells = 2`
+clustering the tracker uses (so it is the wander of the centroid the tracker
+actually receives, not of singleton noise cells), and these values set the matched
+R used in the matrix below.
+
+### 10.2 Fragmentation and glint vs the two fixes
+
+Matrix (6 seeds, 80 frames; cells: mean Pd / distinct IDs / localization RMSE [m]
+/ classification). Both clusterers use `min_cells = 2` (report-2 default), so the
+cc-vs-dbscan column is a fair merger comparison — it isolates DBSCAN's gap
+bridging from any cluster-size-filter difference:
+
+| extent | `cc` + default R | `dbscan` + default R | `dbscan` + matched R |
+|---|---|---|---|
+| point | 0.96 / 1.0 / 0.19 / 6 CLEAN | 0.96 / 1.0 / 0.19 / 6 CLEAN | 0.96 / 1.0 / 0.19 / 6 CLEAN |
+| 0.3 m | 0.94 / 4.5 / 0.25 / 6 ID SWITCH | 0.97 / 1.0 / 0.16 / 6 CLEAN | 0.97 / 1.0 / 0.16 / 6 CLEAN |
+| 0.6 m | 0.97 / 1.8 / 0.27 / 5 CLEAN,1 ID SW | 0.97 / 1.7 / 0.28 / 5 CLEAN,1 ID SW | 0.97 / 1.7 / 0.27 / 5 CLEAN,1 ID SW |
+| 1.2 m | 0.81 / 2.8 / 0.61 / 6 ID SWITCH | 0.83 / 2.0 / 0.59 / 2 CLEAN,4 ID SW | 0.83 / 1.7 / 0.58 / 4 CLEAN,2 ID SW |
+
+Reading it (left→right applies the two fixes; top→bottom grows the stressor):
+
+- **Anchor (point row):** Pd 0.96, one ID, CLEAN, clustering-independent —
+  report 2's point-target behaviour reproduced (qualitative anchor at this
+  reliably-detected amplitude).
+- **cc → dbscan (the merger fix) helps at *every* extent.** At 0.3 m, `cc`
+  shatters the blob into 4.5 tracks with 9.3 switches (ID SWITCH) while DBSCAN
+  bridges the gaps to one CLEAN track; at 1.2 m, DBSCAN still beats `cc`
+  (2.0 vs 2.8 distinct, 1.5 vs 8.0 switches). Gap-bridging is the headline
+  fragmentation fix, and the expected ordering (dbscan ≤ cc fragmentation) holds
+  across the grid.
+- **matched R (the glint fix) sharpens *identity* progressively, most at 1.2 m.**
+  Where the default-R run already merges (0.3 / 0.6 m) it adds nothing; at 1.2 m
+  it cuts churn further (distinct 2.0 → 1.7, switches 1.5 → 0.83, CLEAN 2 → 4 of 6).
+  So matched R is exactly the lever the large-extent case needs.
+- **But matched R does not fix *accuracy*, and 1.2 m is not fully CLEAN —
+  reported as-found.** Localization RMSE stays ≈ 0.58 m across all three 1.2 m
+  configs: matched R stabilises which track owns the object, but the 3-bin glint
+  is genuine measurement error the KF cannot remove, so the centroid estimate
+  remains ~0.58 m off. And 1.2 m tops out at 4/6 CLEAN. A fixed matched R plus
+  point-tracking takes the large extended object most of the way, not all of it —
+  which is what motivates the adaptive-R / EOT sequel (§12).
+
+## 11. Cross-cutting discussion (Part II)
+
+1. **"Size the parameter to the extent" is the unifying lesson.** Several
+   pipeline knobs that are harmless for a point target must track the object's
+   extent: the OS-CFAR **guard** (§9.2, where enlarging it recovers per-cell
+   detection), the tracker's **R** (§10.2, matched R), and DBSCAN's **`eps`** —
+   at the 1.2 m extent a fixed `eps = 2` still leaves ~2 clusters (residual
+   fragmentation), so an extent-scaled `eps` would merge further. Extent is a
+   first-class scene parameter, not a detail.
+
+2. **The σ_glint → matched R → localization RMSE loop** is the principled way to
+   handle glint in a point tracker: measure the centroid's true measurement noise,
+   tell the filter via R, and watch the localization error fall. It works at
+   small/moderate extent and is honestly partial at large extent.
+
+3. **Detector fragmentation propagates into tracker churn.** §9.3's clusters-per-
+   object > 1 is exactly what spawns the multiple churning tracks of §10.2; the
+   clustering choice (and its `eps`) is therefore a *tracking* decision, not just a
+   detector one.
+
+4. **Emergent vs explicit fluctuation (link to Part I).** A many-scatterer
+   extended object's amplitude statistics are, by construction, Swerling-1-like
+   (the sum of many complex-Gaussian scatterers — the textbook Swerling-1
+   derivation). Part II's spatial model and Part I's explicit temporal `fluctuation`
+   knob are thus two faces of the same complex-Gaussian scatterer physics, kept on
+   orthogonal axes (space vs time) by design.
+
+## 12. Limitations (Part II)
+
+- **Point-tracking, not EOT.** The blob is collapsed to one measurement, so
+  detection degradation / fragmentation / glint are studied, but **not** extent or
+  shape estimation. EOT (random-matrix / PMBM), which models multiple measurements
+  per object per scan, is the sequel — pairing with the MIMO + point-cloud
+  milestone.
+- **Calibrated-fixed matched R, not adaptive-online R.** σ_glint is measured
+  offline and frozen; the deployable analogue is innovation-based R estimation
+  (Mehra), learning the wander from the filter's residuals at runtime. Deferred.
+- **Scorer reports GOSPA's components**, not the fused GOSPA scalar (an optional
+  supplementary number is future work).
+- **Fixed DBSCAN `eps` / OS-CFAR guard.** A fixed `eps = 2` still leaves ~2
+  clusters on the 1.2 m object (§10.2) — it beats `cc` but does not fully merge;
+  an extent-scaled `eps` (and guard) would be the natural next step.
+- **Rigid body, range-only** (no micro-Doppler / Doppler extent); single extended
+  object per scene; ~6 seeds (smaller than report 2's 30).
+
+## Appendix — Part II artifact index
+
+| Artifact | Produced by | Status |
+|---|---|---|
+| `sweep_extent.png` / `.csv` | `evaluation/sweep_extent.py` | ✅ |
+| `tracker_stress_extent_raw.csv` / `_summary.csv` | `evaluation/tracker_stress_extent_sweep.py` | ✅ |

@@ -75,14 +75,14 @@ def _make_track(track_id, range_bin, doppler_bin, status="confirmed"):
 
 def test_associate_empty_track_list_returns_none_for_each_gt():
     from evaluation.tracker_stress import associate_per_frame
-    gt_list = [(0, 3.0, 1.0, 40.0, 33.0)]
+    gt_list = [(0, 3.0, 1.0, 40.0, 33.0, 0.0)]
     result = associate_per_frame(gt_list, [])
     assert result == {0: None}
 
 
 def test_associate_single_close_target_matched():
     from evaluation.tracker_stress import associate_per_frame
-    gt_list = [(0, 3.0, 1.0, 40.0, 33.0)]
+    gt_list = [(0, 3.0, 1.0, 40.0, 33.0, 0.0)]
     tracks = [_make_track(7, 40.2, 33.1)]
     result = associate_per_frame(gt_list, tracks)
     assert result == {0: 7}
@@ -91,7 +91,7 @@ def test_associate_single_close_target_matched():
 def test_associate_single_far_target_not_matched():
     """If the closest track is beyond max_distance_bins, return None."""
     from evaluation.tracker_stress import associate_per_frame
-    gt_list = [(0, 3.0, 1.0, 40.0, 33.0)]
+    gt_list = [(0, 3.0, 1.0, 40.0, 33.0, 0.0)]
     tracks = [_make_track(7, 70.0, 10.0)]
     result = associate_per_frame(gt_list, tracks, max_distance_bins=3.0)
     assert result == {0: None}
@@ -100,8 +100,8 @@ def test_associate_single_far_target_not_matched():
 def test_associate_two_targets_obvious_mapping():
     from evaluation.tracker_stress import associate_per_frame
     gt_list = [
-        (0, 3.0, 1.0, 40.0, 33.0),
-        (1, 6.0, -1.0, 80.0, 31.0),
+        (0, 3.0, 1.0, 40.0, 33.0, 0.0),
+        (1, 6.0, -1.0, 80.0, 31.0, 0.0),
     ]
     tracks = [
         _make_track(11, 80.1, 31.0),
@@ -116,8 +116,8 @@ def test_associate_hungarian_beats_greedy_on_crossed_positions():
     one-to-one constraint picks the minimum-total-cost pairing."""
     from evaluation.tracker_stress import associate_per_frame
     gt_list = [
-        (0, 3.0, 1.0, 40.0, 33.0),
-        (1, 3.1, 1.0, 41.0, 33.0),
+        (0, 3.0, 1.0, 40.0, 33.0, 0.0),
+        (1, 3.1, 1.0, 41.0, 33.0, 0.0),
     ]
     tracks = [
         _make_track(100, 40.4, 33.0),
@@ -600,3 +600,103 @@ def test_run_pipeline_fluctuation_seed_is_deterministic():
             assert a.id == b.id
             assert a.status == b.status
             np.testing.assert_array_equal(a.state, b.state)
+
+
+def test_associate_per_frame_span_reduces_to_point_at_zero_width():
+    """With span half-width 0, association is identical to the point matcher."""
+    from evaluation.tracker_stress import associate_per_frame
+    # gt tuple now: (gt_id, range_m, v, range_bin, doppler_bin, half_width_bins)
+    gt = [(0, 4.0, 0.5, 50.0, 32.0, 0.0)]
+    tracks = [_make_track(7, 51.0, 32.0)]  # 1 bin away -> within 3-bin gate
+    out = associate_per_frame(gt, tracks)
+    assert out[0] == 7
+
+
+def test_associate_per_frame_span_associates_within_extent():
+    """A track at the blob edge (4 bins from centre, span half-width 4)
+    associates; the same track would miss a 3-bin point gate."""
+    from evaluation.tracker_stress import associate_per_frame
+    gt = [(0, 4.0, 0.5, 50.0, 32.0, 4.0)]
+    edge = [_make_track(7, 54.0, 32.0)]   # 4 bins from centre, on span edge
+    assert associate_per_frame(gt, edge)[0] == 7
+    far = [_make_track(7, 58.0, 32.0)]    # 8 bins from centre -> >3 beyond edge
+    assert associate_per_frame(gt, far)[0] is None
+
+
+def test_track_position_rmse_cutoff_charges_missed_frames():
+    """With cutoff_m set (GOSPA convention), a frame with no associated track
+    contributes the cutoff instead of being excluded; an on-centre track
+    contributes zero. Two frames (one on-centre, one missed) -> RMSE =
+    cutoff/sqrt(2)."""
+    import math
+    from evaluation.tracker_stress import track_position_rmse, TrackSnapshot
+    range_per_bin = 0.1
+    gt_traj = [(0, [(0, 4.0, 0.5, 40.0, 32.0, 4.0)]),
+               (1, [(0, 4.0, 0.5, 40.0, 32.0, 4.0)])]
+    # Frame 0: track exactly on the true range (4.0 m -> 40 bins). Frame 1: none.
+    snap = TrackSnapshot(id=7, state=np.array([40.0, 0.0]),
+                         last_doppler_bin=32.0, status="confirmed")
+    tracks_hist = [(0, [snap]), (1, [])]
+    assoc = [(0, {0: 7}), (1, {0: None})]
+    rmse = track_position_rmse(gt_traj, tracks_hist, assoc, range_per_bin,
+                               cutoff_m=2.0)
+    assert rmse == pytest.approx(2.0 / math.sqrt(2.0))
+
+
+def test_run_pipeline_range_meas_var_override_is_deterministic():
+    import numpy as np
+    from evaluation.tracker_stress import run_pipeline
+    from simulator.beat_signal_generator import RadarConfig, Target
+    cfg = RadarConfig(noise_power=1e-4, frame_period_s=0.05)
+    targets = [Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0009,
+                      extent={"n_scatterers": 10, "range_extent_m": 0.6})]
+    h1 = run_pipeline(cfg, targets, 8, seed=3, range_meas_var=5.0)
+    h2 = run_pipeline(cfg, targets, 8, seed=3, range_meas_var=5.0)
+    assert len(h1) == len(h2) == 8
+    for (_, s1), (_, s2) in zip(h1, h2):
+        assert len(s1) == len(s2)
+
+
+def test_run_pipeline_cluster_method_param():
+    """Default clustering is unchanged (peak); dbscan is selectable. Both run
+    and return n_frames of history deterministically."""
+    from evaluation.tracker_stress import run_pipeline
+    from simulator.beat_signal_generator import RadarConfig, Target
+    cfg = RadarConfig(noise_power=1e-4, frame_period_s=0.05)
+    targets = [Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0009,
+                      extent={"n_scatterers": 10, "range_extent_m": 0.6})]
+    h_default = run_pipeline(cfg, targets, 6, seed=3)
+    h_db = run_pipeline(cfg, targets, 6, seed=3, cluster_method="dbscan",
+                        cluster_min_cells=1, cluster_eps=2.0,
+                        cluster_min_samples=1)
+    assert len(h_default) == len(h_db) == 6
+
+
+def test_associate_per_frame_span_keeps_doppler_tight():
+    """The span loosens RANGE only: a track inside the range span but far in
+    Doppler is still rejected (span is range-only; Doppler stays tight)."""
+    from evaluation.tracker_stress import associate_per_frame
+    gt = [(0, 4.0, 0.5, 50.0, 32.0, 4.0)]
+    # At the range centre (dist-to-span 0) but 5 Doppler bins off -> reject.
+    off = [_make_track(7, 50.0, 37.0)]
+    assert associate_per_frame(gt, off)[0] is None
+    # Same range, Doppler within the 3-bin gate -> matched.
+    on = [_make_track(7, 50.0, 33.0)]
+    assert associate_per_frame(gt, on)[0] == 7
+
+
+def test_track_position_rmse_cutoff_caps_large_associated_error():
+    """An associated frame whose error exceeds the cutoff is capped at it
+    (the min(err, cutoff) branch), so a wild estimate can't blow up the RMSE
+    beyond the cutoff."""
+    from evaluation.tracker_stress import track_position_rmse, TrackSnapshot
+    range_per_bin = 0.1
+    gt_traj = [(0, [(0, 4.0, 0.5, 40.0, 32.0, 4.0)])]
+    # Track at 100 bins -> 10 m -> 6 m error, well beyond the 2 m cutoff.
+    snap = TrackSnapshot(id=7, state=np.array([100.0, 0.0]),
+                         last_doppler_bin=32.0, status="confirmed")
+    tracks_hist = [(0, [snap])]
+    assoc = [(0, {0: 7})]
+    rmse = track_position_rmse(gt_traj, tracks_hist, assoc, range_per_bin,
+                              cutoff_m=2.0)
+    assert rmse == pytest.approx(2.0)   # single frame, error capped at cutoff

@@ -42,6 +42,27 @@ def predicted_bins(target: Target, gen: FMCWBeatSignalGenerator) -> tuple[float,
     return range_bin, doppler_bin
 
 
+def detect_frame(gen, targets, frame_index, cfar_method,
+                 cluster_method="cc", min_cells=2, **cluster_kwargs):
+    """Run the shared front-end lens for one frame.
+
+    range_doppler (Hann, DC removal) -> cfar_2d -> range-0 notch -> cluster.
+    Returns (centroids, mask, rd_db). This is the single definition of the
+    detection lens used by both the baseline amplitude sweep and the
+    extended-target sweep, so they remain directly comparable.
+    """
+    frame = gen.generate_frame(targets, frame_index=frame_index)
+    rd = range_doppler(frame, window="hann", dc_removal=True,
+                       clutter_removal=False)
+    rd_db = 20.0 * np.log10(np.abs(rd) + 1e-12)
+    mask = cfar_2d(rd_db, method=cfar_method,
+                   guard=(2, 4), training=(4, 8), pfa=1e-4, window="hann")
+    mask[:, 0] = False   # range-0 leakage notch
+    centroids = cluster(mask, rd_db, method=cluster_method,
+                        min_cells=min_cells, **cluster_kwargs)
+    return centroids, mask, rd_db
+
+
 def run_one_point(
     radar_cfg: RadarConfig,
     targets: list[Target],
@@ -69,15 +90,19 @@ def run_one_point(
             gts = gen.ground_truth(targets, frame_index=frame_index)
             truth_bins = [(g["range_bin"], g["doppler_bin_shifted"])
                           for g in gts]
-        frame = gen.generate_frame(targets, frame_index=frame_index)
-        rd = range_doppler(frame, window="hann", dc_removal=True,
-                           clutter_removal=False)
-        rd_db = 20.0 * np.log10(np.abs(rd) + 1e-12)
-        mask = cfar_2d(rd_db, method=cfar_method,
-                       guard=(2, 4), training=(4, 8), pfa=1e-4,
-                       window="hann")
-        mask[:, 0] = False   # range-0 leakage notch
-        centroids = cluster(mask, rd_db, method="cc", min_cells=2)
+        # Original inline lens (kept for reference; now shared via
+        # detect_frame so the extended-target sweep uses the same pipeline):
+        #   frame = gen.generate_frame(targets, frame_index=frame_index)
+        #   rd = range_doppler(frame, window="hann", dc_removal=True,
+        #                      clutter_removal=False)
+        #   rd_db = 20.0 * np.log10(np.abs(rd) + 1e-12)
+        #   mask = cfar_2d(rd_db, method=cfar_method,
+        #                  guard=(2, 4), training=(4, 8), pfa=1e-4,
+        #                  window="hann")
+        #   mask[:, 0] = False   # range-0 leakage notch
+        #   centroids = cluster(mask, rd_db, method="cc", min_cells=2)
+        centroids, _, _ = detect_frame(gen, targets, frame_index,
+                                       cfar_method)
 
         # Mark each target as detected if any centroid is within tolerance;
         # centroids that don't match any target are false positives.

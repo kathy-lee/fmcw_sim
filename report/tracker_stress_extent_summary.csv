@@ -1,0 +1,13 @@
+extent_m,cluster,R,sigma_glint,pd_mean,pd_std,distinct_mean,rmse_m_mean,switches_mean,classes
+0.0,cc,default,0.097,0.9646,0.0086,1.0,0.1869,0.0,6 CLEAN
+0.0,dbscan,default,0.097,0.9646,0.0086,1.0,0.1869,0.0,6 CLEAN
+0.0,dbscan,matched,0.097,0.9646,0.0086,1.0,0.1869,0.0,6 CLEAN
+0.3,cc,default,0.279,0.9375,0.0177,4.5,0.2537,9.33,6 ID SWITCH
+0.3,dbscan,default,0.279,0.975,0.0,1.0,0.16,0.0,6 CLEAN
+0.3,dbscan,matched,0.279,0.975,0.0,1.0,0.16,0.0,6 CLEAN
+0.6,cc,default,1.979,0.975,0.0,1.83,0.269,0.17,"5 CLEAN, 1 ID SWITCH"
+0.6,dbscan,default,1.979,0.9708,0.0059,1.67,0.2751,0.33,"5 CLEAN, 1 ID SWITCH"
+0.6,dbscan,matched,1.979,0.975,0.0,1.67,0.2681,0.17,"5 CLEAN, 1 ID SWITCH"
+1.2,cc,default,2.096,0.8083,0.0412,2.83,0.613,8.0,6 ID SWITCH
+1.2,dbscan,default,2.096,0.8292,0.0295,2.0,0.5852,1.5,"2 CLEAN, 4 ID SWITCH"
+1.2,dbscan,matched,2.096,0.8333,0.0276,1.67,0.582,0.83,"4 CLEAN, 2 ID SWITCH"

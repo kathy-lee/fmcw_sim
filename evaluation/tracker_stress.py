@@ -75,7 +75,8 @@ def build_gt_trajectory(
         gts = gen.ground_truth(initial_targets, frame_index=frame_idx)
         gt_tuples = [
             (gt_id, gt["range_m"], gt["velocity_mps"],
-             gt["range_bin"], gt["doppler_bin_shifted"])
+             gt["range_bin"], gt["doppler_bin_shifted"],
+             gt["range_half_width_bins"])
             for gt_id, gt in enumerate(gts)
         ]
         out.append((frame_idx, gt_tuples))
@@ -90,13 +91,19 @@ def associate_per_frame(
     """Hungarian assignment of GT positions to confirmed tracks.
 
     Args:
-        gt_at_frame: list of (gt_id, range_m, velocity_mps,
-                              range_bin, doppler_bin) tuples.
+        gt_at_frame: list of (gt_id, range_m, velocity_mps, range_bin,
+                              doppler_bin, range_half_width_bins) tuples.
         tracks_at_frame: list of Track-like objects with attributes
                          track_id, range_bin, doppler_bin, status.
                          Only `status == "confirmed"` tracks participate.
-        max_distance_bins: pairs with Euclidean (range_bin, doppler_bin)
-                           distance above this become None.
+        max_distance_bins: pairs whose (range-to-span, doppler) distance
+                           exceeds this become None.
+
+    Distance is measured to the object's occupied RANGE SPAN
+    [range_bin +/- half_width] (zero inside it), so a track anywhere on an
+    extended object associates; a point target has half_width 0, reducing
+    exactly to the previous distance-to-centroid behaviour. Doppler stays
+    tight (span is range-only).
 
     Returns: {gt_id: track_id_or_None}.
     """
@@ -106,10 +113,13 @@ def associate_per_frame(
         return out
 
     cost = np.full((len(gt_at_frame), len(confirmed)), np.inf)
-    for i, (_, _, _, r_bin, d_bin) in enumerate(gt_at_frame):
+    for i, gt in enumerate(gt_at_frame):
+        r_bin, d_bin, half_w = gt[3], gt[4], gt[5]
         for j, tr in enumerate(confirmed):
-            cost[i, j] = np.hypot(r_bin - tr.state[0],
-                                  d_bin - tr.last_doppler_bin)
+            dr = abs(tr.state[0] - r_bin)
+            dr_to_span = max(0.0, dr - half_w)   # 0 if inside the span
+            dd = abs(tr.last_doppler_bin - d_bin)
+            cost[i, j] = np.hypot(dr_to_span, dd)
 
     row_ind, col_ind = scipy.optimize.linear_sum_assignment(cost)
     for r, c in zip(row_ind, col_ind):
@@ -261,14 +271,25 @@ def track_position_rmse(
     tracks_history: list,
     association_history: list,
     range_per_bin: float,
+    cutoff_m: float | None = None,
 ) -> float:
     """RMSE (metres) of each GT-owning track's range estimate vs the GT range.
 
-    Averaged over every frame where a track is associated with a GT. This is
-    the *continuous* estimate-quality metric that the process_noise_q sweep
-    needs: the discrete metrics in evaluate_run (Pd, distinct IDs,
+    This is the *continuous* estimate-quality metric that the process_noise_q
+    sweep needs: the discrete metrics in evaluate_run (Pd, distinct IDs,
     classification) are blind to estimate quality, whereas q trades estimate
-    smoothness for responsiveness and shows up here.
+    smoothness for responsiveness and shows up here. For extended targets it
+    also measures glint suppression (how well the wandering centroid is
+    located).
+
+    cutoff_m selects the averaging convention:
+      - None (default, report 2): average only over frames where a track is
+        associated; NaN when none. Simple, but biased optimistic for extended
+        targets (the worst glint frames are exactly the ones that drop
+        association and get excluded).
+      - a float (GOSPA convention, Part II): frames with no associated track
+        contribute `cutoff_m` (and per-frame errors are capped at it), so
+        accuracy cannot be gamed by dropping hard frames. Co-report with Pd.
 
     Args:
         gt_trajectory: list of (frame_idx, [(gt_id, range_m, ...), ...]) --
@@ -278,23 +299,28 @@ def track_position_rmse(
         association_history: list of (frame_idx, {gt_id: track_id_or_None}).
         range_per_bin: metres per range bin, used to convert a track's
             state[0] (range-bin units) into metres.
+        cutoff_m: GOSPA cutoff in metres (see above); None = no cutoff.
 
-    Returns: RMSE in metres over all associated GT-frames, or NaN when no
-        frame had an association (nothing to average).
+    Returns: RMSE in metres. With cutoff_m=None, over associated GT-frames
+        (NaN if none). With a cutoff, over every GT-frame.
     """
     sq_errors = []
     for (_, gts), (_, snaps), (_, mapping) in zip(
             gt_trajectory, tracks_history, association_history):
         snap_by_id = {s.id: s for s in snaps}
         gt_range = {gt_id: range_m for gt_id, range_m, *_ in gts}
-        for gt_id, track_id in mapping.items():
-            if track_id is None:
-                continue
-            snap = snap_by_id.get(track_id)
+        for gt_id in gt_range:
+            track_id = mapping.get(gt_id)
+            snap = snap_by_id.get(track_id) if track_id is not None else None
             if snap is None:
+                if cutoff_m is not None:
+                    sq_errors.append(cutoff_m ** 2)
                 continue
             est_m = float(snap.state[0]) * range_per_bin
-            sq_errors.append((est_m - gt_range[gt_id]) ** 2)
+            err2 = (est_m - gt_range[gt_id]) ** 2
+            if cutoff_m is not None:
+                err2 = min(err2, cutoff_m ** 2)
+            sq_errors.append(err2)
     if not sq_errors:
         return float("nan")
     return float(np.sqrt(np.mean(sq_errors)))
@@ -377,6 +403,13 @@ def run_pipeline(
     confirm_N: int | None = None,
     seed: int | None = None,
     fluctuation_seed: int | None = None,
+    range_meas_var: float | None = None,
+    doppler_meas_var: float | None = None,
+    cluster_method: str = "peak",
+    cluster_min_cells: int = 2,
+    cluster_eps: float = 2.0,
+    cluster_min_samples: int = 1,
+    cluster_peak_neighborhood: int = 3,
     algorithm: str = "kf",
     drag_coefficient_k: float = 0.5,
 ) -> list:
@@ -434,6 +467,10 @@ def run_pipeline(
             imm_kwargs["confirm_M"] = confirm_M
         if confirm_N is not None:
             imm_kwargs["confirm_N"] = confirm_N
+        if range_meas_var is not None:
+            imm_kwargs["range_meas_var"] = range_meas_var
+        if doppler_meas_var is not None:
+            imm_kwargs["doppler_meas_var"] = doppler_meas_var
         tracker = IMMTracker(IMMConfig(**imm_kwargs))
     elif algorithm in ("kf", "ekf"):
         motion_model = "cv" if algorithm == "kf" else "drag"
@@ -448,6 +485,10 @@ def run_pipeline(
             tracker_kwargs["confirm_M"] = confirm_M
         if confirm_N is not None:
             tracker_kwargs["confirm_N"] = confirm_N
+        if range_meas_var is not None:
+            tracker_kwargs["range_meas_var"] = range_meas_var
+        if doppler_meas_var is not None:
+            tracker_kwargs["doppler_meas_var"] = doppler_meas_var
         tracker = Tracker(TrackerConfig(**tracker_kwargs))
     else:
         raise ValueError(
@@ -471,8 +512,14 @@ def run_pipeline(
             dc_removal=True, clutter_removal=False,
         )
         mask[:, 0] = False
+        # Clustering defaults to peak/min_cells=2/peak_neighborhood=3 (report 2
+        # behaviour, unchanged); the extended-target sweep selects dbscan with
+        # an eps sized to the inter-scatterer gap to merge the blob. cluster()
+        # ignores kwargs not used by the chosen method.
         detections = cluster(
-            mask, rd_db, method="peak", min_cells=2, peak_neighborhood=3,
+            mask, rd_db, method=cluster_method, min_cells=cluster_min_cells,
+            eps=cluster_eps, min_samples=cluster_min_samples,
+            peak_neighborhood=cluster_peak_neighborhood,
         )
         tracks = tracker.step(detections)
         snapshots = [_snapshot_track(t) for t in tracks]

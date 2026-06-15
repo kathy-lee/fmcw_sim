@@ -18,6 +18,8 @@ attributable.
 - **Seed hygiene** (report 1 §2.4, report 2 §2.5): independent RNG
   streams — CFAR calibration seed `0`, generator noise seed `99999`
   (Monte Carlo: `1…30`). Report 3 adds a **third stream**,
-  `RadarConfig.fluctuation_seed` (default `77777`), for Swerling fades.
+  `RadarConfig.fluctuation_seed` (default `77777`) for Swerling fades
+  (Part I), and a **fourth stream**, `RadarConfig.extent_seed` (default
+  `555`) for extended-target scatterers (Part II).
 - **Run classification taxonomy** (report 2 §2.3): CLEAN / ID SWITCH /
   TRACK BREAK / TOTAL CONFUSION from the `has_switches` × `has_break` axes.

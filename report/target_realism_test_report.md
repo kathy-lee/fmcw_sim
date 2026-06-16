@@ -40,7 +40,7 @@ This report upgrades the target model with the classic Swerling
 fluctuation cases and re-measures both pipeline stages. Every experiment
 is designed to be directly comparable with a published baseline result:
 the detection sweep reuses report 1 §3's exact scenario and its steady
-curve must reproduce report 1's curve; the tracking experiments reuse
+curve reproduces report 1's curve; the tracking experiments reuse
 report 2 §3.1's exact scenario, and their steady rows literally re-run
 report 2 §3.1.2. Differences from the quoted baselines are therefore
 attributable to the target model alone — which is the point.
@@ -175,7 +175,10 @@ reuse `factor[0]` forever and measure no fading at all). It uses the SAME
 (0.1 m/s × 15 s = 1.5 m over 300 frames, well inside the unambiguous
 range; the simulator's SNR is range-independent, so Pd is stationary
 across the run). The steady curve is therefore a same-scenario anchor
-check against report 1 §3.
+check against report 1 §3. Both the steady and Swerling cases run through
+the same front-end lens as report 1 §3 — OS-CFAR (Pfa = 1e-4) and
+connected-components (CC) clustering with `min_cells = 2` — via the shared
+`run_one_point` kernel (`evaluation/sweep_amplitude.py`).
 
 The sweep also runs **300 frames per point** instead of the baseline's
 100, for two reasons. First, the headline metric (SNR@Pd = 0.9, §3.2)
@@ -261,6 +264,14 @@ full delta measured above — at Pd 0.9, by ~8 dB for Swerling-1-like
 targets. 
 
 ## 4. Tracking under correlated fades
+
+The tracking experiments run through report 2's pipeline unchanged — OS-CFAR →
+**peak** clustering (`min_cells = 2`, `peak_neighborhood = 3`) → GNN tracker — via
+the shared `run_pipeline` (`evaluation/tracker_stress.py`). Note the clustering here uses **peak**,
+not the CC used by the §3 detection sweep: report 2 chose peak because its tracker
+scenarios include close/crossing targets that peak-picking *resolves* into
+separate detections (CC would merge them); Part I's single-target scenario doesn't
+exercise that, but it inherits report 2's pipeline verbatim for a clean anchor.
 
 ### 4.1 Illustrative run — one knob from the published baseline
 
@@ -610,8 +621,7 @@ extent — and re-measures the detector and tracker, anchored on report 1 / Part
 (detection) and report 2 (tracking).
 
 The treatment is **point-tracking of an extended object**: cluster the blob to one
-centroid measurement and track it as a point — the standard automotive approach,
-and what report 2's tracker already does. Full extended-object tracking (EOT),
+centroid measurement and track it as a point — what report 2's tracker already does. Full extended-object tracking (EOT),
 which models *multiple* measurements per object per scan and estimates shape, is
 out of scope (§12).
 
@@ -648,48 +658,68 @@ noise (`seed`), CFAR-calibration (`0`), and fade (`fluctuation_seed`) streams.
 An extended object lights a contiguous-but-gappy patch of cells. The pipeline
 default `peak` clustering (one detection per local maximum) *shatters* such a
 blob — it was built to *split* close point targets, the opposite of what we want.
-The extended-target experiments instead use **DBSCAN**, whose `eps` bridges the
-sub-threshold gaps between scatterers to merge the blob into one centroid;
-connected-components (`cc`) merges only strictly-adjacent cells and splits at the
-gaps. The **peak > cc > dbscan** fragmentation ordering is measured in §9.3 (and
-its downstream tracker consequence in §10.2). The pipeline default is unchanged — clustering is selected per experiment —
-so reports 1/2 stay byte-identical. A thematic parallel runs through Part II: just
-as OS-CFAR's **guard cells** must be sized to the extent (§9.2), DBSCAN's **`eps`**
-must be sized to the inter-scatterer gap (§10.2) — "size the parameter to the
-target's extent."
+The extended-target experiments therefore adopt **DBSCAN** as the merger — its
+`eps` bridges the sub-threshold gaps between scatterers to merge the blob into one
+centroid — and **benchmark it against** `cc` (connected-components: merges only
+strictly-adjacent cells, so it splits at the gaps) and the `peak` default. The
+**peak > cc > dbscan** fragmentation ordering is measured in §9.3, and its
+downstream tracker consequence in §10.2. The Part II clustering change is opt-in
+per experiment, not a change to the pipeline's default, so re-running reports 1
+and 2 reproduces their published results byte-for-byte.
 
-### 8.3 The two association gates (illustrated)
+### 8.3 The tracker gate: matched measurement noise R
 
-Two distinct association steps are easy to conflate; Part II touches both, in
-different ways.
+An extended object's merged centroid can **wander** frame to frame (glint), so its
+position measurement is genuinely noisier than a point target's. This plays out at
+the tracker's **internal association gate** (`processing/tracking.py:Tracker._associate`), which
+decides which detection updates which track — a Mahalanobis / chi-square test,
+`d² = dr²/(range_meas_var + cov) + dd²/doppler_meas_var ≤ 9.21`. There are two
+ways one *could* make this gate tolerate the wander:
 
-**(a) The tracker's internal gate** (`processing/tracking.py`) decides which
-detection updates which track. It is a Mahalanobis / chi-square test,
-`d² = dr²/(range_meas_var + cov) + dd²/doppler_meas_var ≤ 9.21`. An extended
-object's centroid wanders (glint), so the measurement is noisier than a point's.
-The principled response is to tell the filter so via the **measurement
-covariance R**, not the gate threshold. We set a **matched R**:
+- loosen the gate **threshold** (raise the value 9.21): it accepts larger
+  normalised residuals arbitrarily, breaking the "99% χ²" meaning of the gate, and
+  does nothing for the Kalman *update*;
+- raise the **measurement covariance R** (in this pipeline the gate's range term,
+  the scalar `range_meas_var`, since Part II's extent is range-only): it tells the filter the measurement
+  really is noisier, so `S = HPHᵀ + R` grows and the gate widens *in bins* while
+  the threshold stays 9.21, and the *update* down-weights the jumpy centroid
+  correctly.
+
+But **default R** (small, resolution-based) for point target is wrong for an
+extended object: it under-states the centroid uncertainty, so glint jumps fall
+outside the gate (the track drops and re-acquires under a new ID) and the KF
+over-trusts the wandering centroid. Here we use **matched R** for extended targets:
 
 ```
 R_matched = R_resolution + σ_glint²
 ```
 
-where `σ_glint` is the *measured* std of the merged centroid about the true centre
-(§10.1) — a property of the target model, calibrated on a held-out seed set and
-then frozen and evaluated out-of-sample (the same calibrate-then-verify hygiene
-report 1 uses for the CFAR α). This is not a knob tuned against the score, and not
-the object's spatial spread (which would over-state R); the deployable, GT-free
-analogue is innovation-based R estimation. R remains a fixed config value — no new
-gating code; `max_coast` (misses) and `process_noise_q` (maneuver) keep their
-report-2 roles.
+`R_resolution` is the point-target default `range_meas_var` (0.5 bin²); since
+Part II's extent is range-only, matched R inflates `range_meas_var` and leaves
+`doppler_meas_var` at its default. Here `σ_glint` is the *measured* std of the
+merged centroid about the true centre
+(§10.1) — a target-model property, calibrated on a held-out seed set and then
+frozen and evaluated out-of-sample (the same calibrate-then-verify hygiene report 1
+uses for the CFAR α). It is not tuned against the score, and not the object's
+spatial spread (which would over-state R), it's a GT-calibrated method. R stays a fixed config value — **no gating code
+changes** (`_build_cost_matrix` is untouched; only R's value differs) — and
+`max_coast` (misses) and `process_noise_q` (maneuver) keep their report-2 roles. The GT-free analogue is
+innovation-based R estimation (Sage–Husa adaptive R) — R is re-estimated online per track from the residuals, i.e. not fixed.
 
-**(b) The evaluation scorer** (`evaluation/tracker_stress.py:associate_per_frame`)
-decides, per frame, the binary *"is this track tracking the object?"* →
-`{object: track_id or None}`. Every report-2 metric is an aggregation of that
-binary sequence: track-level **Pd** (fraction of frames assigned a track),
-**distinct IDs**, **ID switches**, and the **classification** (CLEAN / ID SWITCH /
-TRACK BREAK / TOTAL CONFUSION). For an extended object the scorer measures
-distance to the object's occupied **range span** `[centre ± w]`, not its centroid:
+### 8.4 The evaluation scorer: distance-to-span and localization RMSE
+
+The evaluation scorer's per-frame **association** — *which track (if any) is on
+the object this frame* → `{object: track_id or None}` — is computed by
+`associate_per_frame` (`evaluation/tracker_stress.py`). For a **point** target it
+picks the track nearest the GT **centroid** within a 3-bin gate. Every report-2
+metric is then an aggregation of that per-frame assignment sequence: track-level
+**Pd** (fraction of frames assigned a track), **distinct IDs**, **ID switches**,
+and the **classification** (CLEAN / ID SWITCH / TRACK BREAK / TOTAL CONFUSION).
+
+That centroid rule **under-scores an extended object**. The object occupies a span
+of `±w` range bins about its centre, and the merged-centroid track legitimately
+sits *anywhere on the blob* — so a track at the blob edge is correctly tracking the
+object, yet the 3-bins-to-centroid ruler scores it a miss:
 
 ```
 w = (range_extent_m / range_bin_size) / 2          # object range half-width, bins
@@ -697,33 +727,35 @@ range_bin_size = c/(2·BW) = 7.5 cm  →  L = 0.6 m → 8 bins wide → w = 4
 ```
 
 ```
-   range bins:   ...  46  47  48  49 [50] 51  52  53  54  ...
-   object span:           |<------- w=4 ------ centre ------ w=4 ------>|
-                              ^track here (edge): dist-to-span = 0  -> TRACKING
-   a track at bin 58 (4 beyond the edge) -> dist-to-span = 4 > 3 gate -> MISS
+object: centre = bin 50, half-width w = 4  ->  span = bins [46 .. 54]
+scoring gate: within 3 bins of that span
+
+  track at bins 46-54   ->  dist-to-span = 0          ->  TRACKING
+  track at bin 57       ->  dist-to-span = 3 (= gate) ->  TRACKING (just inside)
+  track at bin 58       ->  dist-to-span = 4 (> gate) ->  MISS
 ```
 
-A track anywhere on the blob (up to `w` bins from the true centre) is scored as
-tracking it; a point target has `w = 0`, reducing exactly to the previous
-3-bins-to-centroid rule (baselines unchanged). Doppler stays tight (span is
-range-only), and fragmentation is counted **pre-association** (cluster count,
-§9.3) so a generous span cannot hide it.
+The fix is **distance-to-span**: measure the distance from the track to the
+object's occupied span `[centre ± w]` (zero if inside it), keeping the 3-bin
+tolerance. A track anywhere on the blob now scores as tracking it; a **point**
+target has `w = 0`, so this reduces *exactly* to the previous 3-bins-to-centroid
+rule (baselines unchanged). Doppler stays tight (span is range-only), and
+fragmentation is counted **pre-association** (cluster count, §9.3) so a generous
+span cannot hide it.
 
-**Accuracy and its metric.** Identity metrics answer "did we hold one track" but
-not "how well did we locate the centre." Part II adds **localization RMSE**
-(metres) of the associated track's range estimate vs the true centre — the
-localization component of the standard GOSPA / OSPA / CLEAR-MOT-MOTP family —
-reported alongside the identity metrics rather than fused into a single GOSPA
-scalar, so report-2's vocabulary is preserved. It uses the **GOSPA cutoff
+The scorer **draws on the standard extended-object metrics** (GOSPA / OSPA /
+CLEAR-MOT-MOTP), but reports their *components* in report 2's vocabulary rather
+than as a single fused scalar — so Part II stays comparable to report 2. The distance-to-span association above is a lightweight, region-aware
+match — the estimated centroid against the object's *extent* — in the spirit of
+extended-object evaluation (IoU gating in CLEAR-MOT, extent-aware base distances
+in OSPA / GOSPA), not the point-to-point matching those use for point targets. For
+**accuracy** — which the identity metrics miss
+("did we hold one track" ≠ "how well did we locate the centre") — Part II adds
+**localization RMSE** (metres) of the associated track's range estimate vs the
+true centre, the localization component of that family. It uses the **GOSPA cutoff
 convention**: a frame with no associated track is charged a fixed cutoff (1.0 m)
 rather than excluded, so accuracy cannot be gamed by dropping the hard (deep-
 glint) frames — and is always read together with Pd.
-
-The two gates are independent: matched R lets the *tracker* hold one track through
-glint; the span scorer + localization RMSE *measure* the result fairly for an
-object wider than the 3-bin ruler. Together they close the loop **σ_glint
-(characterise) → matched R (set the filter's R correctly) → localization RMSE
-(measure the recovered centre)**.
 
 ## 9. Detection under extended targets
 
@@ -731,13 +763,19 @@ CMD: `python -m evaluation.sweep_extent --frames 300`
 
 ![Extended-target detection vs point](sweep_extent.png)
 
+All curves in this figure use **DBSCAN** clustering (`eps = 2`, `min_cells = 2`,
+OS-CFAR); the peak/cc/dbscan comparison is the separate fragmentation panel in
+§9.3.
+
 ### 9.1 Anchor check
 
 The `point` (extent = None) curve reproduces report 1 §3 / Part I steady: object-
 level Pd climbs 0 → 0.22 → 0.97 → 1.0 over −31 → −18 dB, crossing Pd ≈ 0.5 near
-**−25.3 dB** — essentially exactly Part I's steady −25.4 dB (measured the same way:
-OS-CFAR, CC/min_cells = 2). So the extended deltas below are attributable to the
-target model.
+**−25.3 dB** — essentially exactly Part I's steady −25.4 dB. (Part I's steady
+curve uses OS-CFAR + CC clustering, `min_cells = 2` (§3.1), whereas this sweep
+uses DBSCAN; for a *point* target the two clusterers coincide — a single gapless
+blob is one cluster either way — so the anchor comparison is valid.) So the
+extended deltas below are attributable to the target model.
 
 ### 9.2 Spreading loss and self-masking
 
@@ -754,7 +792,7 @@ monotonically with extent at every SNR. At −26.9 dB mean SNR:
 
 Equal total power spread over more cells lowers per-cell SNR, so each cell is
 harder to light — the per-cell fraction collapses (0.42 → 0.02). Object-level Pd
-(≥ 1 surviving cluster in the span) is *more lenient* for a wider span — more
+(≥ 1 cluster centroid in the span) is *more lenient* for a wider span — more
 cells give more chances for a cluster to form — so at this marginal SNR the
 moderate extents actually sit *above* the point (0.38, 0.46 vs 0.22); but at
 1.2 m the per-cell SNR is so low that even object-level detection collapses
@@ -773,8 +811,13 @@ masking *itself*.)
 ### 9.3 Fragmentation
 
 Clusters-per-object grows with extent — and the clustering method decides how
-badly. At a fixed high SNR (scale 2.1e-3, −13.6 dB, where every method detects the
-object on every frame, object-Pd = 1.00), with matched `min_cells = 2`:
+badly. To see how the three clustering methods (**peak**, **cc**, **dbscan**)
+differ on the same scene, the same detection run
+(`python -m evaluation.sweep_extent --frames 300`) re-clusters each frame with all
+three internally (no extra flag) — at a fixed high SNR (scale 2.1e-3, −13.6 dB —
+every method detects the object on every frame, object-Pd = 1.00) and matched
+parameters (`min_cells = 2`; dbscan `eps = 2`, peak `neighborhood = 3`) — and
+writes their clusters-per-object to `sweep_extent_fragmentation.csv`, shown below:
 
 | extent | `peak` | `cc` | `dbscan` |
 |---|---|---|---|
@@ -786,15 +829,13 @@ object on every frame, object-Pd = 1.00), with matched `min_cells = 2`:
 This is the **peak > cc > dbscan** ordering, measured: `peak` (the pipeline
 *default*, one detection per local maximum) shatters worst — even the 0.3 m object
 splits in two; `cc` (strict 8-adjacency) splits at the sub-threshold gaps;
-`dbscan` (`eps = 2`) bridges them and stays near one cluster up to 0.6 m. Crucially
-**object-Pd is 1.00 across all three methods** — clustering does not change whether
+`dbscan` (`eps = 2`) bridges them and stays near one cluster up to 0.6 m. At this SNR,
+object-Pd is 1.00 across all three methods — clustering does not change whether
 the object is *detected*, only into how many pieces it is *reported*. So the
-method difference is purely fragmentation, whose consequence is downstream
-tracker churn (§10), not detection.
-
-`dbscan` still leaves ~2 clusters on the 1.2 m object: a fixed `eps = 2` cannot
+method difference here is purely fragmentation, whose consequence is downstream
+tracker churn (§10), not detection. Note `dbscan` still leaves ~2 clusters on the 1.2 m object: a fixed `eps = 2` cannot
 bridge the widest gaps, the first sign that `eps` must scale with the extent
-(§11). (Same CMD as above; also writes `sweep_extent_fragmentation.csv`.)
+(§11).
 
 ## 10. Tracking under extended targets
 

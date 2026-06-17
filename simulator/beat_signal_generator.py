@@ -204,7 +204,7 @@ class FMCWBeatSignalGenerator:
         leaves the fade pattern unchanged unless fluctuation_seed is also
         changed. Sequences are cached per target index and regrown by
         regenerating from a fresh identically-seeded rng; the
-        amplitude_factors prefix property guarantees history is preserved.
+        prefix-stability of amplitude_factors guarantees history is preserved.
         """
         if target.fluctuation is None:
             return 1.0

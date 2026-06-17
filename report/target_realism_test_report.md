@@ -11,7 +11,7 @@ model**: per-frame RCS fluctuation (Swerling 1/3).
 ## TL;DR (Part I)
 
   Added Code:
-  - simulator/fluctuation_models.py — Swerling 1/3 as AR(1)-evolving complex-Gaussian scatterers, unit mean power, prefix-property RNG
+  - simulator/fluctuation_models.py — Swerling 1/3 as AR(1)-evolving complex-Gaussian scatterers, unit mean power, prefix-stable RNG stream
   - Target.fluctuation + RadarConfig.fluctuation_seed (77777, third RNG stream), generator integration, run_pipeline(..., fluctuation_seed=) hook, run_one_point(..., advance_frame_index=)
   refactor
   - evaluation/sweep_amplitude_fluctuation.py and evaluation/tracker_stress_swerling_sweep.py
@@ -81,7 +81,6 @@ complex-Gaussian scatterers. Each fluctuating target therefore carries
 Swerling 3), and its per-frame amplitude factor is their RMS magnitude:
 
 ```
-s_f = ρ·s_{f−1} + √(1−ρ²)·w_f,    w_f ~ CN(0, 1)
 power_f  = mean_i |s_f[i]|²       (k=1 → Swerling 1, exponential power;
                                    k=2 → Swerling 3, chi-squared-4 power)
 factor_f = √power_f               (E[factor²] = 1: mean POWER preserved)
@@ -99,8 +98,13 @@ The last step, frame correlation, is our one extension beyond classical
 Swerling. The original cases are binary in correlation — fully
 correlated within a scan, fully independent between scans — with nothing
 in between. We instead evolve the scatterer voltages across frames as a
-first-order autoregressive (AR(1), Gauss-Markov) process with tunable ρ,
-the `s_f` recursion above — a well-precedented generalization (the same
+first-order autoregressive (AR(1), Gauss-Markov) process with tunable ρ:
+
+```
+s_f = ρ·s_{f−1} + √(1−ρ²)·w_f,    w_f ~ CN(0, 1)
+```
+
+This is a well-precedented generalization (the same
 construction models correlated Rayleigh fading in communications), and
 one that reduces **exactly** to the classic scan-to-scan-independent
 Swerling 1/3 at ρ = 0, the setting the detection sweep (§3) uses — so
@@ -112,10 +116,10 @@ at the same marginal distribution — the knob §4 turns to separate how
 *long* each fade lasts from how *often* the target fades.
 
 In short: Swerling 1/3 is modeled as AR(1)-evolving complex-Gaussian scatterers,
-unit mean power — drawn from a dedicated prefix-property RNG stream,
+unit mean power — drawn from a dedicated prefix-stable RNG stream,
 described next (§2.2).
 
-In implementation, we make it configurable in class `Target`through an optional `fluctuation` dict like below. `None` = steady amplitude, the exact baseline behavior.
+In implementation, we make it configurable in class `Target` through an optional `fluctuation` dict like below. `None` = steady amplitude, the exact baseline behavior.
 ```
 {
   ...
@@ -142,7 +146,7 @@ holding the fade pattern fixed, or redraw both. The tracker sweep (§4.2)
 redraws both per run — radar seed `s`, fade seed `1000+s` — an honest
 Monte Carlo over noise and fades together. Factors are drawn per
 `(fluctuation_seed, target_index)` and consumed strictly frame-by-frame,
-which gives the stream its **prefix property**: a longer sequence from
+which makes it a **prefix-stable stream**: a longer sequence from
 the same seed always begins with the shorter one, so a fade sequence is
 reproducible regardless of how many frames are generated or when the
 generator's cache regrows.
@@ -181,19 +185,28 @@ connected-components (CC) clustering with `min_cells = 2` — via the shared
 `run_one_point` kernel (`evaluation/sweep_amplitude.py`).
 
 The sweep also runs **300 frames per point** instead of the baseline's
-100, for two reasons. First, the headline metric (SNR@Pd = 0.9, §3.2)
-sits on the *flattest* part of the Swerling curves: a Pd estimate at 0.9
-carries a standard error of √(0.9·0.1/n) — ±0.03 at 100 frames vs ±0.017
-at 300 — and where the steady curve's steep ramp turns that into a
-fraction of a dB, the Swerling-1 curve crawls from 0.8 to 0.95 over ~6 dB,
-so the same Pd error would smear the interpolated threshold by whole dB.
-Second, each fluctuating point holds one fixed fade seed, so its frames
-must sample the fade distribution as well as the noise: 300 frames
-averages over 300 fade draws per point, making the measured Pd a property
-of the Swerling marginal rather than of one lucky or unlucky fade
-sequence. The anchor comparison is unaffected — it is checked on the
-steady *curve*, not on per-point sample counts. (The longer run is also
-what exposed the FA undersampling discussed in §3.2.)
+100, for two reasons. First, fluctuation adds a second random ingredient
+to every frame: the baseline redrew only noise, but each fluctuating
+frame now draws a noise realization *and* an independent fade factor. The
+Pd we want is the **Swerling marginal** — detection probability averaged
+over both — so each point must sample the fade distribution as well as
+the noise, and in particular cover the deep fades of Swerling-1's
+exponential power distribution, which keeps substantial probability at
+low power — the low-amplitude frames that fall below threshold (§3.2).
+Since each point holds one fixed
+fade seed, 300 frames give 300 fade draws — enough for its Pd to land on
+that marginal rather than on one lucky or unlucky short fade sequence. Second, the headline metric (SNR@Pd = 0.9,
+§3.2) is read off the curve at high Pd, where fluctuation is *expected*
+to make the Swerling curves shallow — the familiar fluctuation-loss
+penalty softens the knee. On such a shallow curve the threshold read-off
+is slope-limited: ordinary Pd noise divides by a small slope into a large
+dB error, so this point needs an unusually *low-variance* Pd estimate —
+the standard error √(0.9·0.1/n) falls from ±0.03 at 100 frames to ±0.017
+at 300. (§3.2 bears this out: the Swerling-1 curve crawls from ~0.8 to
+~0.95 over ~6 dB, where ±0.03 in Pd would smear the threshold by whole
+dB.) The anchor comparison is unaffected — it is checked on the steady
+*curve*, not on per-point sample counts. (The longer run is also what
+exposed the FA undersampling discussed in §3.2.)
 
 CMD: `python -m evaluation.sweep_amplitude_fluctuation --frames 300`
 
@@ -203,59 +216,62 @@ CMD: `python -m evaluation.sweep_amplitude_fluctuation --frames 300`
 
 | Quantity | Report 1 §3 (steady, frozen-frame, 100 frames) | This sweep (steady, frame-advancing, 300 frames) |
 |---|---|---|
-| Pd ramp (per-sample SNR) | ~0 → 1 over −35 → −18 dB | same window: SNR@Pd0.5 −25.4 dB / SNR@Pd0.9 −22.8 dB (target 0); −25.3 / −22.6 dB (target 1) |
+| Pd ramp (per-sample SNR) | ~0 → 1 over −35 → −18 dB | reproduced (steady thresholds in table below) |
 | FA / frame (OS) | ~0.05–0.06 | 0.123 (see caveat below) |
 
 The steady Pd curves reproduce the baseline: both targets climb 0 → 1
 inside the same −35 → −18 dB window, with the 3 m and 6 m target curves
 almost coinciding, each plotted against its own per-sample SNR. The
-frame-advancing methodology change is benign, so the Swerling deltas
+frame-advancing methodology change is harmless, so the Swerling deltas
 below are attributable to fluctuation alone.
 
 The FA row deserves an honest caveat: it is the **baseline's** number
 that is off, not this sweep's. Under the published condition (100 frames,
-canonical seed 99999) this code reproduces report 1's FA exactly
-(0.050/frame — 5 events). But 100 frames is a small sample for a rare
-event: over 300 frames the same configuration measures 0.123/frame, and
-three independent noise seeds give 0.117–0.133/frame. The true
-centroid-level FA rate of this lens is ~0.12/frame; report 1's
+canonical seed 99999), this code reproduces report 1's FA exactly
+(0.050/frame — 5 events). But over 300 frames the same configuration
+measures 0.123/frame. To pin this down, the rate is measured across ten
+independent noise seeds (command below): it ranges 0.077–0.137/frame
+(mean 0.110, std 0.021) — still noisy even at 300 frames. So report 1's
 0.05–0.06 was an undersampled estimate from a lucky-low stretch of the
 canonical stream. None of the comparisons below are affected — FA is
 measured identically for all cases in this sweep and is flat across them.
 
+CMD (reproduces the FA caveat): `python -m evaluation.diagnose_fa_seeds`
+(noise-floor FA across the ten seeds at 300 frames; `--frames 100 --seeds
+99999` recovers report 1's 0.050/frame).
+
 With the anchor established, the Swerling deltas can now be read. The
-headline SNR thresholds for target 0 (target 1 agrees within ~1 dB on
-every entry):
+headline SNR thresholds (both targets agree within ~1 dB on every entry):
 
-| Case | SNR@Pd=0.5 (Δ vs steady) | SNR@Pd=0.9 (Δ vs steady) |
-|---|---|---|
-| steady | −25.4 dB | −22.8 dB |
-| swerling1 | −24.0 dB (**+1.4**) | −14.9 dB (**+8.0**) |
-| swerling3 | −25.0 dB (+0.5) | −18.7 dB (**+4.1**) |
-
-(Target 1: steady −25.3/−22.6; swerling1 −24.0 (+1.3) / −13.6 (+9.1);
-swerling3 −24.6 (+0.7) / −18.5 (+4.1).)
+| Case | SNR@Pd=0.5 (Δ vs steady) | SNR@Pd=0.9 (Δ vs steady) | SNR@Pd=0.5 (Δ vs steady) | SNR@Pd=0.9 (Δ vs steady) |
+|---|---|---|---|---|
+| | **Target 0** | **Target 0** | **Target 1** | **Target 1** |
+| steady | −25.4 dB | −22.8 dB | −25.3 dB | −22.6 dB |
+| swerling1 | −24.0 dB (**+1.4**) | −14.9 dB (**+8.0**) | −24.0 dB (**+1.3**) | −13.6 dB (**+9.1**) |
+| swerling3 | −25.0 dB (+0.5) | −18.7 dB (**+4.1**) | −24.6 dB (+0.7) | −18.5 dB (**+4.1**) |
 
 This is the textbook fluctuation-loss signature, measured end-to-end
 through the real CFAR/clustering chain rather than from a closed form:
 
 - **At Pd = 0.5 the penalty is nearly zero** (+0.5 to +1.4 dB). Around
   the mid-point the curves cross: deep fades push frames below threshold,
-  but up-fluctuations rescue frames a steady target at the same mean SNR
-  would have lost. Wins and losses roughly cancel.
+  but up-fluctuations rescue frames that a steady target at the same mean
+  SNR would have lost. Wins and losses roughly cancel.
 - **At Pd = 0.9 the penalty is large** — **+8 dB for Swerling 1**
-  (literature value: ~8 dB), because high Pd is controlled by the miss
-  *tail*, and an exponential power distribution puts substantial mass in
-  deep fades no matter how high the mean SNR is pushed. The Pd curve does
-  not just shift, it *flattens*: swerling1 needs the top of our grid to
-  reach Pd 0.9–0.95 where the steady target has been saturated at 1.0
-  for 6 dB.
+  ([literature value ~8 dB](https://www.mathworks.com/help/phased/ug/receiver-operating-characteristic-roc-curves-part-1-theoretical-performance-analysis.html)):
+  reaching Pd = 0.9 means eliminating almost
+  all misses, and the misses come from deep fades — the low-power region
+  near zero, where an exponential power distribution keeps substantial
+  mass no matter how high the mean SNR is pushed. The Pd curve does
+  not just shift, it *flattens*: swerling1 reaches Pd 0.9–0.95 only at
+  the highest SNR we swept (−9 dB), where the steady target has already
+  been saturated at 1.0 for nearly 9 dB (since ~−18 dB).
 - **Swerling 3 sits in between** (+4.1 dB): its two-scatterer
   (dominant-plus-rest) construction gives chi-squared-4 power — variance
   0.5 vs the exponential's 1.0 — so deep fades are rarer and the
-  high-Pd tail is kinder.
+  high-Pd penalty is gentler.
 - **FA is unchanged across cases** (0.123 steady / 0.123–0.137
-  fluctuating): fluctuation is a target property; the noise floor and
+  fluctuating): fluctuation is a target property, the noise floor and
   the CFAR threshold never see it.
 
 The practical consequence: a link budget sized on a steady-target curve
@@ -270,8 +286,8 @@ The tracking experiments run through report 2's pipeline unchanged — OS-CFAR �
 the shared `run_pipeline` (`evaluation/tracker_stress.py`). Note the clustering here uses **peak**,
 not the CC used by the §3 detection sweep: report 2 chose peak because its tracker
 scenarios include close/crossing targets that peak-picking *resolves* into
-separate detections (CC would merge them); Part I's single-target scenario doesn't
-exercise that, but it inherits report 2's pipeline verbatim for a clean anchor.
+separate detections (CC would merge them); Part I keeps it anyway, for a
+clean anchor.
 
 ### 4.1 Illustrative run — one knob from the published baseline
 

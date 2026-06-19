@@ -550,6 +550,7 @@ def plot_results(
     out: Path,
     range_per_bin: float = 0.0749,
     scenario_name: str = "",
+    cluster_method: str = "peak",
 ) -> None:
     """One panel: range vs frame. GT trajectories as solid lines; tracks as
     line+markers colored by their currently-associated GT. ID switch events
@@ -620,7 +621,7 @@ def plot_results(
         if scenario_name else "Tracker stress test"
     )
     ax.set_title(
-        f"{title_main} (CFAR=os, clustering=peak, tracker=gnn)\n"
+        f"{title_main} (CFAR=os, clustering={cluster_method}, tracker=gnn)\n"
         "Lines = ground truth · markers = tracker output (color = which GT "
         "this track is associated with; gray = no GT association)"
     )
@@ -654,13 +655,14 @@ def plot_results(
     print(f"\nwrote {out}")
 
 
-def print_summary(summary: dict, n_frames: int, scenario_path: str) -> None:
+def print_summary(summary: dict, n_frames: int, scenario_path: str,
+                  cluster_method: str = "peak") -> None:
     """Compact human-readable summary of the run."""
     print()
     print("─" * 69)
     print(f"Tracker stress test — {_scenario_display_name(scenario_path)} scenario")
     print("─" * 69)
-    print(f"Pipeline:    CFAR=os, clustering=peak(min_cells=2), tracker=gnn")
+    print(f"Pipeline:    CFAR=os, clustering={cluster_method}(min_cells=2), tracker=gnn")
     print(f"Scenario:    {scenario_path}")
     print(f"Run length:  {n_frames} frames "
           f"({n_frames * 0.05:.1f} s at 20 Hz)")
@@ -710,6 +712,13 @@ def main() -> None:
                         "imm algorithms; default: 0.5)")
     p.add_argument("--process-noise-q", type=float, default=None,
                    help="override TrackerConfig.process_noise_q (default: 0.5)")
+    p.add_argument("--cluster-method", type=str, default="peak",
+                   choices=["peak", "cc", "dbscan"],
+                   help="clustering method (default: peak, the report-2 default; "
+                        "dbscan merges an extended object's blob into one centroid)")
+    p.add_argument("--range-meas-var", type=float, default=None,
+                   help="override the range measurement-noise variance R "
+                        "(matched R for an extended object; default: 0.5)")
     args = p.parse_args()
 
     if args.out is None:
@@ -724,6 +733,7 @@ def main() -> None:
     tracks_history = run_pipeline(
         radar_cfg, initial_targets, args.frames,
         max_coast=args.max_coast, process_noise_q=args.process_noise_q,
+        cluster_method=args.cluster_method, range_meas_var=args.range_meas_var,
         algorithm=args.algorithm,
         drag_coefficient_k=args.drag_coefficient_k,
     )
@@ -746,8 +756,10 @@ def main() -> None:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     plot_results(gt_trajectory, tracks_history, association_history,
                  switch_events, args.out, range_per_bin=range_per_bin,
-                 scenario_name=_scenario_display_name(args.scenario))
-    print_summary(summary, args.frames, args.scenario)
+                 scenario_name=_scenario_display_name(args.scenario),
+                 cluster_method=args.cluster_method)
+    print_summary(summary, args.frames, args.scenario,
+                  cluster_method=args.cluster_method)
 
 
 if __name__ == "__main__":

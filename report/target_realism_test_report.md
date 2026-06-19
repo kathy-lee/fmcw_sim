@@ -718,7 +718,7 @@ The extended-target experiments therefore adopt **DBSCAN** as the merger — its
 centroid — and **benchmark it against** `cc` (connected-components: merges only
 strictly-adjacent cells, so it splits at the gaps) and the `peak` default. The
 **peak > cc > dbscan** fragmentation ordering is measured in §9.3, and its
-downstream tracker consequence in §10.2. The Part II clustering change is opt-in
+downstream tracker consequence in §10.3. The Part II clustering change is opt-in
 per experiment, not a change to the pipeline's default, so re-running reports 1
 and 2 reproduces their published results byte-for-byte.
 
@@ -917,10 +917,8 @@ fragmentation** and **glint**, not missed detections; `extent = None` reproduces
 anchor. The sweep crosses four extents (point, 0.3, 0.6, 1.2 m) ×
 three pipeline configurations — `cc` + default R, DBSCAN + default R, and DBSCAN +
 **matched R** — over 6 seeds × 80 frames, reporting track **Pd**, **distinct
-IDs**, **localization RMSE**, **ID switches**, and the **classification**. §10.1
-characterizes the glint (σ_glint per extent → matched R); §10.2 reads the matrix —
-the two fixes (DBSCAN for fragmentation, matched R for glint) against those
-metrics.
+IDs**, **localization RMSE**, **classification**. §10.1
+characterizes the glint (σ_glint per extent → matched R); §10.2 illustrates the tracking result on a single-seed run with 1.2 m extent; §10.3 reads the sweep matrix results.
 
 CMD: `python -m evaluation.tracker_stress_extent_sweep`
 
@@ -952,9 +950,30 @@ not "a fixed R that generalises across object realisations"; a stricter test wou
 hold out `extent_seed` too. (The deployable analogue, innovation-based R (§8.3),
 sidesteps this by adapting per-object online.)
 
-### 10.2 Fragmentation and glint vs the two fixes
+### 10.2 Illustrative run
 
-The matrix result is shown in the table below: 6 seeds, 80 frames; cells: mean Pd / distinct IDs / localization RMSE [m]
+1.2 m extent is the matrix's worst case — the widest object, so fragmentation is most
+severe and matched R is largest. Under the baseline (cc
+clustering, default R), the extended blob fragments into 3 tracks with repeated ID
+switches; DBSCAN + matched R (4.89, from §10.1) holds one CLEAN track. In both panels the
+track also rides ~0.5 m **below** the true-centre GT line: it follows the
+object's power-weighted centroid, which this fixed scatterer realization places
+off-centre — a near-constant bias, not jitter. That offset *is* the ~0.58 m
+localization RMSE (§10.3); distance-to-span still scores the track as on the
+object (it sits within the ±0.6 m span), so identity is CLEAN while accuracy is
+not.
+
+CMD for the left figure: `python -m evaluation.tracker_stress --scenario scenarios/scenario_extended_tracking_1p2m.json --algorithm kf --cluster-method cc`
+
+CMD for the right figure: `python -m evaluation.tracker_stress --scenario scenarios/scenario_extended_tracking_1p2m.json --algorithm kf --cluster-method dbscan --range-meas-var 4.89` 
+
+<img src="tracker_stress_extent_1p2m_cc.png" width="48%"/> <img src="tracker_stress_extent_1p2m_dbscan_matchedR.png" width="48%"/>
+
+*Left — cc clustering, default R; Right — DBSCAN + matched R*
+
+### 10.3 Fragmentation and glint vs the two fixes
+
+The sweep matrix result is shown in the table below: 6 seeds, 80 frames; cells: mean Pd / distinct IDs / localization RMSE [m]
 / classification. Both clustering methods use `min_cells = 2` (report-2 default), so the
 cc-vs-dbscan column is a fair merger comparison — it isolates DBSCAN's gap
 bridging from any cluster-size-filter difference:
@@ -991,7 +1010,7 @@ Reading it (left→right applies the two fixes; top→bottom grows the stressor)
 1. **"Size the parameter to the extent" is the unifying lesson.** Several
    pipeline knobs that are harmless for a point target must track the object's
    extent: the OS-CFAR **guard** (§9.2, where enlarging it recovers per-cell
-   detection), the tracker's **R** (§10.2, matched R), and DBSCAN's **`eps`** —
+   detection), the tracker's **R** (§10.3, matched R), and DBSCAN's **`eps`** —
    at the 1.2 m extent a fixed `eps = 2` still leaves ~2 clusters (residual
    fragmentation), so an extent-scaled `eps` would merge further. Extent is a
    first-class scene parameter, not a detail.
@@ -1002,7 +1021,7 @@ Reading it (left→right applies the two fixes; top→bottom grows the stressor)
    small/moderate extent and is honestly partial at large extent.
 
 3. **Detector fragmentation propagates into tracker churn.** §9.3's clusters-per-
-   object > 1 is exactly what spawns the multiple churning tracks of §10.2; the
+   object > 1 is exactly what spawns the multiple churning tracks of §10.3; the
    clustering choice (and its `eps`) is therefore a *tracking* decision, not just a
    detector one.
 
@@ -1026,7 +1045,7 @@ Reading it (left→right applies the two fixes; top→bottom grows the stressor)
 - **Scorer reports GOSPA's components**, not the fused GOSPA scalar (an optional
   supplementary number is future work).
 - **Fixed DBSCAN `eps` / OS-CFAR guard.** A fixed `eps = 2` still leaves ~2
-  clusters on the 1.2 m object (§10.2) — it beats `cc` but does not fully merge;
+  clusters on the 1.2 m object (§10.3) — it beats `cc` but does not fully merge;
   an extent-scaled `eps` (and guard) would be the natural next step.
 - **Rigid body, range-only** (no micro-Doppler / Doppler extent); single extended
   object per scene; ~6 seeds (smaller than report 2's 30).

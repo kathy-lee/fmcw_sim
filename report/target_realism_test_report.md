@@ -293,7 +293,7 @@ scenarios include close/crossing targets that peak-picking *resolves* into
 separate detections (CC would merge them); Part I keeps it anyway, for a
 clean anchor.
 
-### 4.1 Illustrative run — one knob from the published baseline
+### 4.1 Illustrative run
 
 The scenario is report 2 §3.1.1's missed-detection baseline
 (`scenario_missed_detections.json`: one marginal-SNR target, amp 0.0006,
@@ -971,7 +971,7 @@ CMD for the right figure: `python -m evaluation.tracker_stress --scenario scenar
 
 *Left — cc clustering, default R; Right — DBSCAN + matched R*
 
-### 10.3 Fragmentation and glint vs the two fixes
+### 10.3 Fragmentation and glint 
 
 The sweep matrix result is shown in the table below: 6 seeds, 80 frames; cells: mean Pd / distinct IDs / localization RMSE [m]
 / classification. Both clustering methods use `min_cells = 2` (report-2 default), so the
@@ -985,7 +985,7 @@ bridging from any cluster-size-filter difference:
 | 0.6 m | 0.97 / 1.8 / 0.27 / 5 CLEAN,1 ID SW | 0.97 / 1.7 / 0.28 / 5 CLEAN,1 ID SW | 0.97 / 1.7 / 0.27 / 5 CLEAN,1 ID SW |
 | 1.2 m | 0.81 / 2.8 / 0.61 / 6 ID SWITCH | 0.83 / 2.0 / 0.59 / 2 CLEAN,4 ID SW | 0.83 / 1.7 / 0.58 / 4 CLEAN,2 ID SW |
 
-Reading it (left→right applies the two fixes; top→bottom grows the stressor):
+Reading it (left→right applies different clustering methods and matched-R; top→bottom grows the stressor):
 
 - **Anchor (point row):** Pd 0.96, one ID, CLEAN, clustering-independent —
   reproducing Part I §4.3's strong steady point case (the in-experiment anchor

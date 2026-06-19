@@ -87,7 +87,8 @@ power_f  = mean_i |s_f[i]|²       (k=1 → Swerling 1, exponential power;
 factor_f = √power_f               (E[factor²] = 1: mean POWER preserved)
 ```
 
-The factors are normalized to **unit mean power** (E[factor²] = 1), the
+Swerling 3 combines its two scatterers **non-coherently** by adding the
+powers; a coherent sum would collapse back to Swerling 1. The factors are normalized to **unit mean power** (E[factor²] = 1), the
 standard convention: Swerling models describe fluctuation *about* a mean
 RCS, so the per-frame echo amplitude is `target.amplitude × factor_f`
 and `amplitude` keeps its baseline meaning as the mean. Adding
@@ -688,8 +689,7 @@ classification taxonomy — see report/README.md). Deltas:
 ### 8.1 The extended-target model
 
 A target may carry an optional `extent` dict,
-`{"n_scatterers": K, "range_extent_m": L}` (`None` = point target → today's exact
-behaviour). The generator draws, **once per target**, K point scatterers at
+`{"n_scatterers": K, "range_extent_m": L}` (`None` = point target). The generator draws, **once per target**, K point scatterers at
 random range offsets over `[−L/2, +L/2]` with complex-Gaussian (Rayleigh)
 voltages, and sums them coherently into the frame (`simulator/extended_target.py`,
 `beat_signal_generator.generate_frame`). Two design points:
@@ -728,36 +728,38 @@ An extended object's merged centroid can **wander** frame to frame (glint), so i
 position measurement is genuinely noisier than a point target's. This plays out at
 the tracker's **internal association gate** (`processing/tracking.py:Tracker._associate`), which
 decides which detection updates which track — a Mahalanobis / chi-square test,
-`d² = dr²/(range_meas_var + cov) + dd²/doppler_meas_var ≤ 9.21`. There are two
+`d² = residualᵀ S⁻¹ residual = dr²/(range_meas_var + cov) + dd²/doppler_meas_var ≤ 9.21`
+(`S` the innovation covariance). There are two
 ways one *could* make this gate tolerate the wander:
 
 - loosen the gate **threshold** (raise the value 9.21): it accepts larger
   normalised residuals arbitrarily, breaking the "99% χ²" meaning of the gate, and
   does nothing for the Kalman *update*;
-- raise the **measurement covariance R** (in this pipeline the gate's range term,
-  the scalar `range_meas_var`, since Part II's extent is range-only): it tells the filter the measurement
-  really is noisier, so `S = HPHᵀ + R` grows and the gate widens *in bins* while
-  the threshold stays 9.21, and the *update* down-weights the jumpy centroid
-  correctly.
-
-But **default R** (small, resolution-based) for point target is wrong for an
-extended object: it under-states the centroid uncertainty, so glint jumps fall
-outside the gate (the track drops and re-acquires under a new ID) and the KF
-over-trusts the wandering centroid. Here we use **matched R** for extended targets:
+- raise the **measurement covariance R** (here the gate's range term, the
+  scalar `range_meas_var`, since Part II's extent is range-only): this tells the
+  filter the measurement really is noisier, so `S = HPHᵀ + R` grows. Because S
+  sits in the gate's *denominator* (`d² = residual² / S`), a larger S lets a
+  larger residual still satisfy `d² ≤ 9.21` — the accepted region grows to
+  `|residual| ≤ √(9.21·S)`, **wider in bins**, while the threshold itself stays
+  9.21 (still a valid 99% χ² test). Besides association, in the track update,
+  the same larger S shrinks the Kalman gain (`K ∝ S⁻¹`), so the filter
+  down-weights the wandering centroid instead of chasing it. That leaves **how much** to raise R. The point-target default is too small for an extended object — it under-states the centroid wander, so glint jumps drop the track (re-IDs) and the estimate chases the centroid. We raise it by the **measured glint**:
 
 ```
 R_matched = R_resolution + σ_glint²
 ```
 
-`R_resolution` is the point-target default `range_meas_var` (0.5 bin²); since
-Part II's extent is range-only, matched R inflates `range_meas_var` and leaves
-`doppler_meas_var` at its default. Here `σ_glint` is the *measured* std of the
-merged centroid about the true centre
-(§10.1) — a target-model property, calibrated on a held-out seed set and then
-frozen and evaluated out-of-sample (the same calibrate-then-verify hygiene report 1
-uses for the CFAR α). It is not tuned against the score, and not the object's
-spatial spread (which would over-state R), it's a GT-calibrated method. R stays a fixed config value — **no gating code
-changes** (`_build_cost_matrix` is untouched; only R's value differs) — and
+`R_resolution` is the point-target default `range_meas_var` (0.5 bin²); matched
+R inflates only it, leaving `doppler_meas_var` at its default. Here `σ_glint` is the *measured* std of the
+merged centroid about the true centre — a target-model property. It is estimated
+(`measure_sigma_glint`) by clustering each frame's detections (DBSCAN,
+`min_cells = 2`), taking the in-span centroid nearest the true centre, and
+recording its range error. σ_glint is the std of those errors over a held-out seed
+set (3 seeds × 80 frames), frozen and evaluated out-of-sample (the same
+calibrate-then-verify hygiene report 1 uses for the CFAR α). It is
+not tuned against the score, and not the object's spatial spread (which would
+over-state R), it's a GT-calibrated method. R stays a fixed config value — no gating code
+changes (`_build_cost_matrix` is untouched; only R's value differs) — and
 `max_coast` (misses) and `process_noise_q` (maneuver) keep their report-2 roles. The GT-free analogue is
 innovation-based R estimation (Sage–Husa adaptive R) — R is re-estimated online per track from the residuals, i.e. not fixed.
 
@@ -790,7 +792,7 @@ scoring gate: within 3 bins of that span
   track at bin 58       ->  dist-to-span = 4 (> gate) ->  MISS
 ```
 
-The fix is **distance-to-span**: measure the distance from the track to the
+Here we use **distance-to-span**: measure the distance from the track to the
 object's occupied span `[centre ± w]` (zero if inside it), keeping the 3-bin
 tolerance. A track anywhere on the blob now scores as tracking it; a **point**
 target has `w = 0`, so this reduces *exactly* to the previous 3-bins-to-centroid
@@ -800,7 +802,7 @@ span cannot hide it.
 
 The scorer **draws on the standard extended-object metrics** (GOSPA / OSPA /
 CLEAR-MOT-MOTP), but reports their *components* in report 2's vocabulary rather
-than as a single fused scalar — so Part II stays comparable to report 2. The distance-to-span association above is a lightweight, region-aware
+than as a single fused scalar — so Part II stays comparable to report 2: The distance-to-span association above is a lightweight, region-aware
 match — the estimated centroid against the object's *extent* — in the spirit of
 extended-object evaluation (IoU gating in CLEAR-MOT, extent-aware base distances
 in OSPA / GOSPA), not the point-to-point matching those use for point targets. For
@@ -814,6 +816,16 @@ glint) frames — and is always read together with Pd.
 
 ## 9. Detection under extended targets
 
+This section re-measures detection with an **extended** target in place of a
+point, through the same OS-CFAR front end as report 1 / Part I. The scenario
+(`scenario_extended_detection.json`) is one moving target at 4 m, 0.1 m/s. We
+run an SNR sweep — mean input SNR per sample from −49 to −9 dB, 300 frames per
+point — across four extents: a point target and **K = 10** scatterers spread
+over **0.3 / 0.6 / 1.2 m**, reporting three object-level metrics: **Pd** (object
+detected if a surviving cluster falls in its span), the **per-cell detection
+fraction** (a spreading-loss diagnostic), and **clusters per object**
+(fragmentation), shown as three panels below.
+
 CMD: `python -m evaluation.sweep_extent --frames 300`
 
 ![Extended-target detection vs point](sweep_extent.png)
@@ -826,11 +838,11 @@ OS-CFAR); the peak/cc/dbscan comparison is the separate fragmentation panel in
 
 The `point` (extent = None) curve reproduces report 1 §3 / Part I steady: object-
 level Pd climbs 0 → 0.22 → 0.97 → 1.0 over −31 → −18 dB, crossing Pd ≈ 0.5 near
-**−25.3 dB** — essentially exactly Part I's steady −25.4 dB. (Part I's steady
-curve uses OS-CFAR + CC clustering, `min_cells = 2` (§3.1), whereas this sweep
-uses DBSCAN; for a *point* target the two clusterers coincide — a single gapless
-blob is one cluster either way — so the anchor comparison is valid.) So the
-extended deltas below are attributable to the target model.
+**−25.3 dB** — essentially exactly Part I's steady −25.4 dB. Part I's steady
+curve uses OS-CFAR + CC clustering (`min_cells = 2`, §3.1) while this sweep uses
+DBSCAN, but for a *point* target the two clustering methods coincide — a single
+gapless blob is one cluster either way — so the anchor comparison is valid. The
+extended deltas below are therefore attributable to the target model.
 
 ### 9.2 Spreading loss and self-masking
 
@@ -847,7 +859,7 @@ monotonically with extent at every SNR. At −26.9 dB mean SNR:
 
 Equal total power spread over more cells lowers per-cell SNR, so each cell is
 harder to light — the per-cell fraction collapses (0.42 → 0.02). Object-level Pd
-(≥ 1 cluster centroid in the span) is *more lenient* for a wider span — more
+(≥ 1 cluster centroid in the span) is *more tolerant* for a wider span — more
 cells give more chances for a cluster to form — so at this marginal SNR the
 moderate extents actually sit *above* the point (0.38, 0.46 vs 0.22); but at
 1.2 m the per-cell SNR is so low that even object-level detection collapses
@@ -857,8 +869,9 @@ level everywhere, while *object-level* detectability is protected — even impro
 **Self-masking**
 contributes too: when the extent exceeds the OS-CFAR guard, the object's own
 scatterers leak into the training cells and raise the threshold; enlarging the
-guard to cover the extent recovers per-cell fraction (1.2 m, strong amplitude:
-0.51 → 0.54 as the range guard grows 4 → 20 cells) — a real but, at this operating
+guard to cover the extent recovers per-cell fraction (1.2 m, −13.6 dB:
+0.51 → 0.54 as the range guard grows 4 → 20 cells, via CMD:
+`python -m evaluation.diagnose_guard_extent`) — a real but, at this operating
 point, secondary effect to spreading loss. (Contrast report 1 §4's *mutual*
 masking — a weak target masked by a strong *neighbour*; this is an object
 masking *itself*.)
@@ -869,10 +882,10 @@ Clusters-per-object grows with extent — and the clustering method decides how
 badly. To see how the three clustering methods (**peak**, **cc**, **dbscan**)
 differ on the same scene, the same detection run
 (`python -m evaluation.sweep_extent --frames 300`) re-clusters each frame with all
-three internally (no extra flag) — at a fixed high SNR (scale 2.1e-3, −13.6 dB —
-every method detects the object on every frame, object-Pd = 1.00) and matched
-parameters (`min_cells = 2`; dbscan `eps = 2`, peak `neighborhood = 3`) — and
-writes their clusters-per-object to `sweep_extent_fragmentation.csv`, shown below:
+three (no extra flag) and writes `sweep_extent_fragmentation.csv`. It runs at a
+fixed high SNR (scale 2.1e-3, −13.6 dB), where every method detects the object on
+every frame (object-Pd = 1.00); the clustering parameters are `min_cells = 2`,
+dbscan `eps = 2`, peak `neighborhood = 3`:
 
 | extent | `peak` | `cc` | `dbscan` |
 |---|---|---|---|
@@ -894,11 +907,26 @@ bridge the widest gaps, the first sign that `eps` must scale with the extent
 
 ## 10. Tracking under extended targets
 
+This section re-measures **tracking** for an extended object. The scenario
+(`scenario_extended_tracking.json`) is Part I §4.3's strong target scenario
+(`scenario_missed_detections_strong.json`: one mover at 4 m, 0.5 m/s, amplitude
+0.0009) with an `extent` field added. The strong amplitude keeps the object
+**reliably detected**, so the failures studied here are **clustering
+fragmentation** and **glint**, not missed detections; `extent = None` reproduces
+§4.3's strong steady point case (Pd ≈ 0.96, one CLEAN track) as the in-experiment
+anchor. The sweep crosses four extents (point, 0.3, 0.6, 1.2 m) ×
+three pipeline configurations — `cc` + default R, DBSCAN + default R, and DBSCAN +
+**matched R** — over 6 seeds × 80 frames, reporting track **Pd**, **distinct
+IDs**, **localization RMSE**, **ID switches**, and the **classification**. §10.1
+characterizes the glint (σ_glint per extent → matched R); §10.2 reads the matrix —
+the two fixes (DBSCAN for fragmentation, matched R for glint) against those
+metrics.
+
 CMD: `python -m evaluation.tracker_stress_extent_sweep`
 
 ### 10.1 Glint characterization
 
-The measured centroid wander (std about the true centre) grows with extent:
+The measured centroid wander (std about the true centre) grows with extent, shown in the table below:
 
 | extent | σ_glint (range bins) | matched R = 0.5 + σ_glint² |
 |---|---|---|
@@ -917,19 +945,17 @@ R used in the matrix below.
 seed set (101–103), disjoint from the evaluation seeds (1–6), so matched R is *not*
 fit to the test noise — the same calibrate-then-evaluate-out-of-sample discipline
 report 1 uses for the CFAR α. One honest scope limit: calibration and evaluation
-share the *object* realization (`extent_seed = 555`), so matched R is tuned to this
-object's glint (held-out noise), not to a fresh object of the same extent class.
-This is the faithful offline proxy for the deployable analogue — innovation-based
-R, which adapts to *the object being tracked* — but it means the reported
-matched-R benefit is "R adapted to this object," not "a fixed R that generalises
-across object realisations." A stricter test would hold out `extent_seed` too. The
-tracker itself never sees ground truth at runtime; σ_glint enters only as a frozen
-config value.
+share the *object* realization (`extent_seed = 555`) — only the noise is held out
+— so matched R is tuned to *this* object's glint, not to a fresh object of the
+same extent class. The reported benefit is therefore "R adapted to this object,"
+not "a fixed R that generalises across object realisations"; a stricter test would
+hold out `extent_seed` too. (The deployable analogue, innovation-based R (§8.3),
+sidesteps this by adapting per-object online.)
 
 ### 10.2 Fragmentation and glint vs the two fixes
 
-Matrix (6 seeds, 80 frames; cells: mean Pd / distinct IDs / localization RMSE [m]
-/ classification). Both clusterers use `min_cells = 2` (report-2 default), so the
+The matrix result is shown in the table below: 6 seeds, 80 frames; cells: mean Pd / distinct IDs / localization RMSE [m]
+/ classification. Both clustering methods use `min_cells = 2` (report-2 default), so the
 cc-vs-dbscan column is a fair merger comparison — it isolates DBSCAN's gap
 bridging from any cluster-size-filter difference:
 
@@ -943,25 +969,22 @@ bridging from any cluster-size-filter difference:
 Reading it (left→right applies the two fixes; top→bottom grows the stressor):
 
 - **Anchor (point row):** Pd 0.96, one ID, CLEAN, clustering-independent —
-  report 2's point-target behaviour reproduced (qualitative anchor at this
-  reliably-detected amplitude).
+  reproducing Part I §4.3's strong steady point case (the in-experiment anchor
+  at this reliably-detected amplitude).
 - **cc → dbscan (the merger fix) helps at *every* extent.** At 0.3 m, `cc`
-  shatters the blob into 4.5 tracks with 9.3 switches (ID SWITCH) while DBSCAN
-  bridges the gaps to one CLEAN track; at 1.2 m, DBSCAN still beats `cc`
-  (2.0 vs 2.8 distinct, 1.5 vs 8.0 switches). Gap-bridging is the headline
+  shatters the blob into 4.5 tracks (ID SWITCH) while DBSCAN bridges the gaps to
+  one CLEAN track; at 1.2 m, DBSCAN still beats `cc` (2.0 vs 2.8 distinct IDs,
+  2/6 CLEAN vs none). Gap-bridging is the headline
   fragmentation fix, and the expected ordering (dbscan ≤ cc fragmentation) holds
   across the grid.
-- **matched R (the glint fix) sharpens *identity* progressively, most at 1.2 m.**
-  Where the default-R run already merges (0.3 / 0.6 m) it adds nothing; at 1.2 m
-  it cuts churn further (distinct 2.0 → 1.7, switches 1.5 → 0.83, CLEAN 2 → 4 of 6).
-  So matched R is exactly the lever the large-extent case needs.
-- **But matched R does not fix *accuracy*, and 1.2 m is not fully CLEAN —
-  reported as-found.** Localization RMSE stays ≈ 0.58 m across all three 1.2 m
-  configs: matched R stabilises which track owns the object, but the 3-bin glint
-  is genuine measurement error the KF cannot remove, so the centroid estimate
-  remains ~0.58 m off. And 1.2 m tops out at 4/6 CLEAN. A fixed matched R plus
-  point-tracking takes the large extended object most of the way, not all of it —
-  which is what motivates the adaptive-R / EOT sequel (§12).
+- **matched R (the glint fix) sharpens *identity* at the largest extent (1.2 m),
+  but does not fix *accuracy*.** Where the default-R run already merges
+  (0.3 / 0.6 m) it adds nothing; at 1.2 m it cuts churn (distinct 2.0 → 1.7,
+  CLEAN 2 → 4 of 6) — the lever the large-extent case needs. Accuracy is
+  untouched, though: localization RMSE stays ≈ 0.58 m across all three 1.2 m
+  configs — matched R stabilises *which* track owns the object, but the 3-bin
+  glint is genuine measurement error the KF cannot remove, so the centroid
+  estimate remains ~0.58 m off.
 
 ## 11. Cross-cutting discussion (Part II)
 

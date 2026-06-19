@@ -173,6 +173,8 @@ def main() -> None:
         print(f"  extent={extent_m}: sigma_glint={sg:.2f} bins -> "
               f"matched_R={matched_R[extent_m]:.2f}")
 
+    # (ii) The matrix: each extent x {cc, dbscan, dbscan + matched R}, evaluated
+    # on the (out-of-sample) seeds; printed, then written to the CSVs below.
     configs = [("cc", None), ("dbscan", None), ("dbscan", "matched")]
     raw_rows, summary_rows = [], []
     header = (f"{'extent_m':>8s} {'cluster':>8s} {'R':>8s} {'Pd':>11s} "

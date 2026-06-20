@@ -672,8 +672,7 @@ Part I kept the target a single point that scintillated in time. Real targets ar
 also extended in *space*: a vehicle reflects from many scattering centres spread
 over metres, so its echo fills several range cells and its apparent centre hops
 between bright points as the geometry changes (glint). This part adds an
-extended-target model — K coherent complex-Gaussian scatterers over a range
-extent — and re-measures the detector and tracker, anchored on report 1 / Part I
+extended-target model and re-measures the detector and tracker, anchored on report 1 / Part I
 (detection) and report 2 (tracking).
 
 The treatment is **point-tracking of an extended object**: cluster the blob to one
@@ -688,8 +687,19 @@ classification taxonomy — see report/README.md). Deltas:
 
 ### 8.1 The extended-target model
 
-A target may carry an optional `extent` dict,
-`{"n_scatterers": K, "range_extent_m": L}` (`None` = point target). The generator draws, **once per target**, K point scatterers at
+The extended target is modelled as K coherent complex-Gaussian scatterers over a
+range extent. In implementation, a target may carry an optional `extent` dict
+(shown below; `None` = a point target):
+```
+{
+  ...
+  "extent": {
+    "n_scatterers": K,
+    "range_extent_m": L
+  }
+}
+```
+The generator draws, **once per target**, K point scatterers at
 random range offsets over `[−L/2, +L/2]` with complex-Gaussian (Rayleigh)
 voltages, and sums them coherently into the frame (`simulator/extended_target.py`,
 `beat_signal_generator.generate_frame`). Two design points:
@@ -953,9 +963,8 @@ sidesteps this by adapting per-object online.)
 ### 10.2 Illustrative run
 
 1.2 m extent is the matrix's worst case — the widest object, so fragmentation is most
-severe and matched R is largest. Under the baseline (cc
-clustering, default R), the extended blob fragments into 3 tracks with repeated ID
-switches; DBSCAN + matched R (4.89, from §10.1) holds one CLEAN track. In both panels the
+severe and matched R is largest. Under `cc` + default R, the extended blob fragments into 3 tracks with repeated ID
+switches; under DBSCAN + matched R (4.89, from §10.1), it holds one CLEAN track. In both panels the
 track also rides ~0.5 m **below** the true-centre GT line: it follows the
 object's power-weighted centroid, which this fixed scatterer realization places
 off-centre — a near-constant bias, not jitter. That offset *is* the ~0.58 m
@@ -1057,3 +1066,4 @@ Reading it (left→right applies different clustering methods and matched-R; top
 | `sweep_extent.png` / `.csv` | `evaluation/sweep_extent.py` | ✅ |
 | `sweep_extent_fragmentation.csv` (peak/cc/dbscan, §9.3) | `evaluation/sweep_extent.py` | ✅ |
 | `tracker_stress_extent_raw.csv` / `_summary.csv` | `evaluation/tracker_stress_extent_sweep.py` | ✅ |
+| `tracker_stress_extent_1p2m_cc.png` / `_dbscan_matchedR.png` (§10.2 single-seed illustration: `cc` + default R baseline vs DBSCAN + matched R 4.89) | `evaluation/tracker_stress.py --scenario scenarios/scenario_extended_tracking_1p2m.json` with `--cluster-method cc` / `--cluster-method dbscan --range-meas-var 4.89` | ✅ |

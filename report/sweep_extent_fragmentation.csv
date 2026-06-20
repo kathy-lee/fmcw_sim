@@ -1,0 +1,13 @@
+method,case,clusters_per_object,object_pd
+peak,point,1.0000,1.0000
+peak,ext_0.3,2.0000,1.0000
+peak,ext_0.6,2.1300,1.0000
+peak,ext_1.2,3.7067,1.0000
+cc,point,1.0000,1.0000
+cc,ext_0.3,1.0000,1.0000
+cc,ext_0.6,1.8867,1.0000
+cc,ext_1.2,2.3200,1.0000
+dbscan,point,1.0000,1.0000
+dbscan,ext_0.3,1.0000,1.0000
+dbscan,ext_0.6,1.0133,1.0000
+dbscan,ext_1.2,1.9867,1.0000

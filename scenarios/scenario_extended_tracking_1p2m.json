@@ -1,0 +1,28 @@
+{
+  "_comment": "1.2 m extended-object variant of scenario_extended_tracking.json (target realism report, Part II §10), for the single-run tracking timeline. IDENTICAL target (4 m, 0.5 m/s, amplitude 0.0009) except the `extent` field is set inline (K=10 scatterers over 1.2 m) instead of injected per sweep cell, so `tracker_stress.py` can plot one run. Pair the unfixed baseline (`--cluster-method cc`, default R -> the blob fragments) against `--cluster-method dbscan --range-meas-var 4.89` (matched R for 1.2 m, from §10.1) to visualise the two fixes. Single-seed illustration; the statistic is §10.3's matrix.",
+  "radar": {
+    "fc_hz": 77000000000.0,
+    "bandwidth_hz": 2000000000.0,
+    "ramp_duration_s": 0.00004,
+    "chirp_period_s": 0.00005,
+    "n_range": 256,
+    "n_chirps": 64,
+    "noise_power": 0.0001,
+    "leakage_amplitude": 0.0,
+    "frame_period_s": 0.05,
+    "seed": 99999,
+    "extent_seed": 555
+  },
+  "targets": [
+    {
+      "range_m": 4.0,
+      "velocity_mps": 0.5,
+      "amplitude": 0.0009,
+      "phase_rad": 0.0,
+      "extent": {
+        "n_scatterers": 10,
+        "range_extent_m": 1.2
+      }
+    }
+  ]
+}

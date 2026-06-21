@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict, field
 from typing import Any
 import json
+import math
 import numpy as np
 
 from simulator.motion_models import range_at
@@ -25,8 +26,13 @@ C = 299_792_458.0
 
 @dataclass
 class Target:
-    range_m: float
-    velocity_mps: float
+    # Cartesian world frame (boresight = +x). Radial range / velocity / azimuth
+    # are DERIVED (read-only properties below), so motion_models and
+    # generate_frame keep their radial interface unchanged for on-axis targets.
+    x: float
+    y: float = 0.0
+    vx: float = 0.0
+    vy: float = 0.0
     amplitude: float = 1.0
     phase_rad: float = 0.0
     motion_model: str = "constant_velocity"
@@ -39,6 +45,27 @@ class Target:
     # extent), e.g. {"n_scatterers": 10, "range_extent_m": 0.6}. None = point
     # target (K=1). Spatial; orthogonal to the temporal `fluctuation` knob.
     extent: dict | None = None
+
+    @property
+    def range_m(self) -> float:
+        # y == 0 fast path is EXACT: avoids sqrt(x*x) != x by 1 ULP, which would
+        # shift the beat phase and break byte-for-byte for migrated scenarios.
+        if self.y == 0.0:
+            return abs(self.x)
+        return math.hypot(self.x, self.y)
+
+    @property
+    def velocity_mps(self) -> float:
+        # Radial velocity d(range)/dt. On-axis: sign(x)*vx (== vx after migration,
+        # where x > 0); off-axis: projection of (vx, vy) onto the range direction.
+        if self.y == 0.0:
+            return math.copysign(self.vx, self.x) if self.x != 0.0 else self.vx
+        r = math.hypot(self.x, self.y)
+        return (self.x * self.vx + self.y * self.vy) / r
+
+    @property
+    def azimuth_rad(self) -> float:
+        return math.atan2(self.y, self.x)
 
 
 @dataclass
@@ -440,6 +467,21 @@ class FMCWBeatSignalGenerator:
         }
 
 
+def _target_from_dict(item: dict) -> Target:
+    """Build a Target, mapping legacy radial keys to on-axis Cartesian.
+
+    Native Cartesian scenarios (with "x") pass through. Legacy radial scenarios
+    (with "range_m"/"velocity_mps") map to the boresight: x = range_m, vx =
+    velocity_mps, y = vy = 0 — which the derived properties reproduce bit-for-bit.
+    """
+    if "x" in item:
+        return Target(**item)
+    item = dict(item)
+    range_m = item.pop("range_m")
+    velocity_mps = item.pop("velocity_mps", 0.0)
+    return Target(x=float(range_m), y=0.0, vx=float(velocity_mps), vy=0.0, **item)
+
+
 def load_scenario(path: str) -> tuple[RadarConfig, list[Target]]:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -450,7 +492,7 @@ def load_scenario(path: str) -> tuple[RadarConfig, list[Target]]:
 
     cfg = RadarConfig(**radar)
     cfg.clutter = [ClutterRegion(**item) for item in clutter_raw]
-    targets = [Target(**item) for item in targets_raw]
+    targets = [_target_from_dict(item) for item in targets_raw]
     return cfg, targets
 
 
@@ -468,7 +510,7 @@ def default_scenario() -> tuple[RadarConfig, list[Target]]:
         seed=0,
     )
     targets = [
-        Target(range_m=3.0, velocity_mps=5.0, amplitude=1.0),
-        Target(range_m=6.0, velocity_mps=-3.0, amplitude=0.6),
+        Target(x=3.0, vx=5.0, amplitude=1.0),
+        Target(x=6.0, vx=-3.0, amplitude=0.6),
     ]
     return cfg, targets

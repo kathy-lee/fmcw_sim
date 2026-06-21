@@ -24,3 +24,5 @@ build/
 
 # docs
 docs/
+
+tests/golden/*.npy

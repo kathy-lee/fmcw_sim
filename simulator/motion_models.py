@@ -100,11 +100,48 @@ def piecewise_range(
     return range_at(pt, frame_offset, frame_period_s)
 
 
+def cv_xy_range(
+    target: "Target", frame_idx: int, frame_period_s: float
+) -> tuple[float, float]:
+    """Range and radial velocity for a target moving at constant velocity in the
+    (x, y) plane. range = |position(t)|; radial velocity is the projection of
+    (vx, vy) onto the line of sight at time t. Native Cartesian (2-D) motion —
+    use this for off-boresight / cross-range targets (MIMO)."""
+    t = frame_idx * frame_period_s
+    x_t = target.x + target.vx * t
+    y_t = target.y + target.vy * t
+    r = math.hypot(x_t, y_t)
+    if r == 0.0:
+        return 0.0, 0.0
+    v_rad = (x_t * target.vx + y_t * target.vy) / r
+    return r, v_rad
+
+
+def cv_xy_azimuth(
+    target: "Target", frame_idx: int, frame_period_s: float
+) -> float:
+    """Azimuth (rad) of a cv_xy target at frame_idx."""
+    t = frame_idx * frame_period_s
+    return math.atan2(target.y + target.vy * t, target.x + target.vx * t)
+
+
 _MOTION_DISPATCH = {
     "constant_velocity": constant_velocity_range,
     "drag": drag_range,
     "piecewise": piecewise_range,
+    "cv_xy": cv_xy_range,
 }
+
+
+def azimuth_at(
+    target: "Target", frame_idx: int, frame_period_s: float
+) -> float:
+    """Frame-start azimuth (rad). cv_xy evolves with the planar motion; the
+    radial models keep the target's (static) initial azimuth — 0 for on-axis
+    legacy targets, so single-channel generation is unaffected."""
+    if target.motion_model == "cv_xy":
+        return cv_xy_azimuth(target, frame_idx, frame_period_s)
+    return target.azimuth_rad
 
 
 def range_at(

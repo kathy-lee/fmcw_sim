@@ -135,7 +135,7 @@ def test_metadata_includes_config_and_derived():
 def test_ground_truth_doppler_bin_zero_for_static_target():
     cfg = _small_cfg()
     gen = FMCWBeatSignalGenerator(cfg)
-    target = Target(range_m=1.0, velocity_mps=0.0)
+    target = Target(x=1.0, vx=0.0)
     gt = gen.ground_truth([target], frame_index=0)[0]
     # Static target -> zero Doppler -> doppler_bin_shifted == n_chirps/2
     assert abs(gt["doppler_bin_shifted"] - cfg.n_chirps / 2.0) < 1e-9
@@ -144,7 +144,7 @@ def test_ground_truth_doppler_bin_zero_for_static_target():
 def test_ground_truth_range_bin_matches_argmax_after_range_fft():
     cfg = _small_cfg(noise_power=0.0)
     gen = FMCWBeatSignalGenerator(cfg)
-    target = Target(range_m=1.0, velocity_mps=0.0)
+    target = Target(x=1.0, vx=0.0)
     frame = gen.generate_frame([target], frame_index=0)
     # Static target: any chirp's range FFT has the peak at the same range bin.
     rfft = np.fft.fft(frame, axis=1).mean(axis=0)
@@ -157,7 +157,7 @@ def test_ground_truth_range_bin_matches_argmax_after_range_fft():
 
 def test_target_default_motion_model_is_constant_velocity():
     from simulator.beat_signal_generator import Target
-    t = Target(range_m=1.0, velocity_mps=2.0)
+    t = Target(x=1.0, vx=2.0)
     assert t.motion_model == "constant_velocity"
     assert t.motion_params == {}
 
@@ -165,7 +165,7 @@ def test_target_default_motion_model_is_constant_velocity():
 def test_target_accepts_drag_motion_model():
     from simulator.beat_signal_generator import Target
     t = Target(
-        range_m=1.0, velocity_mps=5.0,
+        x=1.0, vx=5.0,
         motion_model="drag",
         motion_params={"drag_coefficient_k": 0.5},
     )
@@ -183,7 +183,7 @@ def test_ground_truth_drag_target_position_matches_analytic():
 
     cfg = RadarConfig(seed=42)
     target = Target(
-        range_m=4.0, velocity_mps=2.0, amplitude=1.0,
+        x=4.0, vx=2.0, amplitude=1.0,
         motion_model="drag",
         motion_params={"drag_coefficient_k": 0.5},
     )
@@ -254,7 +254,7 @@ def test_generate_frame_cv_target_reproducible():
     )
 
     cfg = RadarConfig(seed=42)
-    target = Target(range_m=2.0, velocity_mps=1.0, amplitude=0.3)
+    target = Target(x=2.0, vx=1.0, amplitude=0.3)
 
     gen1 = FMCWBeatSignalGenerator(cfg)
     frame1 = gen1.generate_frame([target], frame_index=5)
@@ -532,7 +532,7 @@ def test_load_scenario_without_clutter_field(tmp_path):
 
 def test_target_fluctuation_field_defaults_to_none():
     from simulator.beat_signal_generator import Target
-    t = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0006)
+    t = Target(x=4.0, vx=0.5, amplitude=0.0006)
     assert t.fluctuation is None
 
 
@@ -566,7 +566,7 @@ def test_steady_target_fluctuation_factor_is_one():
         FMCWBeatSignalGenerator, RadarConfig, Target,
     )
     gen = FMCWBeatSignalGenerator(RadarConfig())
-    t = Target(range_m=4.0, velocity_mps=0.5, amplitude=1.0)
+    t = Target(x=4.0, vx=0.5, amplitude=1.0)
     assert gen.fluctuation_factor(0, t, 0) == 1.0
     assert gen.fluctuation_factor(0, t, 99) == 1.0
 
@@ -582,8 +582,8 @@ def test_fluctuation_does_not_touch_noise_stream():
         FMCWBeatSignalGenerator, RadarConfig, Target,
     )
     cfg = RadarConfig(seed=12345)
-    steady = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0)
-    fluct = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0,
+    steady = Target(x=4.0, vx=0.5, amplitude=0.0)
+    fluct = Target(x=4.0, vx=0.5, amplitude=0.0,
                    fluctuation={"model": "swerling1"})
     f_steady = FMCWBeatSignalGenerator(cfg).generate_frame(
         [steady], frame_index=3)
@@ -602,7 +602,7 @@ def test_fluctuating_frame_equals_amplitude_scaled_steady_frame():
     )
     cfg = RadarConfig(noise_power=0.0, leakage_amplitude=0.0)
     base_amp = 0.0006
-    fluct_t = Target(range_m=4.0, velocity_mps=0.5, amplitude=base_amp,
+    fluct_t = Target(x=4.0, vx=0.5, amplitude=base_amp,
                      fluctuation={"model": "swerling1", "frame_corr": 0.5})
     gen_f = FMCWBeatSignalGenerator(cfg)
     gen_s = FMCWBeatSignalGenerator(cfg)
@@ -610,7 +610,7 @@ def test_fluctuating_frame_equals_amplitude_scaled_steady_frame():
         frame_fluct = gen_f.generate_frame([fluct_t],
                                            frame_index=frame_index)
         factor = gen_f.fluctuation_factor(0, fluct_t, frame_index)
-        steady_t = Target(range_m=4.0, velocity_mps=0.5,
+        steady_t = Target(x=4.0, vx=0.5,
                           amplitude=base_amp * factor)
         frame_steady = gen_s.generate_frame([steady_t],
                                             frame_index=frame_index)
@@ -621,7 +621,7 @@ def test_fluctuation_factors_independent_of_radar_seed():
     from simulator.beat_signal_generator import (
         FMCWBeatSignalGenerator, RadarConfig, Target,
     )
-    t = Target(range_m=4.0, velocity_mps=0.5, amplitude=1.0,
+    t = Target(x=4.0, vx=0.5, amplitude=1.0,
                fluctuation={"model": "swerling1"})
     g1 = FMCWBeatSignalGenerator(RadarConfig(seed=1))
     g2 = FMCWBeatSignalGenerator(RadarConfig(seed=2))
@@ -634,7 +634,7 @@ def test_fluctuation_seed_changes_factors():
     from simulator.beat_signal_generator import (
         FMCWBeatSignalGenerator, RadarConfig, Target,
     )
-    t = Target(range_m=4.0, velocity_mps=0.5, amplitude=1.0,
+    t = Target(x=4.0, vx=0.5, amplitude=1.0,
                fluctuation={"model": "swerling1"})
     g1 = FMCWBeatSignalGenerator(RadarConfig(fluctuation_seed=111))
     g2 = FMCWBeatSignalGenerator(RadarConfig(fluctuation_seed=222))
@@ -648,7 +648,7 @@ def test_fluctuation_factor_cache_regrowth_is_consistent():
         FMCWBeatSignalGenerator, RadarConfig, Target,
     )
     gen = FMCWBeatSignalGenerator(RadarConfig())
-    t = Target(range_m=4.0, velocity_mps=0.0, amplitude=1.0,
+    t = Target(x=4.0, vx=0.0, amplitude=1.0,
                fluctuation={"model": "swerling3", "frame_corr": 0.7})
     early = gen.fluctuation_factor(0, t, 5)
     gen.fluctuation_factor(0, t, 300)  # force regrow past the initial 128
@@ -657,7 +657,7 @@ def test_fluctuation_factor_cache_regrowth_is_consistent():
 
 def test_target_extent_field_defaults_to_none():
     from simulator.beat_signal_generator import Target
-    t = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0009)
+    t = Target(x=4.0, vx=0.5, amplitude=0.0009)
     assert t.extent is None
 
 
@@ -692,8 +692,8 @@ def test_point_target_byte_identical_when_extent_none():
         FMCWBeatSignalGenerator, RadarConfig, Target,
     )
     cfg = RadarConfig()
-    t_point = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0009)
-    t_extent_none = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0009,
+    t_point = Target(x=4.0, vx=0.5, amplitude=0.0009)
+    t_extent_none = Target(x=4.0, vx=0.5, amplitude=0.0009,
                            extent=None)
     f1 = FMCWBeatSignalGenerator(cfg).generate_frame([t_point], frame_index=2)
     f2 = FMCWBeatSignalGenerator(cfg).generate_frame([t_extent_none],
@@ -708,8 +708,8 @@ def test_k1_extent_equals_point_target():
     )
     cfg = RadarConfig(noise_power=0.0, leakage_amplitude=0.0)
     base = 0.0009
-    t_point = Target(range_m=4.0, velocity_mps=0.5, amplitude=base)
-    t_k1 = Target(range_m=4.0, velocity_mps=0.5, amplitude=base,
+    t_point = Target(x=4.0, vx=0.5, amplitude=base)
+    t_k1 = Target(x=4.0, vx=0.5, amplitude=base,
                   extent={"n_scatterers": 1, "range_extent_m": 0.6})
     f_point = FMCWBeatSignalGenerator(cfg).generate_frame([t_point])
     f_k1 = FMCWBeatSignalGenerator(cfg).generate_frame([t_k1])
@@ -725,7 +725,7 @@ def test_extended_frame_is_coherent_sum_of_scatterers():
     cfg = RadarConfig(noise_power=0.0, leakage_amplitude=0.0)
     base = 0.0009
     extent = {"n_scatterers": 6, "range_extent_m": 0.6}
-    t = Target(range_m=4.0, velocity_mps=0.5, amplitude=base, extent=extent)
+    t = Target(x=4.0, vx=0.5, amplitude=base, extent=extent)
     gen = FMCWBeatSignalGenerator(cfg)
     frame = gen.generate_frame([t], frame_index=3)
 
@@ -734,7 +734,7 @@ def test_extended_frame_is_coherent_sum_of_scatterers():
     ref = np.zeros_like(frame)
     gen2 = FMCWBeatSignalGenerator(cfg)
     for i in range(len(dr)):
-        st = Target(range_m=4.0 + dr[i], velocity_mps=0.5,
+        st = Target(x=4.0 + dr[i], vx=0.5,
                     amplitude=abs(a[i]), phase_rad=float(np.angle(a[i])))
         ref += gen2.generate_frame([st], frame_index=3)
     np.testing.assert_allclose(frame, ref, rtol=1e-5, atol=1e-9)
@@ -746,8 +746,8 @@ def test_extent_does_not_touch_noise_stream():
         FMCWBeatSignalGenerator, RadarConfig, Target,
     )
     cfg = RadarConfig(seed=4242)
-    point0 = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0)
-    ext0 = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0,
+    point0 = Target(x=4.0, vx=0.5, amplitude=0.0)
+    ext0 = Target(x=4.0, vx=0.5, amplitude=0.0,
                   extent={"n_scatterers": 8, "range_extent_m": 0.6})
     f_point = FMCWBeatSignalGenerator(cfg).generate_frame([point0],
                                                           frame_index=1)
@@ -763,7 +763,7 @@ def test_extent_scatterers_independent_of_radar_seed():
     extent = {"n_scatterers": 8, "range_extent_m": 0.6}
     cfg1 = RadarConfig(seed=1, noise_power=0.0, leakage_amplitude=0.0)
     cfg2 = RadarConfig(seed=2, noise_power=0.0, leakage_amplitude=0.0)
-    t = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0009, extent=extent)
+    t = Target(x=4.0, vx=0.5, amplitude=0.0009, extent=extent)
     f1 = FMCWBeatSignalGenerator(cfg1).generate_frame([t])
     f2 = FMCWBeatSignalGenerator(cfg2).generate_frame([t])
     np.testing.assert_allclose(f1, f2, rtol=1e-9)
@@ -776,10 +776,10 @@ def test_extent_composes_with_fluctuation():
     )
     cfg = RadarConfig(noise_power=0.0, leakage_amplitude=0.0)
     extent = {"n_scatterers": 6, "range_extent_m": 0.6}
-    t_fluct = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0009,
+    t_fluct = Target(x=4.0, vx=0.5, amplitude=0.0009,
                      extent=extent,
                      fluctuation={"model": "swerling1", "frame_corr": 0.5})
-    t_steady = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0009,
+    t_steady = Target(x=4.0, vx=0.5, amplitude=0.0009,
                       extent=extent)
     gen_f = FMCWBeatSignalGenerator(cfg)
     gen_s = FMCWBeatSignalGenerator(cfg)
@@ -795,7 +795,7 @@ def test_ground_truth_span_zero_for_point_target():
         FMCWBeatSignalGenerator, RadarConfig, Target,
     )
     gen = FMCWBeatSignalGenerator(RadarConfig())
-    t = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0009)
+    t = Target(x=4.0, vx=0.5, amplitude=0.0009)
     g = gen.ground_truth([t])[0]
     assert g["range_half_width_bins"] == 0.0
 
@@ -806,7 +806,7 @@ def test_ground_truth_span_matches_extent():
     )
     gen = FMCWBeatSignalGenerator(RadarConfig())
     # 0.6 m extent at 2 GHz bandwidth -> ~8 range bins wide -> half-width ~4.
-    t = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0009,
+    t = Target(x=4.0, vx=0.5, amplitude=0.0009,
                extent={"n_scatterers": 10, "range_extent_m": 0.6})
     g = gen.ground_truth([t])[0]
     assert g["range_half_width_bins"] == pytest.approx(4.0, abs=0.5)

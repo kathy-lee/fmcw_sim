@@ -11,6 +11,12 @@ def test_on_axis_reduces_to_radial_exactly():
     assert t.azimuth_rad == 0.0
 
 
+def test_on_axis_negative_velocity_keeps_sign():
+    # Inbound target (vx < 0) must report negative radial velocity, not +|vx|.
+    t = Target(x=6.0, y=0.0, vx=-1.0, vy=0.0)
+    assert t.velocity_mps == -1.0
+
+
 def test_off_axis_polar_derivation():
     t = Target(x=3.0, y=4.0, vx=0.0, vy=0.0)
     assert t.range_m == 5.0

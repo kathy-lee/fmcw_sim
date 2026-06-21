@@ -59,7 +59,9 @@ class Target:
         # Radial velocity d(range)/dt. On-axis: sign(x)*vx (== vx after migration,
         # where x > 0); off-axis: projection of (vx, vy) onto the range direction.
         if self.y == 0.0:
-            return math.copysign(self.vx, self.x) if self.x != 0.0 else self.vx
+            # d|x|/dt = sign(x)*vx — preserve vx's OWN sign (copysign(1,x)*vx),
+            # not copysign(vx,x) which would discard it. x>0 after migration -> vx.
+            return math.copysign(1.0, self.x) * self.vx
         r = math.hypot(self.x, self.y)
         return (self.x * self.vx + self.y * self.vy) / r
 

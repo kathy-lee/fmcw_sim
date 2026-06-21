@@ -45,7 +45,7 @@ def test_single_target_peak_at_expected_bin():
     cfg = _small_cfg()
     gen = FMCWBeatSignalGenerator(cfg)
     # Range 1.5 m sits well inside the 2.4 m unambiguous range for this cfg.
-    target = Target(range_m=1.5, velocity_mps=4.0)
+    target = Target(x=1.5, vx=4.0)
     frame = gen.generate_frame([target], frame_index=0)
     rd = range_doppler(frame, dc_removal=False, clutter_removal=False)
     power = np.abs(rd)
@@ -58,7 +58,7 @@ def test_single_target_peak_at_expected_bin():
 def test_hann_window_reduces_sidelobes_vs_rect():
     cfg = _small_cfg()
     gen = FMCWBeatSignalGenerator(cfg)
-    target = Target(range_m=1.5, velocity_mps=4.0)
+    target = Target(x=1.5, vx=4.0)
     frame = gen.generate_frame([target], frame_index=0)
     rd_hann = range_doppler(frame, window="hann",
                             dc_removal=False, clutter_removal=False)
@@ -96,8 +96,8 @@ def test_clutter_removal_suppresses_zero_doppler_stripe():
     cfg = _small_cfg()
     gen = FMCWBeatSignalGenerator(cfg)
     # Ranges chosen to sit comfortably within the 2.4 m unambig limit.
-    static = Target(range_m=1.0, velocity_mps=0.0, amplitude=1.0)
-    mover = Target(range_m=2.0, velocity_mps=5.0, amplitude=1.0)
+    static = Target(x=1.0, vx=0.0, amplitude=1.0)
+    mover = Target(x=2.0, vx=5.0, amplitude=1.0)
     frame = gen.generate_frame([static, mover], frame_index=0)
     rd_off = range_doppler(frame, dc_removal=True, clutter_removal=False)
     rd_on = range_doppler(frame, dc_removal=True, clutter_removal=True)
@@ -114,7 +114,7 @@ def test_clutter_removal_suppresses_zero_doppler_stripe():
 def test_clutter_removal_preserves_moving_targets():
     cfg = _small_cfg()
     gen = FMCWBeatSignalGenerator(cfg)
-    mover = Target(range_m=2.0, velocity_mps=5.0, amplitude=1.0)
+    mover = Target(x=2.0, vx=5.0, amplitude=1.0)
     frame = gen.generate_frame([mover], frame_index=0)
     rd_off = range_doppler(frame, dc_removal=True, clutter_removal=False)
     rd_on = range_doppler(frame, dc_removal=True, clutter_removal=True)

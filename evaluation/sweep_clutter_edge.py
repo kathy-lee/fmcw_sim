@@ -80,7 +80,7 @@ def run_one_point(
 ) -> tuple[float, float, float]:
     """Returns (cell-level Pd, centroid-level Pd, FA per frame)."""
     gen = FMCWBeatSignalGenerator(radar_cfg)
-    target = Target(range_m=target_r, velocity_mps=target_v,
+    target = Target(x=target_r, vx=target_v,
                     amplitude=target_amplitude)
     r_b, d_b = predicted_bins(target, gen)
 

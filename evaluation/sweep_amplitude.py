@@ -139,8 +139,8 @@ def run_sweep(
     for method in methods:
         for scale in amplitudes:
             scaled = [
-                Target(range_m=t.range_m,
-                       velocity_mps=t.velocity_mps,
+                Target(x=t.range_m,
+                       vx=t.velocity_mps,
                        amplitude=t.amplitude * scale,
                        phase_rad=t.phase_rad)
                 for t in base_targets

@@ -96,7 +96,10 @@ def process_mimo_frame(frame: np.ndarray, header: dict,
     power = integrate(rd)
     power_db = 10.0 * np.log10(power + 1e-12)
     t2 = time.perf_counter()
-    mask = cfar_2d(power_db, method=cfar_method, **_CFAR_KW)
+    # n_integrate = n_virtual: α is recalibrated for the non-coherently
+    # integrated (Gamma-V) noise so the realized Pfa stays nominal.
+    mask = cfar_2d(power_db, method=cfar_method, n_integrate=frame.shape[0],
+                   **_CFAR_KW)
     mask[:, 0] = False
     t3 = time.perf_counter()
     cloud = mimo_point_cloud(
@@ -128,7 +131,9 @@ def _prewarm_cfar(header: dict, cfar_method: str = "ca") -> None:
     representative and the first frame does not look like a hang."""
     cfg = header["metadata"]["config"]
     shape = (int(cfg["n_chirps"]), int(cfg["n_range"]) // 2)
-    cfar_2d(np.zeros(shape), method=cfar_method, **_CFAR_KW)
+    n_virtual = int(cfg["n_tx"]) * int(cfg["n_rx"])
+    cfar_2d(np.zeros(shape), method=cfar_method, n_integrate=n_virtual,
+            **_CFAR_KW)
 
 
 def _draw(axes, out: dict, header: dict, doa_method: str) -> None:

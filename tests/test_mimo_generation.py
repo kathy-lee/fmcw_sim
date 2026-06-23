@@ -176,7 +176,7 @@ def test_generate_frame_mimo_cv_xy_steering_evolves_between_frames():
 
 
 def test_mimo_2d_scenario_loads_and_generates():
-    cfg, targets = load_scenario("scenarios/scenario_mimo_2d.json")
+    cfg, targets = load_scenario("scenarios/scenario_mimo.json")
     assert cfg.n_tx == 3 and cfg.n_rx == 4
     gen = FMCWBeatSignalGenerator(cfg)
     stack = gen.generate_frame_mimo(targets, frame_index=0)

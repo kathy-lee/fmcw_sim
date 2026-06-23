@@ -5,7 +5,7 @@ from evaluation.mimo_pipeline import run_pipeline_mimo
 
 
 def test_run_pipeline_mimo_tracks_single_target():
-    cfg, targets = load_scenario("scenarios/scenario_mimo_2d.json")
+    cfg, targets = load_scenario("scenarios/scenario_mimo.json")
     history = run_pipeline_mimo(cfg, targets, n_frames=10)
     assert len(history) == 10
     last = history[-1][1]                                  # snapshots, final frame
@@ -22,7 +22,7 @@ from simulator.beat_signal_generator import FMCWBeatSignalGenerator
 
 
 def test_build_gt_xy_converts_polar_to_cartesian():
-    cfg, targets = load_scenario("scenarios/scenario_mimo_2d.json")
+    cfg, targets = load_scenario("scenarios/scenario_mimo.json")
     gen = FMCWBeatSignalGenerator(cfg)
     gt = build_gt_xy(targets, gen, 3)
     assert len(gt) == 3
@@ -50,7 +50,7 @@ def test_track_rmse_xy_zero_for_perfect_track():
 
 def test_detection_pd_curve_shows_integration_gain():
     from evaluation.mimo_detection_eval import pd_vs_snr
-    cfg, targets = load_scenario("scenarios/scenario_mimo_2d.json")
+    cfg, targets = load_scenario("scenarios/scenario_mimo.json")
     levels, pd_single, pd_integ = pd_vs_snr(cfg, targets, noise_powers=[0.05, 0.5],
                                             n_frames=6)
     assert len(levels) == len(pd_single) == len(pd_integ) == 2

@@ -70,7 +70,7 @@ def pd_vs_snr(cfg, targets, noise_powers, n_frames=8):
 
 def main():
     from simulator.beat_signal_generator import load_scenario
-    cfg, targets = load_scenario(str(ROOT / "scenarios/scenario_mimo_2d.json"))
+    cfg, targets = load_scenario(str(ROOT / "scenarios/scenario_mimo.json"))
     # Noise regime where both curves span 0->1 (target amplitude is 0.01).
     noise = [0.002, 0.006, 0.02, 0.06, 0.2, 0.6, 2.0]
     snr, pds, pdi = pd_vs_snr(cfg, targets, noise, n_frames=20)

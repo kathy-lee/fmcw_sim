@@ -38,7 +38,7 @@ def test_doa_on_mimo_stack_matches_ground_truth_azimuth(method):
     from processing.range_doppler import range_doppler
     from processing.doa import estimate_doa
 
-    cfg, targets = load_scenario("scenarios/scenario_mimo_2d.json")
+    cfg, targets = load_scenario("scenarios/scenario_mimo.json")
     cfg.noise_power = 0.0
     gen = FMCWBeatSignalGenerator(cfg)
     stack = gen.generate_frame_mimo(targets, frame_index=0)
@@ -73,7 +73,7 @@ def test_mimo_point_cloud_places_target_at_xy():
         load_scenario, FMCWBeatSignalGenerator)
     from processing.range_doppler import range_doppler
 
-    cfg, targets = load_scenario("scenarios/scenario_mimo_2d.json")
+    cfg, targets = load_scenario("scenarios/scenario_mimo.json")
     cfg.noise_power = 0.0
     gen = FMCWBeatSignalGenerator(cfg)
     stack = gen.generate_frame_mimo(targets, frame_index=0)

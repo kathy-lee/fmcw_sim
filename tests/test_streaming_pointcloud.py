@@ -11,7 +11,7 @@ from simulator.streaming_subscriber_pointcloud import (
 from simulator.wire import build_header
 
 
-def _frame_and_header(scenario="scenarios/scenario_mimo_2d.json", frame_index=0):
+def _frame_and_header(scenario="scenarios/scenario_mimo.json", frame_index=0):
     cfg, targets = load_scenario(scenario)
     gen = FMCWBeatSignalGenerator(cfg)
     frame = gen.generate_frame_mimo(targets, frame_index=frame_index)

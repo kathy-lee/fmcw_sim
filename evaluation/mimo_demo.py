@@ -130,7 +130,7 @@ def superresolution(out: Path, az_true=(-3.0, 3.0)) -> None:
 
 
 def main() -> None:
-    rep = ROOT / "report"
+    rep = ROOT / "report" / "mimo_evaluation"
     # Two-target scene: shows the cloud collapsing to two separated objects.
     processing_view(str(ROOT / "scenarios/scenario_mimo_2targets.json"),
                     rep / "mimo_processing_view.png")

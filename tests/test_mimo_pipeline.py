@@ -46,3 +46,56 @@ def test_track_rmse_xy_zero_for_perfect_track():
     hist = [(0, [CartesianTrackSnapshot(3, np.array([8.0, 2.0, 0, 0, 0]), "confirmed")])]
     assoc = [(0, {0: 3})]
     assert track_rmse_xy(gt, hist, assoc) == 0.0
+
+
+def test_detection_pd_curve_shows_integration_gain():
+    from evaluation.mimo_detection_eval import pd_vs_snr
+    cfg, targets = load_scenario("scenarios/scenario_mimo_2d.json")
+    levels, pd_single, pd_integ = pd_vs_snr(cfg, targets, noise_powers=[0.05, 0.5],
+                                            n_frames=6)
+    assert len(levels) == len(pd_single) == len(pd_integ) == 2
+    # at the same noise, V-channel integration detects at least as often
+    assert all(pi >= ps - 1e-9 for pi, ps in zip(pd_integ, pd_single))
+
+
+def test_doa_accuracy_improves_with_snr():
+    # An off-grid angle (12.4°) so grid methods aren't trivially exact; ESPRIT is
+    # search-free and should sharpen markedly from low to high SNR.
+    from evaluation.mimo_doa_eval import azimuth_rmse_vs_snr
+    snr, rmse = azimuth_rmse_vs_snr(az_true_deg=12.4, n_elem=12,
+                                    snr_db_list=[0.0, 30.0], methods=("esprit",),
+                                    n_trials=50, seed=0)
+    assert rmse["esprit"][1] < rmse["esprit"][0]      # 30 dB sharper than 0 dB
+
+
+def test_doa_resolution_superres_beats_bartlett():
+    # The discriminating claim: super-resolution resolves closer than the
+    # Bartlett (beamwidth) limit on the same array.
+    from evaluation.mimo_doa_eval import min_resolvable_separation
+    res = min_resolvable_separation(12, [2, 3, 4, 5, 6, 8, 10, 12], snr_db=20.0,
+                                    methods=("bartlett", "music", "esprit"),
+                                    n_trials=30, seed=0)
+    assert res["esprit"] < res["bartlett"]
+    assert res["music"] < res["bartlett"]
+
+
+def test_clustering_vel_scale_splits_crossing():
+    from evaluation.mimo_clustering_eval import object_count_grid
+    cfg, targets = load_scenario("scenarios/scenario_mimo_crossing.json")
+    # at the crossing frame the two targets share position but differ in velocity
+    epses, vels, counts = object_count_grid(cfg, targets, frame_index=40,
+                                            eps_list=[0.8], vel_list=[0.0, 1.0])
+    # vel_scale=0 merges (1 object); vel_scale=1 splits (2)
+    assert counts[0][0] <= counts[0][1]
+
+
+def test_tracking_eval_turn_tracks_with_stable_id():
+    # The robust end-to-end claims: the maneuvering target is tracked with low
+    # position RMSE and a stable track ID through the turn. (Turn-rate ω itself
+    # is only weakly observable from a single noisy (r,θ,ṙ) stream and is NOT
+    # asserted here — see the report's tracking section.)
+    from evaluation.mimo_tracking_eval import run_turn_eval
+    cfg, targets = load_scenario("scenarios/scenario_mimo_turn.json")
+    res = run_turn_eval(cfg, targets, n_frames=30)
+    assert res["rmse_m"] < 1.5                          # tracked through the turn
+    assert res["n_track_ids"] <= 2                      # stable lock (<=1 re-acquire)

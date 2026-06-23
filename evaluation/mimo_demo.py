@@ -21,13 +21,11 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from processing.cfar import cfar_2d
-from processing.doa import _GRID_DEG, estimate_doa, spectrum, steering_matrix
-from processing.point_cloud import (
-    integrate, mimo_point_cloud, tdm_doppler_compensation)
-from processing.clustering import cluster_point_cloud
-from processing.range_doppler import range_doppler
+from processing.doa import estimate_doa, spectrum
+from processing.mimo_frame import process_mimo_frame
+from processing.point_cloud import tdm_doppler_compensation
 from simulator.beat_signal_generator import FMCWBeatSignalGenerator, load_scenario
+from simulator.wire import build_header
 
 SPECTRAL = ["bartlett", "capon", "music"]
 
@@ -40,22 +38,19 @@ def processing_view(scenario: str, out: Path) -> None:
     cfg, targets = load_scenario(scenario)
     gen = FMCWBeatSignalGenerator(cfg)
     stack = gen.generate_frame_mimo(targets, frame_index=0)
-    rd = np.stack([range_doppler(stack[v]) for v in range(stack.shape[0])])
-    power = integrate(rd)
-    rd_db = 10.0 * np.log10(power + 1e-12)
-    mask = cfar_2d(rd_db, method="os", guard=(2, 4), training=(4, 8), pfa=1e-4,
-                   n_integrate=stack.shape[0])
-    mask[:, :6] = False   # min-range gate (near-DC CFAR-edge false alarms)
+    # Reuse the single-sourced per-frame core (RD -> integrate -> CFAR-NCI ->
+    # min-range gate -> DoA cloud -> cluster); this demo only adds the per-method
+    # DoA-spectra panel the core doesn't produce.
+    header = build_header(frame=stack, frame_id=0, topic="demo",
+                          metadata=gen.metadata(), ground_truth=[],
+                          timestamp_unix_s=0.0)
+    res = process_mimo_frame(stack, header, doa_method="music", n_sources=1,
+                             cfar_method="os")
+    rd, rd_db, mask = res["rd"], res["power_db"], res["mask"]
+    cloud, objects = res["cloud"], res["objects"]
+    pos, range_axis, vel_axis = res["pos"], res["range_axis"], res["vel_axis"]
 
-    pos = gen.virtual_element_positions()
-    range_axis = gen.range_axis_m()
-    vel_axis = gen.velocity_axis_mps() / cfg.n_tx
-    range_per_bin = float(range_axis[1])
-    cloud = mimo_point_cloud(rd, mask, pos, range_per_bin, vel_axis,
-                             cfg.n_tx, cfg.n_rx, doa_method="music", n_sources=1)
-    objects = cluster_point_cloud(cloud, eps_m=0.8, min_samples=2, vel_scale=1.0)
-
-    d, r = np.unravel_index(np.argmax(power), power.shape)
+    d, r = np.unravel_index(np.argmax(rd_db), rd_db.shape)
     snap = tdm_doppler_compensation(rd[:, d, r], d, cfg.n_chirps, cfg.n_tx, cfg.n_rx)
     gt = gen.ground_truth(targets, frame_index=0)
     gt_az = [g["azimuth_deg"] for g in gt]

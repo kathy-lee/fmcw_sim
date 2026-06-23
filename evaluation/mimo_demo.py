@@ -25,6 +25,7 @@ from processing.cfar import cfar_2d
 from processing.doa import _GRID_DEG, estimate_doa, spectrum, steering_matrix
 from processing.point_cloud import (
     integrate, mimo_point_cloud, tdm_doppler_compensation)
+from processing.clustering import cluster_point_cloud
 from processing.range_doppler import range_doppler
 from simulator.beat_signal_generator import FMCWBeatSignalGenerator, load_scenario
 
@@ -42,8 +43,9 @@ def processing_view(scenario: str, out: Path) -> None:
     rd = np.stack([range_doppler(stack[v]) for v in range(stack.shape[0])])
     power = integrate(rd)
     rd_db = 10.0 * np.log10(power + 1e-12)
-    mask = cfar_2d(rd_db, method="os", guard=(2, 4), training=(4, 8), pfa=1e-4)
-    mask[:, 0] = False
+    mask = cfar_2d(rd_db, method="os", guard=(2, 4), training=(4, 8), pfa=1e-4,
+                   n_integrate=stack.shape[0])
+    mask[:, :6] = False   # min-range gate (near-DC CFAR-edge false alarms)
 
     pos = gen.virtual_element_positions()
     range_axis = gen.range_axis_m()
@@ -51,6 +53,7 @@ def processing_view(scenario: str, out: Path) -> None:
     range_per_bin = float(range_axis[1])
     cloud = mimo_point_cloud(rd, mask, pos, range_per_bin, vel_axis,
                              cfg.n_tx, cfg.n_rx, doa_method="music", n_sources=1)
+    objects = cluster_point_cloud(cloud, eps_m=0.8, min_samples=2, vel_scale=1.0)
 
     d, r = np.unravel_index(np.argmax(power), power.shape)
     snap = tdm_doppler_compensation(rd[:, d, r], d, cfg.n_chirps, cfg.n_tx, cfg.n_rx)
@@ -84,14 +87,18 @@ def processing_view(scenario: str, out: Path) -> None:
     h, l = ax1.get_legend_handles_labels()
     ax1.legend(dict(zip(l, h)).values(), dict(zip(l, h)).keys(), fontsize=8)
 
-    # Panel 3: BEV point cloud + GT
+    # Panel 3: BEV point cloud, clustered objects, GT
     if cloud.shape[0]:
-        sc = ax2.scatter(cloud[:, 0], cloud[:, 1], c=cloud[:, 2], cmap="coolwarm",
-                         s=18)
-        fig.colorbar(sc, ax=ax2, label="v_radial [m/s]")
+        ax2.scatter(cloud[:, 0], cloud[:, 1], c="0.7", s=8, label="points")
+    for obj in objects:
+        ax2.scatter([obj.x], [obj.y], marker="o", facecolors="none",
+                    edgecolors="C1", s=110, linewidths=2.0, label="object")
+        ax2.add_patch(plt.Circle((obj.x, obj.y), max(obj.extent_m, 0.2),
+                                 fill=False, color="C1", ls=":", lw=0.8))
     for (gx, gy) in gt_xy:
         ax2.scatter([gx], [gy], marker="x", c="k", s=80, label="GT")
-    ax2.set(xlabel="x [m]", ylabel="y [m]", title="BEV point cloud")
+    ax2.set(xlabel="x [m]", ylabel="y [m]",
+            title=f"BEV: {len(objects)} clustered objects")
     ax2.axis("equal")
     h, l = ax2.get_legend_handles_labels()
     if l:
@@ -129,7 +136,8 @@ def superresolution(out: Path, az_true=(-3.0, 3.0)) -> None:
 
 def main() -> None:
     rep = ROOT / "report"
-    processing_view(str(ROOT / "scenarios/scenario_mimo_2d.json"),
+    # Two-target scene: shows the cloud collapsing to two separated objects.
+    processing_view(str(ROOT / "scenarios/scenario_mimo_2targets.json"),
                     rep / "mimo_processing_view.png")
     superresolution(rep / "mimo_superresolution.png")
 

@@ -1,0 +1,35 @@
+{
+  "_comment": "MIMO 2-D crossing (Part II / M3) — the velocity-separation case. Two targets on boresight (y=0) moving in opposite directions: A from 2 m outward (vx=+1), B from 6 m inward (vx=-1). They meet at x=4 m around frame 40 (t=2 s at 20 Hz). At the crossing frame they share the same (x, y) but have opposite radial velocity, so ONLY the velocity feature of cluster_point_cloud (vel_scale>0) separates them; spatial-only merges. The Cartesian/MIMO analogue of report 2's scenario_crossing_targets. Seeds the M5 velocity-separation study.",
+  "radar": {
+    "fc_hz": 77000000000.0,
+    "bandwidth_hz": 2000000000.0,
+    "ramp_duration_s": 0.00004,
+    "chirp_period_s": 0.00005,
+    "n_range": 256,
+    "n_chirps": 64,
+    "noise_power": 0.0001,
+    "frame_period_s": 0.05,
+    "n_tx": 3,
+    "n_rx": 4,
+    "mimo_scheme": "tdm",
+    "rx_spacing_wl": 0.5
+  },
+  "targets": [
+    {
+      "x": 2.0,
+      "y": 0.0,
+      "vx": 1.0,
+      "vy": 0.0,
+      "amplitude": 0.01,
+      "motion_model": "cv_xy"
+    },
+    {
+      "x": 6.0,
+      "y": 0.0,
+      "vx": -1.0,
+      "vy": 0.0,
+      "amplitude": 0.01,
+      "motion_model": "cv_xy"
+    }
+  ]
+}

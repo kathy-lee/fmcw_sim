@@ -26,6 +26,7 @@ import time
 import numpy as np
 
 from processing.cfar import cfar_2d
+from processing.clustering import cluster_point_cloud
 from processing.doa import estimate_doa, spectrum
 from processing.point_cloud import (
     integrate, mimo_point_cloud, tdm_doppler_compensation)
@@ -83,11 +84,14 @@ def deadlines(header: dict) -> tuple[float, float]:
 
 def process_mimo_frame(frame: np.ndarray, header: dict,
                        doa_method: str = "music", n_sources: int = 1,
-                       cfar_method: str = "ca") -> dict:
-    """Run the M2 detect-then-angle pipeline on one MIMO frame (testable core).
+                       cfar_method: str = "ca", eps_m: float = 0.8,
+                       vel_scale: float = 1.0, min_samples: int = 2,
+                       min_range_bins: int = 6) -> dict:
+    """Run the M2->M3 pipeline on one MIMO frame (testable core).
 
-    Returns the stage outputs plus a `timings` dict (seconds) for rd / integrate
-    / cfar / doa_pc, and `total` (range-Doppler -> point cloud).
+    Returns the stage outputs (incl. the raw `cloud` and clustered `objects`)
+    plus a `timings` dict (seconds) for rd / integrate / cfar / doa_pc / cluster,
+    and `total` (range-Doppler -> clustered objects).
     """
     p = frame_params(header)
     t0 = time.perf_counter()
@@ -100,26 +104,34 @@ def process_mimo_frame(frame: np.ndarray, header: dict,
     # integrated (Gamma-V) noise so the realized Pfa stays nominal.
     mask = cfar_2d(power_db, method=cfar_method, n_integrate=frame.shape[0],
                    **_CFAR_KW)
-    mask[:, 0] = False
+    # Min-range gate: drop the near-DC range bins where CFAR is unreliable (its
+    # training window straddles the DC dead-zone -> deflated noise estimate ->
+    # a near-DC false-alarm cluster, amplified by non-coherent integration).
+    # MIMO-path only — the single-channel reports keep their bin-0 notch for
+    # byte-for-byte. See docs/superpowers/notes/2026-06-23-cfar-near-dc-mimo.md.
+    mask[:, :min_range_bins] = False
     t3 = time.perf_counter()
     cloud = mimo_point_cloud(
         rd, mask, p["pos"], float(p["range_axis"][1]), p["vel_axis"],
         p["n_tx"], p["n_rx"], doa_method=doa_method, n_sources=n_sources)
     t4 = time.perf_counter()
+    objects = cluster_point_cloud(cloud, eps_m=eps_m, min_samples=min_samples,
+                                  vel_scale=vel_scale)
+    t5 = time.perf_counter()
     timings = {"rd": t1 - t0, "integrate": t2 - t1, "cfar": t3 - t2,
-               "doa_pc": t4 - t3, "total": t4 - t0}
+               "doa_pc": t4 - t3, "cluster": t5 - t4, "total": t5 - t0}
     return dict(rd=rd, power_db=power_db, mask=mask, cloud=cloud,
-                timings=timings, **p)
+                objects=objects, timings=timings, **p)
 
 
 def format_summary(frame_idx: int, stage_means_ms: tuple, total_ms: float,
                    period_ms: float, acq_ms: float, over_stream: int,
                    over_realtime: int, window: int, drops: int) -> str:
-    """One-line real-time summary (range-Doppler -> point cloud)."""
-    rd, integ, cfar, doa = stage_means_ms
+    """One-line real-time summary (range-Doppler -> clustered objects)."""
+    rd, integ, cfar, doa, clust = stage_means_ms
     realtime = "yes" if over_realtime == 0 else "NO"
     return (f"[frame {frame_idx}] rd={rd:.1f} integ={integ:.1f} cfar={cfar:.1f} "
-            f"doa+pc={doa:.1f} total={total_ms:.1f} (mean ms) | "
+            f"doa+pc={doa:.1f} cluster={clust:.1f} total={total_ms:.1f} (mean ms) | "
             f"period={period_ms:.1f} acq={acq_ms:.1f} ms | "
             f"over_stream={over_stream}/{window} "
             f"over_realtime={over_realtime}/{window} drops={drops} "
@@ -165,12 +177,17 @@ def _draw(axes, out: dict, header: dict, doa_method: str) -> None:
 
     cloud = out["cloud"]
     if cloud.shape[0]:
-        ax2.scatter(cloud[:, 0], cloud[:, 1], c=cloud[:, 2], cmap="coolwarm", s=16)
+        ax2.scatter(cloud[:, 0], cloud[:, 1], c="0.7", s=8, label="points")
+    for obj in out.get("objects", []):
+        ax2.scatter([obj.x], [obj.y], marker="o", facecolors="none",
+                    edgecolors="C1", s=90, linewidths=2.0, label="object")
+        ax2.add_patch(plt.Circle((obj.x, obj.y), max(obj.extent_m, 0.2),
+                                 fill=False, color="C1", ls=":", lw=0.8))
     for gt in header.get("ground_truth", []):
         rng, az = gt["range_m"], np.deg2rad(gt.get("azimuth_deg", 0.0))
         ax2.scatter([rng * np.cos(az)], [rng * np.sin(az)], marker="x", c="k", s=60)
     ax2.set(xlabel="x [m]", ylabel="y [m]",
-            title=f"BEV point cloud ({doa_method})")
+            title=f"BEV: {len(out.get('objects', []))} objects ({doa_method})")
     ax2.axis("equal")
     plt.pause(0.001)
 
@@ -190,7 +207,8 @@ def main() -> None:
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
 
     W = args.stats_window
-    stage_times = np.zeros((W, 5), dtype=np.float64)   # rd, integ, cfar, doa, total
+    # columns: rd, integ, cfar, doa+pc, cluster, total
+    stage_times = np.zeros((W, 6), dtype=np.float64)
     idx = 0
     drops = 0
     over_stream = over_realtime = 0
@@ -226,7 +244,7 @@ def main() -> None:
 
             t = out["timings"]
             stage_times[idx % W] = (t["rd"], t["integrate"], t["cfar"],
-                                    t["doa_pc"], t["total"])
+                                    t["doa_pc"], t["cluster"], t["total"])
             if t["total"] > stream_dl:
                 over_stream += 1
             if t["total"] > acq_dl:
@@ -234,8 +252,8 @@ def main() -> None:
             idx += 1
 
             if idx % W == 0:
-                means_ms = tuple(stage_times[:, k].mean() * 1e3 for k in range(4))
-                total_ms = stage_times[:, 4].mean() * 1e3
+                means_ms = tuple(stage_times[:, k].mean() * 1e3 for k in range(5))
+                total_ms = stage_times[:, 5].mean() * 1e3
                 print(format_summary(
                     idx, means_ms, total_ms, stream_dl * 1e3, acq_dl * 1e3,
                     over_stream, over_realtime, W, drops))

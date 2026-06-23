@@ -224,3 +224,50 @@ class IMMConfig:
                 f"initial_mode_probs sums to {sum(self.initial_mode_probs)}, "
                 f"not 1"
             )
+
+
+@dataclass
+class CartesianTrackerConfig:
+    """Config for the Cartesian CTRV-EKF tracker (M4). State [x,y,v,ψ,ω];
+    measurement [r,θ,ṙ] (Doppler always in). Δt folded as 1 frame, as in the
+    radial TrackerConfig — ω is rad/frame, accel noises per-frame."""
+    method: str = "gnn"                 # "nn" | "gnn"
+    gate_threshold: float = 11.34       # χ²₃ @ 99% (3-DOF polar+Doppler)
+    sigma_a: float = 1.0                # longitudinal accel process std, m/s²
+    sigma_yaw_accel: float = 0.3        # yaw-accel process std, rad/s² (>=0)
+    sigma_r: float = 0.20               # range meas std, m
+    sigma_az: float = 0.05              # azimuth meas std, rad (~2.9°)
+    sigma_rdot: float = 0.20            # radial-velocity meas std, m/s
+    init_pos_var: float = 0.25          # m²
+    init_v_var: float = 25.0            # (m/s)²
+    init_psi_var: float = 2.5           # rad² (~90°; heading unobserved @ spawn)
+    init_omega_var: float = 1.0         # (rad/frame)² (>=0; ω unobserved @ spawn)
+    confirm_M: int = 3
+    confirm_N: int = 5
+    max_misses_tentative: int = 2
+    max_coast: int = 5
+    history_len: int = 10
+
+    def __post_init__(self):
+        if self.method not in ("nn", "gnn"):
+            raise ValueError(
+                f"CartesianTrackerConfig.method must be 'nn' or 'gnn', "
+                f"got {self.method!r}")
+        for name in ("gate_threshold", "sigma_a", "sigma_r", "sigma_az",
+                     "sigma_rdot", "init_pos_var", "init_v_var", "init_psi_var"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"CartesianTrackerConfig.{name} must be > 0")
+        for name in ("sigma_yaw_accel", "init_omega_var"):
+            if getattr(self, name) < 0:
+                raise ValueError(f"CartesianTrackerConfig.{name} must be >= 0")
+        if self.confirm_M > self.confirm_N:
+            raise ValueError(
+                f"confirm_M ({self.confirm_M}) must be <= confirm_N "
+                f"({self.confirm_N})")
+        if self.confirm_M < 1 or self.confirm_N < 1:
+            raise ValueError("confirm_M and confirm_N must be >= 1")
+        for name in ("max_misses_tentative", "max_coast"):
+            if getattr(self, name) < 0:
+                raise ValueError(f"CartesianTrackerConfig.{name} must be >= 0")
+        if self.history_len < 1:
+            raise ValueError("history_len must be >= 1")

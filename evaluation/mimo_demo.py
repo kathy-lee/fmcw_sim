@@ -1,7 +1,7 @@
 """MIMO DoA + point-cloud demonstration figures (Part II / M2b).
 
 Produces two static figures:
-  report/mimo_processing_view.png  -- 3-panel: integrated RD (+CFAR) | DoA spectra
+  report/mimo_processing_frame_view.png  -- 3-panel: integrated RD (+CFAR) | DoA spectra
                                       (4 methods) | bird's-eye-view point cloud
   report/mimo_superresolution.png  -- two close coherent sources: Bartlett blurs,
                                       Capon/MUSIC/ESPRIT resolve.
@@ -34,7 +34,7 @@ def _db(p):
     return 10.0 * np.log10(p / np.max(p) + 1e-12)
 
 
-def processing_view(scenario: str, out: Path) -> None:
+def processing_frame_view(scenario: str, out: Path) -> None:
     cfg, targets = load_scenario(scenario)
     gen = FMCWBeatSignalGenerator(cfg)
     stack = gen.generate_frame_mimo(targets, frame_index=0)
@@ -132,8 +132,8 @@ def superresolution(out: Path, az_true=(-3.0, 3.0)) -> None:
 def main() -> None:
     rep = ROOT / "report" / "mimo_evaluation"
     # Two-target scene: shows the cloud collapsing to two separated objects.
-    processing_view(str(ROOT / "scenarios/scenario_mimo_2targets.json"),
-                    rep / "mimo_processing_view.png")
+    processing_frame_view(str(ROOT / "scenarios/scenario_mimo_2targets.json"),
+                    rep / "mimo_processing_frame_view.png")
     superresolution(rep / "mimo_superresolution.png")
 
 

@@ -69,6 +69,7 @@ def main():
     _bev(res["gt"], res["history"], res["assoc"],
          OUT / "mimo_tracking_turn.png",
          f"Tracking a turn (RMSE {res['rmse_m']:.2f} m)")
+    
     # multi-target crossing
     cfg2, tg2 = load_scenario(str(ROOT / "scenarios/scenario_mimo_crossing.json"))
     gen2 = FMCWBeatSignalGenerator(cfg2)

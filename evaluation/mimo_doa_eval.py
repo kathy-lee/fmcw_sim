@@ -76,6 +76,20 @@ def min_resolvable_separation(n_elem, seps_deg, snr_db=20.0, methods=METHODS,
     return out
 
 
+def resolution_vs_snr(n_elem, seps_deg, snr_list, methods=METHODS, n_trials=40,
+                      seed=0):
+    """Min resolvable separation (deg) per method at each SNR.
+    Returns (snr_list, {method: [sep|nan per snr]})."""
+    out = {m: [] for m in methods}
+    for snr in snr_list:
+        res = min_resolvable_separation(n_elem, seps_deg, snr_db=snr,
+                                        methods=methods, n_trials=n_trials,
+                                        seed=seed)
+        for m in methods:
+            out[m].append(res[m])
+    return list(snr_list), out
+
+
 def main():
     snr_list = [0, 5, 10, 15, 20, 25, 30]
     # Off-grid source (12.4°) so the grid methods show their real quantization
@@ -90,14 +104,15 @@ def main():
     out1 = ROOT / "report/mimo_evaluation/mimo_doa_accuracy.png"
     fig.tight_layout(); fig.savefig(out1, dpi=120); print("wrote", out1)
 
-    seps = [1, 2, 3, 4, 5, 6, 8, 10, 12]
-    res = min_resolvable_separation(12, seps, snr_db=20.0, n_trials=40)
+    seps = [1, 2, 3, 4, 5, 6, 8, 10, 12, 14]
+    snr_r, res = resolution_vs_snr(12, seps, [0, 5, 10, 15, 20, 25, 30],
+                                   n_trials=40)
     fig2, ax2 = plt.subplots(figsize=(7, 4.5))
-    names = list(res.keys())
-    ax2.bar(names, [res[m] for m in names])
-    ax2.set(ylabel="min resolvable separation [deg]",
-            title="Angular resolution at 20 dB (two equal sources)")
-    ax2.grid(alpha=0.3, axis="y")
+    for m in METHODS:
+        ax2.plot(snr_r, res[m], "o-", label=m)
+    ax2.set(xlabel="SNR [dB]", ylabel="min resolvable separation [deg]",
+            title="Angular resolution vs SNR (two equal sources, 12-elem ULA)")
+    ax2.grid(alpha=0.3); ax2.legend()
     out2 = ROOT / "report/mimo_evaluation/mimo_doa_resolution.png"
     fig2.tight_layout(); fig2.savefig(out2, dpi=120); print("wrote", out2)
 

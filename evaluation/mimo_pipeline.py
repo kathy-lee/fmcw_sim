@@ -41,7 +41,10 @@ def run_pipeline_mimo(radar_cfg, targets, n_frames, *, doa_method="music",
         radar_cfg = dataclasses.replace(radar_cfg, element_noise_seed=seed)
     gen = FMCWBeatSignalGenerator(radar_cfg)
     metadata = gen.metadata()
-    tracker = CartesianTracker(tracker_config or CartesianTrackerConfig())
+    # Predict timestep = frame period, so the tracker's state velocity is m/s,
+    # consistent with the m/s Doppler measurement.
+    tracker = CartesianTracker(
+        tracker_config or CartesianTrackerConfig(dt=radar_cfg.frame_period_s))
     history = []
     for fi in range(n_frames):
         frame = gen.generate_frame_mimo(targets, frame_index=fi)

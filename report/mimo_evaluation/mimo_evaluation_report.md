@@ -13,6 +13,10 @@ Extend the SISO to MIMO: 3 TX × 4 RX = 12-element λ/2 virtual ULA. The pipelin
   exponential to Gamma(V). This is handled by recalibrating the CFAR threshold α
   for the integration count.
   So we fix one CFAR default (CA, real-time) and *verify* behaviour rather than compare.
+- **TDM Doppler compensation:** sequential TX firing imprints a Doppler-dependent
+  phase across the virtual array (it would bias the angle estimate); it is removed
+  using the cell's measured Doppler bin `d` (after CFAR, before DoA):
+  `exp(-j2π(d − n_chirps/2)·i_tx/(n_chirps·n_tx))` per element, `i_tx ∈ {0, 1, …, n_tx−1}`.
 - **DoA estimation:** Bartlett / Capon / MUSIC / ESPRIT
 - **Clustering:** `peak`/`cc` are grid/image operations that do not
   apply to a scattered Cartesian point cloud; only DBSCAN remains.
@@ -146,7 +150,23 @@ objects, with a wide, forgiving sweet spot. (Caveat, from the M3 spec §7a: raw 
 velocity over-splits a single *extended* object whose Doppler varies across its angular
 extent; moot for the point targets here.)
 
-## 6. Tracking — CTRV-EKF end-to-end
+## 6. Tracking — CTRV-EKF
+
+Durin this section, the fixed front-end lens are:
+**CA-CFAR** detection and **MUSIC** DoA, feeding the CTRV-EKF (GNN association, χ²₃ gate).
+
+Note the 2-D tracker has a config `dt` (predict timestep (s)) which the previous 1-D Tracker doesn't have:
+  - 1-D Tracker works entirely in bins / bins-per-frame. Its state is [range_bin, range_rate], and — crucially — it only puts position
+  (range_bin) in the Kalman update; Doppler is smoothed separately (last_doppler_bin), never fed into the KF as a physical velocity. So
+  everything is per-frame/bin, "one frame = one step" (Δt=1) is baked in, and it never needs a real-world time value.
+  - Cartesian CTRV-EKF works in SI units (v in m/s, ω in rad/s) and feeds the m/s Doppler ṙ into the measurement update. For the
+  predict's "new position = position + velocity × time" to be consistent with an m/s velocity, the timestep must be in real seconds —
+  i.e. `dt` = frame_period. That's the field. It's exactly the bug we just fixed: without it the predict treated velocity as per-frame
+  while the measurement was per-second.
+
+  So `dt` is the price of working in physical units + using the real Doppler — which is more intuitive than the 1-D tracker's bins, but
+  requires the tracker to know the real frame period.
+
 
 ### 6.1 Maneuvering (turn) target
 
@@ -154,20 +174,37 @@ extent; moot for the point targets here.)
 
 CMD: `python -m evaluation.mimo_tracking_eval`
 
-`scenario_mimo_turn` — a `ct_xy` target turning at 0.6 rad/s — tracked end-to-end
-through the full chain. **Position RMSE = 0.21 m** with a **single stable track ID**
-through the maneuver. The track follows the curved trajectory closely after a brief
-spawn transient.
+`scenario_mimo_turn` — a `ct_xy` target turning at 0.6 rad/s, tracked over 60 frames
+end-to-end through the full chain. **Position RMSE = 0.24 m** with a **single stable
+track ID** through the maneuver; the track follows the curved trajectory closely.
 
-**Honest finding — turn rate ω is only weakly observable.** Although position tracking
-is excellent, the estimated turn rate does **not** converge to the true 0.03 rad/frame
-end-to-end: it *wanders* with the DoA noise (≈0.09 at 35 frames, 0.02 at 50, −0.19 at
-70). ω is not directly measured (its measurement-Jacobian column is zero) — it is
-inferred only from how the heading evolves, and a single target's noisy (r, θ, ṙ)
-stream constrains it weakly. The M4 unit test converges ω to within 0.025 because it
-feeds *noiseless* synthetic measurements; the gap here is precisely the azimuth-noise
-sensitivity. Pinning ω down would need lower azimuth noise, a longer stable-geometry
-arc, or multiple scatterers (extended-object tracking, a future direction).
+The full state is recovered, not just position:
+
+![turn state estimates](mimo_tracking_turn_states.png)
+
+After a **convergence transient** (~25–30 frames) the estimates **settle** onto ground
+truth and hold: speed **v → ~2.5 m/s** (after an overshoot to ~3.0), heading **ψ**
+tracks the rotating GT line (including through the ±180° wrap), and turn rate
+**ω → ~0.6 rad/s** (GT 0.6). The transient comes from the spawn seed (`ψ = bearing`,
+`v = radial velocity`, `ω = 0`) — a single Doppler can't separate speed from heading at
+birth, so the filter starts with a cross-range-blind guess and converges as the geometry
+evolves.
+
+**Two prerequisites for this to work (both learned the hard way):**
+1. **Consistent units.** The CTRV predict timestep must be the **frame period** so the
+   state velocity is in m/s, matching the m/s Doppler measurement. With the earlier
+   per-frame (`Δt = 1`) predict, the position dynamics and the Doppler measurement
+   demanded velocities a factor of `1/frame_period` apart — an irreconcilable conflict
+   that left v, ψ, ω as garbage (position still tracked, because `(r, θ)` are measured
+   directly each frame and masked it).
+2. **Process noise sized for the frame rate.** With `dt = frame_period`, the default
+   per-step process noise is far too stiff; `ω` then crawls and under-shoots. Sizing
+   `σ_a`, `σ_yaw` for the frame rate lets it converge.
+
+*Residual caveat:* ω is still the **weakest-observed** state — it isn't measured
+directly (its measurement-Jacobian column is zero), only inferred from how the heading
+evolves, so it converges last and needs the maneuver to excite it. A non-manoeuvring or
+very short track would not pin it down.
 
 *Methodology note:* the scenario uses the same CTRV kinematics as the tracker's motion
 model, so this validates "tracks a maneuver under sensor noise," **not** motion-model
@@ -191,7 +228,7 @@ through the crossing.
 | DoA accuracy | all comparable for one source; ESPRIT reaches ~0.04° at 30 dB vs ~0.4° grid floor |
 | DoA resolution | ESPRIT 3° < MUSIC 4° < Capon 5° < Bartlett 10° |
 | Clustering | velocity feature splits co-located targets; correct count over eps 0.6–1.6 m, vel_scale 1–2 |
-| Tracking | turn tracked at 0.21 m RMSE with stable ID; ω weakly observable (does not converge end-to-end) |
+| Tracking | turn tracked at 0.24 m RMSE, stable ID; full state (v, ψ, ω→0.61 vs 0.6) converges and settles after a transient |
 
 ## 8. Artifact index
 
@@ -201,7 +238,7 @@ through the crossing.
 | `mimo_detection.png` | `python -m evaluation.mimo_detection_eval` |
 | `mimo_doa_accuracy.png`, `mimo_doa_resolution.png` | `python -m evaluation.mimo_doa_eval` |
 | `mimo_clustering.png` | `python -m evaluation.mimo_clustering_eval` |
-| `mimo_tracking_turn.png`, `mimo_tracking_crossing.png` | `python -m evaluation.mimo_tracking_eval` |
+| `mimo_tracking_turn.png`, `mimo_tracking_turn_states.png`, `mimo_tracking_crossing.png` | `python -m evaluation.mimo_tracking_eval` |
 | offline runner + Cartesian scorers | `evaluation/mimo_pipeline.py` |
 | scenarios | `scenarios/scenario_mimo.json`, `scenario_mimo_2targets.json`, `scenario_mimo_crossing.json`, `scenario_mimo_turn.json` |
 | tests | `tests/test_mimo_pipeline.py`, `tests/test_ct_xy.py` |

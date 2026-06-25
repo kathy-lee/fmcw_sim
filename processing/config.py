@@ -232,6 +232,9 @@ class CartesianTrackerConfig:
     measurement [r,θ,ṙ] (Doppler always in). Δt folded as 1 frame, as in the
     radial TrackerConfig — ω is rad/frame, accel noises per-frame."""
     method: str = "gnn"                 # "nn" | "gnn"
+    dt: float = 1.0                     # predict timestep (s); set to frame_period
+    #                                     end-to-end so v is m/s (consistent with the
+    #                                     m/s Doppler measurement). 1.0 = per-step form.
     gate_threshold: float = 11.34       # χ²₃ @ 99% (3-DOF polar+Doppler)
     sigma_a: float = 1.0                # longitudinal accel process std, m/s²
     sigma_yaw_accel: float = 0.3        # yaw-accel process std, rad/s² (>=0)
@@ -253,7 +256,7 @@ class CartesianTrackerConfig:
             raise ValueError(
                 f"CartesianTrackerConfig.method must be 'nn' or 'gnn', "
                 f"got {self.method!r}")
-        for name in ("gate_threshold", "sigma_a", "sigma_r", "sigma_az",
+        for name in ("dt", "gate_threshold", "sigma_a", "sigma_r", "sigma_az",
                      "sigma_rdot", "init_pos_var", "init_v_var", "init_psi_var"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"CartesianTrackerConfig.{name} must be > 0")

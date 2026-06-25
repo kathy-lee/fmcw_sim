@@ -27,41 +27,48 @@ def wrap_to_pi(a: float) -> float:
     return np.pi - (np.pi - a) % (2.0 * np.pi)
 
 
-def ctrv_f(state: np.ndarray) -> np.ndarray:
-    """CTRV one-frame state transition (Δt = 1)."""
+def ctrv_f(state: np.ndarray, dt: float = 1.0) -> np.ndarray:
+    """CTRV state transition over a timestep `dt`.
+
+    With `dt = frame_period_s`, the state is in SI units (v in m/s, ω in rad/s),
+    consistent with the m/s Doppler measurement. `dt = 1.0` is the per-step form
+    used by the self-consistent unit tests.
+    """
     x, y, v, psi, w = state
+    wdt = w * dt
     if abs(w) < _EPS_OMEGA:
         # First-order-in-ω straight-line limit (keeps f consistent with ctrv_F's
         # analytic ω-column and avoids the v/ω singularity).
         s, c = np.sin(psi), np.cos(psi)
-        return np.array([x + v * c - 0.5 * v * w * s,
-                         y + v * s + 0.5 * v * w * c,
-                         v, wrap_to_pi(psi + w), w])
+        return np.array([x + v * c * dt - 0.5 * v * w * s * dt * dt,
+                         y + v * s * dt + 0.5 * v * w * c * dt * dt,
+                         v, wrap_to_pi(psi + wdt), w])
     s, c = np.sin(psi), np.cos(psi)
-    sw, cw = np.sin(psi + w), np.cos(psi + w)
+    sw, cw = np.sin(psi + wdt), np.cos(psi + wdt)
     return np.array([x + (v / w) * (sw - s),
                      y + (v / w) * (c - cw),
-                     v, wrap_to_pi(psi + w), w])
+                     v, wrap_to_pi(psi + wdt), w])
 
 
-def ctrv_F(state: np.ndarray) -> np.ndarray:
-    """Jacobian ∂f/∂x (5×5)."""
+def ctrv_F(state: np.ndarray, dt: float = 1.0) -> np.ndarray:
+    """Jacobian ∂f/∂x (5×5) for the `dt`-step CTRV transition."""
     x, y, v, psi, w = state
     s, c = np.sin(psi), np.cos(psi)
     F = np.eye(5)
     if abs(w) < _EPS_OMEGA:
-        F[0, 2], F[0, 3], F[0, 4] = c, -v * s, -0.5 * v * s
-        F[1, 2], F[1, 3], F[1, 4] = s, v * c, 0.5 * v * c
-        F[3, 4] = 1.0
+        F[0, 2], F[0, 3], F[0, 4] = c * dt, -v * s * dt, -0.5 * v * s * dt * dt
+        F[1, 2], F[1, 3], F[1, 4] = s * dt, v * c * dt, 0.5 * v * c * dt * dt
+        F[3, 4] = dt
         return F
-    sw, cw = np.sin(psi + w), np.cos(psi + w)
+    wdt = w * dt
+    sw, cw = np.sin(psi + wdt), np.cos(psi + wdt)
     F[0, 2] = (sw - s) / w
     F[0, 3] = (v / w) * (cw - c)
-    F[0, 4] = v * (cw * w - (sw - s)) / (w * w)
+    F[0, 4] = v * (dt * w * cw - (sw - s)) / (w * w)
     F[1, 2] = (c - cw) / w
     F[1, 3] = (v / w) * (sw - s)
-    F[1, 4] = v * (sw * w - (c - cw)) / (w * w)
-    F[3, 4] = 1.0
+    F[1, 4] = v * (dt * w * sw - (c - cw)) / (w * w)
+    F[3, 4] = dt
     return F
 
 
@@ -91,22 +98,23 @@ def cartesian_H(state: np.ndarray) -> np.ndarray:
     return H
 
 
-def ctrv_Q(state: np.ndarray, sigma_a: float, sigma_yaw: float) -> np.ndarray:
+def ctrv_Q(state: np.ndarray, sigma_a: float, sigma_yaw: float,
+           dt: float = 1.0) -> np.ndarray:
     """CTRV process noise from longitudinal-accel std σ_a and yaw-accel std
-    σ_yaw, mapped through the standard noise-input matrix G (Δt = 1)."""
+    σ_yaw, mapped through the standard noise-input matrix G over a step `dt`."""
     psi = state[3]
-    G = np.array([[0.5 * np.cos(psi), 0.0],
-                  [0.5 * np.sin(psi), 0.0],
-                  [1.0,               0.0],
-                  [0.0,               0.5],
-                  [0.0,               1.0]])
+    G = np.array([[0.5 * np.cos(psi) * dt * dt, 0.0],
+                  [0.5 * np.sin(psi) * dt * dt, 0.0],
+                  [dt,                          0.0],
+                  [0.0,                         0.5 * dt * dt],
+                  [0.0,                         dt]])
     D = np.diag([sigma_a * sigma_a, sigma_yaw * sigma_yaw])
     return G @ D @ G.T
 
 
-def ekf_predict(state, cov, Q):
-    F = ctrv_F(state)
-    return ctrv_f(state), F @ cov @ F.T + Q
+def ekf_predict(state, cov, Q, dt: float = 1.0):
+    F = ctrv_F(state, dt)
+    return ctrv_f(state, dt), F @ cov @ F.T + Q
 
 
 def _innovation(state, z):
@@ -189,8 +197,9 @@ class CartesianTracker:
 
     def step(self, objects: list) -> list:
         for t in self.tracks:
-            Q = ctrv_Q(t.state, self.cfg.sigma_a, self.cfg.sigma_yaw_accel)
-            t.state, t.cov = ekf_predict(t.state, t.cov, Q)
+            Q = ctrv_Q(t.state, self.cfg.sigma_a, self.cfg.sigma_yaw_accel,
+                       self.cfg.dt)
+            t.state, t.cov = ekf_predict(t.state, t.cov, Q, self.cfg.dt)
             t.age += 1
             t.assoc_det_idx = None
 

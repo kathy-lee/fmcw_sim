@@ -71,7 +71,7 @@ def process_mimo_frame(frame: np.ndarray, header: dict,
     # training window straddles the DC dead-zone -> deflated noise estimate ->
     # a near-DC false-alarm cluster, amplified by non-coherent integration).
     # MIMO-path only — the single-channel reports keep their bin-0 notch for
-    # byte-for-byte. See docs/superpowers/notes/2026-06-23-cfar-near-dc-mimo.md.
+    # byte-for-byte.
     mask[:, :min_range_bins] = False
     t3 = time.perf_counter()
     cloud = mimo_point_cloud(

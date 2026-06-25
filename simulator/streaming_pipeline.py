@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Streaming consumer: range-Doppler FFT -> CFAR -> cluster -> track -> view,
 with overload detection.
-
-See docs/superpowers/specs/2026-05-15-streaming-rd-pipeline-design.md.
 """
 
 from __future__ import annotations

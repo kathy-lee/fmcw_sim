@@ -13,7 +13,7 @@ def test_detect_frame_returns_centroids_mask_rddb():
     )
     cfg = RadarConfig(noise_power=1e-4)
     gen = FMCWBeatSignalGenerator(cfg)
-    t = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.005)
+    t = Target(x=4.0, vx=0.5, amplitude=0.005)
     centroids, mask, rd_db = detect_frame(gen, [t], frame_index=0,
                                           cfar_method="os")
     assert mask.dtype == bool
@@ -32,7 +32,7 @@ def test_object_metrics_point_target():
     )
     cfg = RadarConfig(noise_power=0.0, leakage_amplitude=0.0)
     gen = FMCWBeatSignalGenerator(cfg)
-    t = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.01)
+    t = Target(x=4.0, vx=0.5, amplitude=0.01)
     m = object_metrics(gen, t, target_index=0, frame_index=0,
                        cfar_method="os", cluster_method="cc")
     assert m["detected"] in (True, False)
@@ -67,8 +67,8 @@ def test_detect_frame_matches_inline_lens():
         FMCWBeatSignalGenerator, RadarConfig, Target,
     )
     cfg = RadarConfig(noise_power=1e-4, seed=99999)
-    targets = [Target(range_m=3.0, velocity_mps=0.1, amplitude=0.0012),
-               Target(range_m=6.0, velocity_mps=-0.1, amplitude=0.0008)]
+    targets = [Target(x=3.0, vx=0.1, amplitude=0.0012),
+               Target(x=6.0, vx=-0.1, amplitude=0.0008)]
     fi = 0
 
     # detect_frame on one generator; reference inline lens on a fresh
@@ -116,7 +116,7 @@ def test_measure_sigma_glint_zero_for_point():
     from evaluation.tracker_stress_extent_sweep import measure_sigma_glint
     from simulator.beat_signal_generator import RadarConfig, Target
     cfg = RadarConfig(noise_power=0.0, leakage_amplitude=0.0)
-    t = Target(range_m=4.0, velocity_mps=0.5, amplitude=0.01)
+    t = Target(x=4.0, vx=0.5, amplitude=0.01)
     sg = measure_sigma_glint(cfg, t, n_frames=8, seeds=[1])
     assert sg == pytest.approx(0.0, abs=1e-6)
 

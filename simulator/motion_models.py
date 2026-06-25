@@ -100,11 +100,87 @@ def piecewise_range(
     return range_at(pt, frame_offset, frame_period_s)
 
 
+def cv_xy_range(
+    target: "Target", frame_idx: int, frame_period_s: float
+) -> tuple[float, float]:
+    """Range and radial velocity for a target moving at constant velocity in the
+    (x, y) plane. range = |position(t)|; radial velocity is the projection of
+    (vx, vy) onto the line of sight at time t. Native Cartesian (2-D) motion —
+    use this for off-boresight / cross-range targets (MIMO)."""
+    t = frame_idx * frame_period_s
+    x_t = target.x + target.vx * t
+    y_t = target.y + target.vy * t
+    r = math.hypot(x_t, y_t)
+    if r == 0.0:
+        return 0.0, 0.0
+    v_rad = (x_t * target.vx + y_t * target.vy) / r
+    return r, v_rad
+
+
+def cv_xy_azimuth(
+    target: "Target", frame_idx: int, frame_period_s: float
+) -> float:
+    """Azimuth (rad) of a cv_xy target at frame_idx."""
+    t = frame_idx * frame_period_s
+    return math.atan2(target.y + target.vy * t, target.x + target.vx * t)
+
+
+def _ct_xy_state(target: "Target", t: float):
+    """(x, y, vx, vy) of a coordinated-turn target at time t.
+    turn_rate ω (rad/s) rotates the velocity vector; ω→0 reduces to cv_xy."""
+    w = target.motion_params.get("turn_rate", 0.0)
+    if abs(w) < 1e-9:
+        return (target.x + target.vx * t, target.y + target.vy * t,
+                target.vx, target.vy)
+    s = math.hypot(target.vx, target.vy)
+    phi0 = math.atan2(target.vy, target.vx)
+    x_t = target.x + (s / w) * (math.sin(phi0 + w * t) - math.sin(phi0))
+    y_t = target.y + (s / w) * (math.cos(phi0) - math.cos(phi0 + w * t))
+    return x_t, y_t, s * math.cos(phi0 + w * t), s * math.sin(phi0 + w * t)
+
+
+def ct_xy_range(
+    target: "Target", frame_idx: int, frame_period_s: float
+) -> tuple[float, float]:
+    """Range and radial velocity for a coordinated-turn (constant turn rate +
+    speed) planar target. range = |position(t)|; radial velocity is (vx,vy)
+    projected onto the line of sight at time t."""
+    t = frame_idx * frame_period_s
+    x_t, y_t, vx_t, vy_t = _ct_xy_state(target, t)
+    r = math.hypot(x_t, y_t)
+    if r == 0.0:
+        return 0.0, 0.0
+    return r, (x_t * vx_t + y_t * vy_t) / r
+
+
+def ct_xy_azimuth(
+    target: "Target", frame_idx: int, frame_period_s: float
+) -> float:
+    """Azimuth (rad) of a ct_xy target at frame_idx."""
+    x_t, y_t, _, _ = _ct_xy_state(target, frame_idx * frame_period_s)
+    return math.atan2(y_t, x_t)
+
+
 _MOTION_DISPATCH = {
     "constant_velocity": constant_velocity_range,
     "drag": drag_range,
     "piecewise": piecewise_range,
+    "cv_xy": cv_xy_range,
+    "ct_xy": ct_xy_range,
 }
+
+
+def azimuth_at(
+    target: "Target", frame_idx: int, frame_period_s: float
+) -> float:
+    """Frame-start azimuth (rad). cv_xy/ct_xy evolve with the planar motion; the
+    radial models keep the target's (static) initial azimuth — 0 for on-axis
+    legacy targets, so single-channel generation is unaffected."""
+    if target.motion_model == "cv_xy":
+        return cv_xy_azimuth(target, frame_idx, frame_period_s)
+    if target.motion_model == "ct_xy":
+        return ct_xy_azimuth(target, frame_idx, frame_period_s)
+    return target.azimuth_rad
 
 
 def range_at(

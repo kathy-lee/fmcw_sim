@@ -7,9 +7,9 @@ attributable.
 
 | # | Report | Stage under test | Serves as baseline for |
 |---|---|---|---|
-| 1 | [Detection Performance Test](detection_performance_test_report.md) | CFAR + clustering | steady point-target Pd/Pfa curves |
-| 2 | [Tracker Stress Test](tracker_stress_test_report.md) | Tracker (association, M-of-N, coasting, KF/EKF/IMM) | track survival & association on steady targets |
-| 3 | [Target Realism Test](target_realism_test_report.md) | Target models (generator) → effects across the whole chain | — |
+| 1 | [Detection Performance Test](detection_evaluation/detection_performance_test_report.md) | CFAR + clustering | steady point-target Pd/Pfa curves |
+| 2 | [Tracker Stress Test](tracker_stress/tracker_stress_test_report.md) | Tracker (association, M-of-N, coasting, KF/EKF/IMM) | track survival & association on steady targets |
+| 3 | [Target Realism Test](target_realism/target_realism_test_report.md) | Target models (generator) → effects across the whole chain | — |
 
 ## Shared conventions
 

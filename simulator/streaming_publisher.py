@@ -10,6 +10,7 @@ from dataclasses import asdict
 
 import zmq
 from simulator.beat_signal_generator import FMCWBeatSignalGenerator, default_scenario, load_scenario
+from simulator.wire import build_header, frame_payload
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,23 +51,26 @@ def main() -> None:
 
     try:
         while args.frames == 0 or frame_id < args.frames:
-            frame = gen.generate_frame(targets, frame_index=frame_id)
+            # Multi-element array -> 3-D (n_virtual, n_chirps, n_range) stack;
+            # single channel -> the unchanged 2-D frame.
+            if gen.n_virtual > 1:
+                frame = gen.generate_frame_mimo(targets, frame_index=frame_id)
+            else:
+                frame = gen.generate_frame(targets, frame_index=frame_id)
 
-            header = {
-                "frame_id": frame_id,
-                "timestamp_unix_s": time.time(),
-                "topic": args.topic,
-                "dtype": "complex64",
-                "shape": list(frame.shape),
-                "order": "C",
-                "metadata": gen.metadata(),
-                "ground_truth": gen.ground_truth(targets, frame_index=frame_id),
-            }
+            header = build_header(
+                frame=frame,
+                frame_id=frame_id,
+                topic=args.topic,
+                metadata=gen.metadata(),
+                ground_truth=gen.ground_truth(targets, frame_index=frame_id),
+                timestamp_unix_s=time.time(),
+            )
 
             sock.send_multipart([
                 args.topic.encode("utf-8"),
                 json.dumps(header).encode("utf-8"),
-                frame.ravel(order="C").tobytes(),
+                frame_payload(frame),
             ])
 
             if frame_id % max(1, int(round(1.0 / cfg.frame_period_s))) == 0:

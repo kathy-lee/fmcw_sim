@@ -588,7 +588,7 @@ def test_run_pipeline_fluctuation_seed_is_deterministic():
     from simulator.beat_signal_generator import RadarConfig, Target
 
     cfg = RadarConfig(noise_power=1e-4, frame_period_s=0.05)
-    targets = [Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0009,
+    targets = [Target(x=4.0, vx=0.5, amplitude=0.0009,
                       fluctuation={"model": "swerling1"})]
     h1 = run_pipeline(cfg, targets, 10, seed=3, fluctuation_seed=42)
     h2 = run_pipeline(cfg, targets, 10, seed=3, fluctuation_seed=42)
@@ -648,7 +648,7 @@ def test_run_pipeline_range_meas_var_override_is_deterministic():
     from evaluation.tracker_stress import run_pipeline
     from simulator.beat_signal_generator import RadarConfig, Target
     cfg = RadarConfig(noise_power=1e-4, frame_period_s=0.05)
-    targets = [Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0009,
+    targets = [Target(x=4.0, vx=0.5, amplitude=0.0009,
                       extent={"n_scatterers": 10, "range_extent_m": 0.6})]
     h1 = run_pipeline(cfg, targets, 8, seed=3, range_meas_var=5.0)
     h2 = run_pipeline(cfg, targets, 8, seed=3, range_meas_var=5.0)
@@ -663,7 +663,7 @@ def test_run_pipeline_cluster_method_param():
     from evaluation.tracker_stress import run_pipeline
     from simulator.beat_signal_generator import RadarConfig, Target
     cfg = RadarConfig(noise_power=1e-4, frame_period_s=0.05)
-    targets = [Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0009,
+    targets = [Target(x=4.0, vx=0.5, amplitude=0.0009,
                       extent={"n_scatterers": 10, "range_extent_m": 0.6})]
     h_default = run_pipeline(cfg, targets, 6, seed=3)
     h_db = run_pipeline(cfg, targets, 6, seed=3, cluster_method="dbscan",

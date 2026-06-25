@@ -14,9 +14,10 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict, field
 from typing import Any
 import json
+import math
 import numpy as np
 
-from simulator.motion_models import range_at
+from simulator.motion_models import range_at, azimuth_at
 from simulator.fluctuation_models import amplitude_factors, validate_fluctuation
 from simulator.extended_target import make_scatterers
 
@@ -25,8 +26,13 @@ C = 299_792_458.0
 
 @dataclass
 class Target:
-    range_m: float
-    velocity_mps: float
+    # Cartesian world frame (boresight = +x). Radial range / velocity / azimuth
+    # are DERIVED (read-only properties below), so motion_models and
+    # generate_frame keep their radial interface unchanged for on-axis targets.
+    x: float
+    y: float = 0.0
+    vx: float = 0.0
+    vy: float = 0.0
     amplitude: float = 1.0
     phase_rad: float = 0.0
     motion_model: str = "constant_velocity"
@@ -39,6 +45,29 @@ class Target:
     # extent), e.g. {"n_scatterers": 10, "range_extent_m": 0.6}. None = point
     # target (K=1). Spatial; orthogonal to the temporal `fluctuation` knob.
     extent: dict | None = None
+
+    @property
+    def range_m(self) -> float:
+        # y == 0 fast path is EXACT: avoids sqrt(x*x) != x by 1 ULP, which would
+        # shift the beat phase and break byte-for-byte for migrated scenarios.
+        if self.y == 0.0:
+            return abs(self.x)
+        return math.hypot(self.x, self.y)
+
+    @property
+    def velocity_mps(self) -> float:
+        # Radial velocity d(range)/dt. On-axis: sign(x)*vx (== vx after migration,
+        # where x > 0); off-axis: projection of (vx, vy) onto the range direction.
+        if self.y == 0.0:
+            # d|x|/dt = sign(x)*vx — preserve vx's OWN sign (copysign(1,x)*vx),
+            # not copysign(vx,x) which would discard it. x>0 after migration -> vx.
+            return math.copysign(1.0, self.x) * self.vx
+        r = math.hypot(self.x, self.y)
+        return (self.x * self.vx + self.y * self.vy) / r
+
+    @property
+    def azimuth_rad(self) -> float:
+        return math.atan2(self.y, self.x)
 
 
 @dataclass
@@ -124,6 +153,26 @@ class RadarConfig:
     # fluctuation stream (`fluctuation_seed`). Scatterers are drawn once per
     # target from default_rng([extent_seed, target_index]). 555 by design.
     extent_seed: int = 555
+    # MIMO array. n_tx = n_rx = 1 is the single-channel default:
+    # every MIMO field is inert and generate_frame is byte-for-byte unchanged.
+    # n_tx * n_rx = number of virtual array elements; mimo_scheme selects the
+    # waveform (TDM for now, DDM/CDM are future values behind the same interface).
+    n_tx: int = 1
+    n_rx: int = 1
+    mimo_scheme: str = "tdm"
+    # RX element spacing in wavelengths (default lambda/2). The TDM virtual array
+    # is a contiguous ULA: TX spacing = n_rx * rx_spacing_wl, so virtual element
+    # e = (tx i, rx j) sits at (i*n_rx + j)*rx_spacing_wl = e*rx_spacing_wl.
+    # Azimuth-only for now; a 2-D layout for elevation extends this later.
+    rx_spacing_wl: float = 0.5
+    # Seed for the per-virtual-element thermal-noise stream used by
+    # generate_frame_mimo: a FIFTH RNG stream, independent of noise (`seed`),
+    # CFAR (0), fluctuation, and extent. Unlike the legacy call-ordered
+    # generate_frame noise, the MIMO noise is FRAME-ADDRESSED — drawn from
+    # default_rng([element_noise_seed, frame_index, element_index]) — so it is a
+    # pure function of (frame, element), reproducible regardless of call order
+    # (option C; the legacy generate_frame path is left untouched). 33333 by design.
+    element_noise_seed: int = 33333
     # Optional clutter regions; empty by default (existing behavior unchanged).
     clutter: list = field(default_factory=list)   # list[ClutterRegion]
 
@@ -188,6 +237,33 @@ class FMCWBeatSignalGenerator:
             fd = np.fft.fftshift(fd)
         return self.lambda_m * fd / 2.0
 
+    @property
+    def n_virtual(self) -> int:
+        return self.cfg.n_tx * self.cfg.n_rx
+
+    @property
+    def max_unambiguous_velocity_mps_mimo(self) -> float:
+        """Max unambiguous velocity under TDM. Each TX is sampled every
+        n_tx * chirp_period_s, so the unambiguous velocity is the single-channel
+        value divided by n_tx (the modelled TDM cost)."""
+        fd_max = 1.0 / (2.0 * self.cfg.n_tx * self.cfg.chirp_period_s)
+        return self.lambda_m * fd_max / 2.0
+
+    def virtual_element_positions(self) -> np.ndarray:
+        """Virtual-array element positions in wavelengths (contiguous ULA).
+
+        Element e = (tx i, rx j) with e = i*n_rx + j sits at e*rx_spacing_wl.
+        """
+        return np.arange(self.n_virtual, dtype=np.float64) * self.cfg.rx_spacing_wl
+
+    def steering_vector(self, azimuth_rad: float) -> np.ndarray:
+        """Array steering vector for a source at `azimuth_rad` (shape (n_virtual,)).
+
+        Phase across element e: 2*pi * pos_e * sin(azimuth); boresight (0) -> ones.
+        """
+        pos = self.virtual_element_positions()
+        return np.exp(1j * 2.0 * np.pi * pos * np.sin(azimuth_rad))
+
     def frame_start_time_s(self, frame_index: int) -> float:
         if self.cfg.frame_period_s is not None:
             return frame_index * self.cfg.frame_period_s
@@ -236,6 +312,61 @@ class FMCWBeatSignalGenerator:
             self._extent_scatterers[target_index] = cached
         return cached
 
+    def _accumulate_target(self, x, target, target_index, frame_index,
+                           m_eff, t_fast, frame_start, element_pos_wl=0.0) -> None:
+        """Add one target's beat-signal contribution into `x` (in place).
+
+        Shared per-target physics for generate_frame (single channel,
+        element_pos_wl=0) and generate_frame_mimo (one call per virtual element).
+        `m_eff` is the
+        effective slow-time chirp index — for a single channel it is the chirp
+        array `m`; for TDM virtual element (tx i, rx j) it is `m*n_tx + i`, so
+        range and Doppler both advance over the element's actual transmit times.
+        element_pos_wl is the virtual element's position expressed in units of wavelengths (λ), not metres. `element_pos_wl` injects the array steering phase (0 -> factor 1, the
+        single-channel case). Stop-and-hop: velocity constant within a frame;
+        extended targets (extent) sum K range-offset scatterers, point = K=1.
+        """
+        cfg = self.cfg
+        r_at_frame_start, v_at_frame_start = range_at(
+            target, frame_index, cfg.frame_period_s,
+        )
+        range_m = r_at_frame_start + v_at_frame_start * m_eff * cfg.chirp_period_s
+        range_m = np.maximum(range_m, 0.0)
+
+        t_slow = frame_start + m_eff * cfg.chirp_period_s
+        fb_hz = 2.0 * self.slope_hz_per_s * range_m / C
+        fd_hz = 2.0 * v_at_frame_start / self.lambda_m
+
+        phase = 2.0 * np.pi * (
+            fb_hz * t_fast +
+            fd_hz * t_slow
+        ) + target.phase_rad
+
+        # Array steering phase for this element (scalar). Uses the FRAME-EVOLVED
+        # azimuth (cv_xy targets rotate; radial targets keep their static
+        # azimuth). element_pos_wl == 0 (single channel) -> exp(0) == 1, so
+        # generate_frame is unchanged regardless of azimuth.
+        azimuth = azimuth_at(target, frame_index, cfg.frame_period_s)
+        steering = np.exp(
+            1j * 2.0 * np.pi * element_pos_wl * np.sin(azimuth))
+
+        fluct = self.fluctuation_factor(target_index, target, frame_index)
+        scatterers = self._scatterers_for(target_index, target)
+        if scatterers is None:
+            amp = target.amplitude * fluct
+            x += (amp * np.exp(1j * phase)) * steering
+        else:
+            delta_r, amps = scatterers
+            for dr_i, a_i in zip(delta_r, amps):
+                # Each scatterer is offset in range; its beat phase shifts
+                # by the offset's contribution. range_m here is the array
+                # of per-chirp ranges for the target centre.
+                fb_i = 2.0 * self.slope_hz_per_s * (range_m + dr_i) / C
+                phase_i = 2.0 * np.pi * (
+                    fb_i * t_fast + fd_hz * t_slow
+                ) + target.phase_rad
+                x += ((fluct * a_i) * np.exp(1j * phase_i)) * steering
+
     def generate_frame(self, targets: list[Target], frame_index: int = 0) -> np.ndarray:
         """
         Returns a complex64 frame with shape [n_chirps, n_range].
@@ -253,51 +384,13 @@ class FMCWBeatSignalGenerator:
         n = np.arange(cfg.n_range, dtype=np.float64)[None, :]
 
         t_fast = n / self.fs_hz
-        t_slow = self.frame_start_time_s(frame_index) + m * cfg.chirp_period_s
+        frame_start = self.frame_start_time_s(frame_index)
 
         x = np.zeros((cfg.n_chirps, cfg.n_range), dtype=np.complex128)
 
         for target_index, target in enumerate(targets):
-            # Per-frame position/velocity from the target's motion model.
-            # Stop-and-hop approximation: velocity is constant within one
-            # frame (frames are ~3.2ms long, intra-frame drag/maneuver
-            # change is negligible), so range advances linearly across
-            # chirps within the frame using v_at_frame_start.
-            r_at_frame_start, v_at_frame_start = range_at(
-                target, frame_index, cfg.frame_period_s,
-            )
-            range_m = r_at_frame_start + v_at_frame_start * m * cfg.chirp_period_s
-            range_m = np.maximum(range_m, 0.0)
-
-            fb_hz = 2.0 * self.slope_hz_per_s * range_m / C
-            fd_hz = 2.0 * v_at_frame_start / self.lambda_m
-
-            phase = 2.0 * np.pi * (
-                fb_hz * t_fast +
-                fd_hz * t_slow
-            ) + target.phase_rad
-
-            # Original point-target accumulation (kept for reference; the
-            # branch below generalises it to K scatterers, point = K=1):
-            #   amp = target.amplitude * self.fluctuation_factor(
-            #       target_index, target, frame_index)
-            #   x += amp * np.exp(1j * phase)
-            fluct = self.fluctuation_factor(target_index, target, frame_index)
-            scatterers = self._scatterers_for(target_index, target)
-            if scatterers is None:
-                amp = target.amplitude * fluct
-                x += amp * np.exp(1j * phase)
-            else:
-                delta_r, amps = scatterers
-                for dr_i, a_i in zip(delta_r, amps):
-                    # Each scatterer is offset in range; its beat phase shifts
-                    # by the offset's contribution. range_m here is the array
-                    # of per-chirp ranges for the target centre.
-                    fb_i = 2.0 * self.slope_hz_per_s * (range_m + dr_i) / C
-                    phase_i = 2.0 * np.pi * (
-                        fb_i * t_fast + fd_hz * t_slow
-                    ) + target.phase_rad
-                    x += (fluct * a_i) * np.exp(1j * phase_i)
+            self._accumulate_target(
+                x, target, target_index, frame_index, m, t_fast, frame_start)
 
         if cfg.leakage_amplitude != 0.0:
             x += cfg.leakage_amplitude
@@ -316,6 +409,57 @@ class FMCWBeatSignalGenerator:
             x += noise
 
         return x.astype(np.complex64)
+
+    def generate_frame_mimo(self, targets: list[Target],
+                            frame_index: int = 0) -> np.ndarray:
+        """Complex64 MIMO stack, shape (n_virtual, n_chirps, n_range), where
+        n_virtual = n_tx * n_rx.
+
+        TDM: virtual element e = (tx i, rx j), with e = i*n_rx + j, transmits its
+        m-th chirp at effective slow-time index `m*n_tx + i`, so range and Doppler
+        advance over the element's actual transmit times — this produces the
+        inter-TX Doppler coupling that the angle stage later compensates. Each
+        element also carries the array steering phase for the target's azimuth
+        (via `_accumulate_target`'s element_pos_wl). For a single channel
+        (n_tx = n_rx = 1) the [0] slice equals generate_frame's signal exactly.
+
+        Thermal noise is FRAME-ADDRESSED per element (option C): each element's
+        noise is drawn from default_rng([element_noise_seed, frame_index, e]), a
+        pure function of (frame, element) — reproducible regardless of call order,
+        unlike the legacy generate_frame stream. Clutter is not applied in the
+        MIMO path yet.
+        """
+        cfg = self.cfg
+        n_virtual = self.n_virtual
+        m = np.arange(cfg.n_chirps, dtype=np.float64)[:, None]
+        n = np.arange(cfg.n_range, dtype=np.float64)[None, :]
+        t_fast = n / self.fs_hz
+        frame_start = self.frame_start_time_s(frame_index)
+        pos = self.virtual_element_positions()
+
+        stack = np.zeros(
+            (n_virtual, cfg.n_chirps, cfg.n_range), dtype=np.complex128)
+        for e in range(n_virtual):
+            i_tx = e // cfg.n_rx
+            m_eff = m * cfg.n_tx + i_tx     # TDM effective chirp index for this TX
+            x_e = stack[e]
+            for target_index, target in enumerate(targets):
+                self._accumulate_target(
+                    x_e, target, target_index, frame_index,
+                    m_eff, t_fast, frame_start, pos[e])
+            if cfg.leakage_amplitude != 0.0:
+                x_e += cfg.leakage_amplitude
+            if cfg.noise_power > 0.0:
+                # Frame-addressed (pure) per-element noise: keyed by (seed,
+                # frame_index, element), independent of generator call order.
+                rng_e = np.random.default_rng(
+                    [cfg.element_noise_seed, frame_index, e])
+                sigma = np.sqrt(cfg.noise_power / 2.0)
+                x_e += sigma * (
+                    rng_e.standard_normal(x_e.shape) +
+                    1j * rng_e.standard_normal(x_e.shape)
+                )
+        return stack.astype(np.complex64)
 
     def _generate_clutter_beat_signal(self, region: ClutterRegion) -> np.ndarray:
         """Synthesize the beat-signal contribution for one clutter region.
@@ -414,9 +558,16 @@ class FMCWBeatSignalGenerator:
                 fb_half = 2.0 * self.slope_hz_per_s * (0.5 * range_extent_m) / C
                 range_half_width_bins = fb_half / range_bin_spacing_hz
 
+            # Frame-evolved azimuth (degrees) — the true angle the MIMO steering
+            # encodes; 0 for on-axis (single-channel) targets. Additive field,
+            # so existing radial consumers are unaffected.
+            azimuth_deg = np.degrees(
+                azimuth_at(target, frame_index, cfg.frame_period_s))
+
             out.append({
                 "range_m": float(r),
                 "velocity_mps": float(v_start),
+                "azimuth_deg": float(azimuth_deg),
                 "amplitude": float(target.amplitude),
                 "beat_frequency_hz": float(fb),
                 "doppler_frequency_hz": float(fd),
@@ -440,6 +591,21 @@ class FMCWBeatSignalGenerator:
         }
 
 
+def _target_from_dict(item: dict) -> Target:
+    """Build a Target, mapping legacy radial keys to on-axis Cartesian.
+
+    Native Cartesian scenarios (with "x") pass through. Legacy radial scenarios
+    (with "range_m"/"velocity_mps") map to the boresight: x = range_m, vx =
+    velocity_mps, y = vy = 0 — which the derived properties reproduce bit-for-bit.
+    """
+    if "x" in item:
+        return Target(**item)
+    item = dict(item)
+    range_m = item.pop("range_m")
+    velocity_mps = item.pop("velocity_mps", 0.0)
+    return Target(x=float(range_m), y=0.0, vx=float(velocity_mps), vy=0.0, **item)
+
+
 def load_scenario(path: str) -> tuple[RadarConfig, list[Target]]:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -450,7 +616,7 @@ def load_scenario(path: str) -> tuple[RadarConfig, list[Target]]:
 
     cfg = RadarConfig(**radar)
     cfg.clutter = [ClutterRegion(**item) for item in clutter_raw]
-    targets = [Target(**item) for item in targets_raw]
+    targets = [_target_from_dict(item) for item in targets_raw]
     return cfg, targets
 
 
@@ -468,7 +634,7 @@ def default_scenario() -> tuple[RadarConfig, list[Target]]:
         seed=0,
     )
     targets = [
-        Target(range_m=3.0, velocity_mps=5.0, amplitude=1.0),
-        Target(range_m=6.0, velocity_mps=-3.0, amplitude=0.6),
+        Target(x=3.0, vx=5.0, amplitude=1.0),
+        Target(x=6.0, vx=-3.0, amplitude=0.6),
     ]
     return cfg, targets

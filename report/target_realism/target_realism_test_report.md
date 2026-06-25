@@ -304,7 +304,7 @@ branch); only the Swerling row is a new run:
 
 CMD: `python -m evaluation.tracker_stress --scenario scenarios/scenario_missed_detections_swerling.json --algorithm kf`
 
-![Published steady baseline (report 2 §3.1.1)](tracker_stress_missed_detections.png)
+![Published steady baseline (report 2 §3.1.1)](../tracker_stress/tracker_stress_missed_detections.png)
 ![Swerling-1, frame_corr 0.9, same mean power](tracker_stress_missed_detections_swerling.png)
 
 | Variant | Pd | Distinct IDs | Coast | Switches | Classification |

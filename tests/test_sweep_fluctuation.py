@@ -18,7 +18,7 @@ def test_run_one_point_advance_frame_index_tracks_moving_target():
 
     radar_cfg, base_targets = load_scenario(
         "scenarios/scenario_two_targets.json")
-    targets = [dataclasses.replace(base_targets[0], velocity_mps=1.0)]
+    targets = [dataclasses.replace(base_targets[0], vx=1.0)]
     pd_moving, _ = run_one_point(radar_cfg, targets, "os", 10,
                                  advance_frame_index=True)
     assert pd_moving[0] > 0.9
@@ -44,7 +44,7 @@ def test_zero_velocity_cancellation_is_clutter_removal_not_dc_removal():
 
     radar_cfg, base_targets = load_scenario(
         "scenarios/scenario_two_targets.json")
-    targets = [dataclasses.replace(base_targets[0], velocity_mps=0.0)]
+    targets = [dataclasses.replace(base_targets[0], vx=0.0)]
 
     # Through the actual pipeline (clutter_removal=False): detected.
     pd_zero, _ = run_one_point(radar_cfg, targets, "os", 10,
@@ -94,7 +94,7 @@ def test_fluctuation_sweep_smoke():
 def test_targets_with_corr_steady_strips_fluctuation():
     from evaluation.tracker_stress_swerling_sweep import targets_with_corr
     from simulator.beat_signal_generator import Target
-    base = [Target(range_m=4.0, velocity_mps=0.5, amplitude=0.0009,
+    base = [Target(x=4.0, vx=0.5, amplitude=0.0009,
                    fluctuation={"model": "swerling1", "frame_corr": 0.9})]
     steady = targets_with_corr(base, None)
     assert steady[0].fluctuation is None

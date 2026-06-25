@@ -1,0 +1,28 @@
+{
+  "_comment": "MIMO turn scenario: one ct_xy target turning off boresight. Radar block copied from scenario_mimo.json; amplitude 0.05 is strong at noise_power 0.0001. turn_rate 0.6 rad/s x 0.05 s/frame = 0.03 rad/frame; over ~35 frames ~1 rad of turn.",
+  "radar": {
+    "fc_hz": 77000000000.0,
+    "bandwidth_hz": 2000000000.0,
+    "ramp_duration_s": 0.00004,
+    "chirp_period_s": 0.00005,
+    "n_range": 256,
+    "n_chirps": 64,
+    "noise_power": 0.0001,
+    "frame_period_s": 0.05,
+    "n_tx": 3,
+    "n_rx": 4,
+    "mimo_scheme": "tdm",
+    "rx_spacing_wl": 0.5
+  },
+  "targets": [
+    {
+      "x": 8.0,
+      "y": 1.5,
+      "vx": 0.0,
+      "vy": 2.5,
+      "amplitude": 0.05,
+      "motion_model": "ct_xy",
+      "motion_params": {"turn_rate": 0.6}
+    }
+  ]
+}

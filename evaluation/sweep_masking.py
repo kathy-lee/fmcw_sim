@@ -125,9 +125,9 @@ def run_sweep(
     for method in methods:
         for sep in separations_m:
             targets = [
-                Target(range_m=MASKER_RANGE_M, velocity_mps=0.0,
+                Target(x=MASKER_RANGE_M, vx=0.0,
                        amplitude=MASKER_AMPLITUDE),
-                Target(range_m=MASKER_RANGE_M + sep, velocity_mps=0.0,
+                Target(x=MASKER_RANGE_M + sep, vx=0.0,
                        amplitude=WEAK_AMPLITUDE),
             ]
             pd_cen, pd_cel, fa = run_one_point(

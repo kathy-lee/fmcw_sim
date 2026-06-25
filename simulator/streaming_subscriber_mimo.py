@@ -105,7 +105,8 @@ def _draw(axes, out: dict, header: dict, doa_method: str, tracks: list) -> None:
         ax1.axvline(az, color="purple", ls=":")
     for gt in header.get("ground_truth", []):
         ax1.axvline(gt.get("azimuth_deg", 0.0), color="k", ls="--", lw=1)
-    ax1.set(xlabel="azimuth [deg]", ylabel="dB", title="DoA spectra", xlim=(-90, 90))
+    ax1.set(xlabel="azimuth [deg]", ylabel="dB", title="DoA spectra (brightest cell)",
+            xlim=(-90, 90))
     ax1.legend(fontsize=7)
 
     cloud = out["cloud"]

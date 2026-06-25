@@ -1,4 +1,4 @@
-"""Detection facet (M5): object Pd vs SNR, single-channel vs V-channel (NCI gain)."""
+"""Detection facet: object Pd vs SNR, single-channel vs V-channel (NCI gain)."""
 from __future__ import annotations
 
 import dataclasses

@@ -1,4 +1,4 @@
-"""Tracking facet (M5): end-to-end CTRV-EKF tracking evaluation.
+"""Tracking facet: end-to-end CTRV-EKF tracking evaluation.
 
 One generic core — `track_scenario` runs the MIMO pipeline + CartesianTracker on
 any scenario and returns per-target metrics. Presentation is chosen by target
@@ -80,7 +80,7 @@ def _per_target_metrics(gt, history, assoc):
 
 def run_turn_eval(cfg, targets, n_frames=30):
     """Single-target turn study (thin wrapper over track_scenario; adds the
-    turn-specific final-ω readout). Kept for the M5 turn test."""
+    turn-specific final-ω readout). Kept for the turn test."""
     res = track_scenario(cfg, targets, n_frames)
     omega = float("nan")
     tid = res["assoc"][-1][1].get(0)

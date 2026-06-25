@@ -1,4 +1,4 @@
-"""M2 (M2a/M2b): integration, TDM compensation, end-to-end, point cloud."""
+"""NCI integration, TDM compensation, end-to-end, point cloud."""
 import numpy as np
 import pytest
 
@@ -52,8 +52,6 @@ def test_doa_on_mimo_stack_matches_ground_truth_azimuth(method):
     gt_az = gen.ground_truth(targets, frame_index=0)[0]["azimuth_deg"]
     assert abs(est - gt_az) < 2.0
 
-
-# --- M2b: point cloud ---
 
 def test_to_point_cloud_places_point_at_range_azimuth():
     velocity_axis = np.linspace(-5.0, 5.0, 64)

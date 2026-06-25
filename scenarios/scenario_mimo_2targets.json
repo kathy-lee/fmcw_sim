@@ -1,5 +1,5 @@
 {
-  "_comment": "MIMO 2-D, two SPATIALLY SEPARATED targets (Part II / M3). Native Cartesian, 3 TX x 4 RX TDM array. Target A near 14 deg / 8.2 m, target B near -21.8 deg / 5.4 m, both moving (cv_xy). Exercises point-cloud clustering SEPARATION: DBSCAN must yield two objects. Seeds the M5 angular-resolution / masking study.",
+  "_comment": "MIMO 2-D, two SPATIALLY SEPARATED targets. Native Cartesian, 3 TX x 4 RX TDM array. Target A near 14 deg / 8.2 m, target B near -21.8 deg / 5.4 m, both moving (cv_xy). Exercises point-cloud clustering SEPARATION: DBSCAN must yield two objects. Seeds the angular-resolution / masking study.",
   "radar": {
     "fc_hz": 77000000000.0,
     "bandwidth_hz": 2000000000.0,

@@ -212,8 +212,6 @@ def test_tracker_handles_target_crossing_behind():
     assert len([t for t in last if t.status == "confirmed"]) == 1
 
 
-# ---- Phase M4b: turn validation ----
-
 def _ctrv_truth_objects(x0, y0, v0, psi0, omega, n):
     """Ground-truth turning trajectory rolled out with the CTRV model itself,
     emitted as ClusterObjects with the exact radial velocity."""

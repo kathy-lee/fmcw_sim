@@ -1,4 +1,4 @@
-"""CFAR threshold under MIMO non-coherent integration (M2 follow-up).
+"""CFAR threshold under MIMO non-coherent integration.
 
 After NCI of V channels the per-cell noise is Gamma(V), not exponential, so the
 threshold multiplier alpha must be re-calibrated (not scaled). These tests verify

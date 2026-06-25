@@ -153,17 +153,17 @@ class RadarConfig:
     # fluctuation stream (`fluctuation_seed`). Scatterers are drawn once per
     # target from default_rng([extent_seed, target_index]). 555 by design.
     extent_seed: int = 555
-    # MIMO array (Part II / M1). n_tx = n_rx = 1 is the single-channel default:
+    # MIMO array. n_tx = n_rx = 1 is the single-channel default:
     # every MIMO field is inert and generate_frame is byte-for-byte unchanged.
     # n_tx * n_rx = number of virtual array elements; mimo_scheme selects the
-    # waveform (TDM for M1, DDM/CDM are future values behind the same interface).
+    # waveform (TDM for now, DDM/CDM are future values behind the same interface).
     n_tx: int = 1
     n_rx: int = 1
     mimo_scheme: str = "tdm"
     # RX element spacing in wavelengths (default lambda/2). The TDM virtual array
     # is a contiguous ULA: TX spacing = n_rx * rx_spacing_wl, so virtual element
     # e = (tx i, rx j) sits at (i*n_rx + j)*rx_spacing_wl = e*rx_spacing_wl.
-    # Azimuth-only for M1; a 2-D layout for elevation extends this later.
+    # Azimuth-only for now; a 2-D layout for elevation extends this later.
     rx_spacing_wl: float = 0.5
     # Seed for the per-virtual-element thermal-noise stream used by
     # generate_frame_mimo: a FIFTH RNG stream, independent of noise (`seed`),
@@ -418,7 +418,7 @@ class FMCWBeatSignalGenerator:
         TDM: virtual element e = (tx i, rx j), with e = i*n_rx + j, transmits its
         m-th chirp at effective slow-time index `m*n_tx + i`, so range and Doppler
         advance over the element's actual transmit times — this produces the
-        inter-TX Doppler coupling that the M2 angle stage later compensates. Each
+        inter-TX Doppler coupling that the angle stage later compensates. Each
         element also carries the array steering phase for the target's azimuth
         (via `_accumulate_target`'s element_pos_wl). For a single channel
         (n_tx = n_rx = 1) the [0] slice equals generate_frame's signal exactly.

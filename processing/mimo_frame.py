@@ -27,7 +27,7 @@ _CFAR_KW = dict(guard=(2, 4), training=(4, 8), pfa=1e-4)
 
 
 def frame_params(header: dict) -> dict:
-    """Derive the array/axis parameters needed by the M2 pipeline from a header."""
+    """Derive the array/axis parameters needed by the pipeline from a header."""
     cfg = header["metadata"]["config"]
     der = header["metadata"]["derived"]
     n_tx, n_rx = int(cfg["n_tx"]), int(cfg["n_rx"])

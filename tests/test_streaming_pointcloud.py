@@ -1,4 +1,4 @@
-"""M2c: live point-cloud subscriber — smoke tests for the processing core.
+"""Live point-cloud subscriber — smoke tests for the processing core.
 
 The live matplotlib loop is validated by running it against the publisher; here we
 test the per-frame processing (process_mimo_frame / frame_params) headlessly.

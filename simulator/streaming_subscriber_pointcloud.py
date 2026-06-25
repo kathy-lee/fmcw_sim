@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Live MIMO point-cloud subscriber (Part II / M2c).
+"""Live MIMO point-cloud subscriber.
 
 Consumes the MIMO beat-signal frames streamed by streaming_publisher.py and runs
-the M2 detect-then-angle pipeline per frame (per-channel range-Doppler -> non-
+the detect-then-angle pipeline per frame (per-channel range-Doppler -> non-
 coherent integration -> CFAR -> DoA at detected cells -> Cartesian point cloud),
 live-updating a 3-panel view: integrated RD + CFAR | DoA spectra (4 methods) | BEV
 point cloud. The dynamic analogue of streaming_subscriber_RD.py.
@@ -12,8 +12,6 @@ streaming_pipeline.py: per-stage timing (range-Doppler -> point cloud for now;
 clustering/tracking can be added later) against two deadlines -- the stream cadence
 (frame_period_s) and the TDM acquisition time (n_tx * n_chirps * chirp_period_s).
 
-First production user of wire.deserialize_frame. No tracker (that is the M6 full
-real-time pipeline, which extends this).
 
 Usage:  python3 -m simulator.streaming_subscriber_pointcloud [--doa music]
 """

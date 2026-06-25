@@ -1,9 +1,8 @@
-"""Offline end-to-end MIMO pipeline + Cartesian scorers (M5).
+"""Offline end-to-end MIMO pipeline + Cartesian scorers.
 
 run_pipeline_mimo reuses the single-sourced per-frame core process_mimo_frame
 (simulator.streaming_subscriber_pointcloud) and adds the CartesianTracker. This
-is the offline (no-ZMQ) analogue of tracker_stress.run_pipeline; the real-time
-streaming version is M6.
+is the offline (no-ZMQ) analogue of tracker_stress.run_pipeline.
 """
 from __future__ import annotations
 

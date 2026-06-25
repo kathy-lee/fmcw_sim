@@ -1,4 +1,4 @@
-"""DoA facet (M5): azimuth accuracy vs SNR and angular resolution (4 methods).
+"""DoA facet: azimuth accuracy vs SNR and angular resolution (4 methods).
 
 Uses controlled synthetic array snapshots (the standard DoA benchmark — isolates
 angle estimation from detection), reusing processing/doa.py on a lambda/2 ULA.

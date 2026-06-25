@@ -1,4 +1,4 @@
-"""Byte-for-byte guard for the Phase A (M1) Cartesian-primary refactor.
+"""Byte-for-byte guard for the Cartesian-primary refactor.
 
 Loads the reference frames captured (on the pre-refactor radial code) by
 tests/golden/capture_goldens.py and asserts generate_frame still produces

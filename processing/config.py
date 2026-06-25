@@ -228,7 +228,7 @@ class IMMConfig:
 
 @dataclass
 class CartesianTrackerConfig:
-    """Config for the Cartesian CTRV-EKF tracker (M4). State [x,y,v,ψ,ω];
+    """Config for the Cartesian CTRV-EKF tracker. State [x,y,v,ψ,ω];
     measurement [r,θ,ṙ] (Doppler always in). Δt folded as 1 frame, as in the
     radial TrackerConfig — ω is rad/frame, accel noises per-frame."""
     method: str = "gnn"                 # "nn" | "gnn"

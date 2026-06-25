@@ -1,8 +1,8 @@
-"""Phase B (M1): MIMO generation — RadarConfig fields, steering, TDM.
+"""MIMO generation — RadarConfig fields, steering, TDM.
 
-B1 here covers only the config surface; defaults must leave the single-channel
+here covers only the config surface; defaults must leave the single-channel
 path (n_tx = n_rx = 1) byte-for-byte unchanged (guarded by
-tests/test_byte_for_byte_m1a.py).
+tests/test_generate_frame_byte_identical.py).
 """
 import numpy as np
 
@@ -23,7 +23,7 @@ def test_radarconfig_mimo_configurable():
     assert cfg.n_tx * cfg.n_rx == 12      # virtual array size V
 
 
-# --- B3: virtual array + steering ---
+# --- virtual array + steering ---
 
 def test_virtual_element_positions_contiguous_ula():
     # 3 TX x 4 RX, rx spacing lambda/2 -> contiguous 12-element lambda/2 ULA at
@@ -52,7 +52,7 @@ def test_steering_vector_boresight_is_all_ones():
     np.testing.assert_allclose(sv, np.ones(12, dtype=complex))
 
 
-# --- B4: generate_frame_mimo (TDM + steering) ---
+# --- generate_frame_mimo (TDM + steering) ---
 
 from simulator.beat_signal_generator import Target
 
@@ -101,7 +101,7 @@ def test_max_unambiguous_velocity_mimo_divides_by_n_tx():
                       gen.max_unambiguous_velocity_mps / 3.0)
 
 
-# --- B5: frame-addressed per-element noise (option C) ---
+# --- frame-addressed per-element noise (option C) ---
 
 def test_mimo_noise_is_frame_addressed_pure():
     # Unlike legacy generate_frame (call-ordered self.rng), the MIMO noise is a
@@ -141,7 +141,7 @@ def test_mimo_noise_variance_matches_noise_power():
     assert np.isclose(np.mean(np.abs(stack) ** 2), 1e-4, rtol=0.05)
 
 
-# --- B6: cv_xy 2-D motion + off-boresight scenario ---
+# --- cv_xy 2-D motion + off-boresight scenario ---
 
 import math
 

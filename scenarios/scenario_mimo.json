@@ -1,5 +1,5 @@
 {
-  "_comment": "MIMO 2-D scenario (Part II / M1). Native Cartesian: one target off boresight moving in the (x, y) plane (cv_xy), observed by a 3 TX x 4 RX TDM array (12-element lambda/2 virtual ULA). Off-boresight position plus cross-range motion exercises the angle/steering path (the azimuth evolves frame to frame) for the M2 angle stage. Convention: legacy 1-D scenarios stay radial (range_m/velocity_mps); 2-D/MIMO scenarios like this one are native Cartesian (x/y/vx/vy + motion_model cv_xy).",
+  "_comment": "MIMO 2-D scenario. Native Cartesian: one target off boresight moving in the (x, y) plane (cv_xy), observed by a 3 TX x 4 RX TDM array (12-element lambda/2 virtual ULA). Off-boresight position plus cross-range motion exercises the angle/steering path (the azimuth evolves frame to frame) for the angle stage. Convention: legacy 1-D scenarios stay radial (range_m/velocity_mps); 2-D/MIMO scenarios like this one are native Cartesian (x/y/vx/vy + motion_model cv_xy).",
   "radar": {
     "fc_hz": 77000000000.0,
     "bandwidth_hz": 2000000000.0,

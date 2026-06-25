@@ -1,10 +1,10 @@
-"""One-shot generator for the byte-for-byte reference data (Phase A, M1).
+"""One-shot generator for the byte-for-byte reference data.
 
 NOT a pytest test — the filename has no `test_` prefix, so pytest does not collect
 or run it. Run it ONCE by hand on the pre-refactor (radial) code, then commit the
 produced tests/golden/*.npy. They pin generate_frame's exact output so the
 Cartesian-primary reparametrization can be proven byte-for-byte identical for
-on-axis (migrated) scenarios. Consumed by tests/test_byte_for_byte_m1a.py.
+on-axis (migrated) scenarios. Consumed by tests/test_generate_frame_byte_identical.py.
 
 Usage (from anywhere):  python3 -m tests.golden.capture_goldens
 """

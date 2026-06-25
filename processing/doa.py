@@ -1,4 +1,4 @@
-"""Direction-of-arrival (DoA) estimators for a ULA (Part II / M2).
+"""Direction-of-arrival (DoA) estimators for a ULA.
 
 Pure NumPy; no generator dependency — callers pass the virtual-element positions
 in wavelengths (e.g. FMCWBeatSignalGenerator.virtual_element_positions()). One

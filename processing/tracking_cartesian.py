@@ -1,4 +1,4 @@
-"""Cartesian world-frame tracker (M4): a CTRV-EKF with Doppler.
+"""Cartesian world-frame tracker: a CTRV-EKF with Doppler.
 
 State  x = [x, y, v, ψ, ω]   (m, m, m/s, rad, rad/frame)
 Meas   z = [r, θ, ṙ]         (m, rad, m/s)  -- Doppler always included.

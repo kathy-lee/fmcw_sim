@@ -1,4 +1,4 @@
-"""Phase A (M1): Cartesian-primary Target with derived radial properties."""
+"""Cartesian-primary Target with derived radial properties."""
 import math
 
 from simulator.beat_signal_generator import Target

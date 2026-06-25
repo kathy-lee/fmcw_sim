@@ -1,4 +1,4 @@
-"""Clustering facet (M5): DBSCAN eps / vel_scale object-count study."""
+"""Clustering facet: DBSCAN eps / vel_scale object-count study."""
 from __future__ import annotations
 
 import sys

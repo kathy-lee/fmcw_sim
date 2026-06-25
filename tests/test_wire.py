@@ -1,4 +1,4 @@
-"""Phase C (M1): single-sourced wire protocol (header schema + (de)serialize)."""
+"""Single-sourced wire protocol (header schema + (de)serialize)."""
 import numpy as np
 
 from simulator.wire import build_header, deserialize_frame, frame_payload

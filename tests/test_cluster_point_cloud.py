@@ -1,4 +1,4 @@
-"""M3 (M3a): Cartesian point-cloud clustering (DBSCAN on x, y, v_radial)."""
+"""Cartesian point-cloud clustering (DBSCAN on x, y, v_radial)."""
 import numpy as np
 
 from processing.clustering import ClusterObject, cluster_point_cloud

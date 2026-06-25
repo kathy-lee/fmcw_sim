@@ -1,8 +1,8 @@
-"""MIMO point-cloud stage (Part II / M2).
+"""MIMO point-cloud stage.
 
 Non-coherent integration of the per-channel range-Doppler stack (here), and
 Cartesian conversion of detected (range, Doppler, azimuth) cells into a point
-cloud (added in M2b). Pure NumPy; no generator dependency.
+cloud. Pure NumPy; no generator dependency.
 """
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ def mimo_point_cloud(rd_stack: np.ndarray, mask: np.ndarray, pos_wl: np.ndarray,
     """Detect-then-angle point cloud: for each True cell in `mask`, TDM-compensate
     the per-channel snapshot, estimate azimuth(s), and convert to Cartesian.
 
-    No clustering (that is M3, in Cartesian) — one point per (cell, azimuth peak).
+    No clustering — one point per (cell, azimuth peak).
     Returns (M, 4) [x, y, v_radial, snr_db].
     """
     n_chirps = rd_stack.shape[1]

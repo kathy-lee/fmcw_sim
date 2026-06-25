@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""Live MIMO point-cloud subscriber.
+"""Live MIMO point-cloud + tracking subscriber.
 
 Consumes the MIMO beat-signal frames streamed by streaming_publisher.py and runs
-the detect-then-angle pipeline per frame (per-channel range-Doppler -> non-
-coherent integration -> CFAR -> DoA at detected cells -> Cartesian point cloud),
-live-updating a 3-panel view: integrated RD + CFAR | DoA spectra (4 methods) | BEV
-point cloud. The dynamic analogue of streaming_subscriber_RD.py.
+the full detect-then-angle-then-track pipeline per frame (per-channel range-
+Doppler -> non-coherent integration -> CFAR -> DoA at detected cells -> Cartesian
+point cloud -> DBSCAN clustering -> CTRV-EKF CartesianTracker), live-updating a
+3-panel view: integrated RD + CFAR | DoA spectra (4 methods) | BEV point cloud
+with confirmed tracks (id-labelled, with trails).
 
 It also reports whether real-time processing is achieved, like
-streaming_pipeline.py: per-stage timing (range-Doppler -> point cloud for now;
-clustering/tracking can be added later) against two deadlines -- the stream cadence
-(frame_period_s) and the TDM acquisition time (n_tx * n_chirps * chirp_period_s).
+streaming_subscriber.py: per-stage timing (range-Doppler -> tracking) against two
+deadlines -- the stream cadence (frame_period_s) and the TDM acquisition time
+(n_tx * n_chirps * chirp_period_s).
 
 
-Usage:  python3 -m simulator.streaming_subscriber_pointcloud [--doa music]
+Usage:  python3 -m simulator.streaming_subscriber_mimo [--doa music]
 """
 from __future__ import annotations
 
@@ -25,9 +26,10 @@ import numpy as np
 
 from processing.cfar import cfar_2d
 from processing.doa import estimate_doa, spectrum
-from processing.mimo_frame import _CFAR_KW, frame_params, process_mimo_frame
+from processing.mimo_frame import _CFAR_KW, process_mimo_frame
 from processing.point_cloud import tdm_doppler_compensation
-from simulator.streaming_pipeline import compute_lag, detect_gap
+from processing.tracking_cartesian import CartesianTracker, CartesianTrackerConfig
+from simulator.streaming_subscriber import detect_gap
 from simulator.wire import deserialize_frame
 
 _SPECTRAL = ["bartlett", "capon", "music"]
@@ -57,11 +59,12 @@ def deadlines(header: dict) -> tuple[float, float]:
 def format_summary(frame_idx: int, stage_means_ms: tuple, total_ms: float,
                    period_ms: float, acq_ms: float, over_stream: int,
                    over_realtime: int, window: int, drops: int) -> str:
-    """One-line real-time summary (range-Doppler -> clustered objects)."""
-    rd, integ, cfar, doa, clust = stage_means_ms
+    """One-line real-time summary (range-Doppler -> tracks)."""
+    rd, integ, cfar, doa, clust, track = stage_means_ms
     realtime = "yes" if over_realtime == 0 else "NO"
     return (f"[frame {frame_idx}] rd={rd:.1f} integ={integ:.1f} cfar={cfar:.1f} "
-            f"doa+pc={doa:.1f} cluster={clust:.1f} total={total_ms:.1f} (mean ms) | "
+            f"doa+pc={doa:.1f} cluster={clust:.1f} track={track:.1f} "
+            f"total={total_ms:.1f} (mean ms) | "
             f"period={period_ms:.1f} acq={acq_ms:.1f} ms | "
             f"over_stream={over_stream}/{window} "
             f"over_realtime={over_realtime}/{window} drops={drops} "
@@ -78,7 +81,7 @@ def _prewarm_cfar(header: dict, cfar_method: str = "ca") -> None:
             **_CFAR_KW)
 
 
-def _draw(axes, out: dict, header: dict, doa_method: str) -> None:
+def _draw(axes, out: dict, header: dict, doa_method: str, tracks: list) -> None:
     import matplotlib.pyplot as plt  # local: only needed for the live view
     ax0, ax1, ax2 = axes
     for a in axes:
@@ -113,11 +116,25 @@ def _draw(axes, out: dict, header: dict, doa_method: str) -> None:
                     edgecolors="C1", s=90, linewidths=2.0, label="object")
         ax2.add_patch(plt.Circle((obj.x, obj.y), max(obj.extent_m, 0.2),
                                  fill=False, color="C1", ls=":", lw=0.8))
+    n_confirmed = 0
+    for tr in tracks:
+        if tr.status != "confirmed":
+            continue
+        n_confirmed += 1
+        x, y = float(tr.state[0]), float(tr.state[1])
+        if tr.history is not None and len(tr.history) > 1:
+            hx = [p[0] for p in tr.history]
+            hy = [p[1] for p in tr.history]
+            ax2.plot(hx, hy, "-", color="C3", lw=1.2, alpha=0.7)
+        ax2.scatter([x], [y], marker="s", c="C3", s=45, zorder=5)
+        ax2.annotate(f"T{tr.id}", (x, y), textcoords="offset points",
+                     xytext=(6, 6), fontsize=8, color="C3")
     for gt in header.get("ground_truth", []):
         rng, az = gt["range_m"], np.deg2rad(gt.get("azimuth_deg", 0.0))
         ax2.scatter([rng * np.cos(az)], [rng * np.sin(az)], marker="x", c="k", s=60)
     ax2.set(xlabel="x [m]", ylabel="y [m]",
-            title=f"BEV: {len(out.get('objects', []))} objects ({doa_method})")
+            title=f"BEV: {len(out.get('objects', []))} objects, "
+                  f"{n_confirmed} tracks ({doa_method})")
     ax2.axis("equal")
     plt.pause(0.001)
 
@@ -137,14 +154,15 @@ def main() -> None:
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
 
     W = args.stats_window
-    # columns: rd, integ, cfar, doa+pc, cluster, total
-    stage_times = np.zeros((W, 6), dtype=np.float64)
+    # columns: rd, integ, cfar, doa+pc, cluster, track, total
+    stage_times = np.zeros((W, 7), dtype=np.float64)
     idx = 0
     drops = 0
     over_stream = over_realtime = 0
     last_frame_id = None
     stream_dl = acq_dl = 0.0
     calibrated = False
+    tracker = None
 
     try:
         while args.max_frames == 0 or idx < args.max_frames:
@@ -161,6 +179,9 @@ def main() -> None:
                 stream_dl, acq_dl = deadlines(header)
                 print(f"Calibrating CFAR ({args.cfar}, one-time)...", flush=True)
                 _prewarm_cfar(header, args.cfar)
+                # Predict timestep = frame period, so the tracker's state
+                # velocity is m/s, consistent with the m/s Doppler measurement.
+                tracker = CartesianTracker(CartesianTrackerConfig(dt=stream_dl))
                 calibrated = True
 
             fid = int(header["frame_id"])
@@ -170,20 +191,24 @@ def main() -> None:
             frame = deserialize_frame(header, payload)
             out = process_mimo_frame(frame, header, doa_method=args.doa,
                                      cfar_method=args.cfar)
-            _draw(axes, out, header, args.doa)
+            t_track0 = time.perf_counter()
+            tracks = tracker.step(out["objects"])
+            track_s = time.perf_counter() - t_track0
+            _draw(axes, out, header, args.doa, tracks)
 
             t = out["timings"]
+            total_s = t["total"] + track_s
             stage_times[idx % W] = (t["rd"], t["integrate"], t["cfar"],
-                                    t["doa_pc"], t["cluster"], t["total"])
-            if t["total"] > stream_dl:
+                                    t["doa_pc"], t["cluster"], track_s, total_s)
+            if total_s > stream_dl:
                 over_stream += 1
-            if t["total"] > acq_dl:
+            if total_s > acq_dl:
                 over_realtime += 1
             idx += 1
 
             if idx % W == 0:
-                means_ms = tuple(stage_times[:, k].mean() * 1e3 for k in range(5))
-                total_ms = stage_times[:, 5].mean() * 1e3
+                means_ms = tuple(stage_times[:, k].mean() * 1e3 for k in range(6))
+                total_ms = stage_times[:, 6].mean() * 1e3
                 print(format_summary(
                     idx, means_ms, total_ms, stream_dl * 1e3, acq_dl * 1e3,
                     over_stream, over_realtime, W, drops))

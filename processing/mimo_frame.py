@@ -21,8 +21,7 @@ from processing.range_doppler import range_doppler
 
 C = 299_792_458.0
 # CFAR window params (method chosen per call). Default method is "ca"
-# (cell-averaging) — fast and vectorized, like streaming_pipeline.py, which is
-# what keeps the live viewer real-time; "os" is more robust but ~30x slower.
+# (cell-averaging) — fast and vectorized
 _CFAR_KW = dict(guard=(2, 4), training=(4, 8), pfa=1e-4)
 
 

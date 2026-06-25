@@ -3,7 +3,7 @@ matplotlib.use("Agg")
 
 import pytest
 
-from simulator.streaming_pipeline import detect_gap, compute_lag, format_summary
+from simulator.streaming_subscriber import detect_gap, compute_lag, format_summary
 
 
 def test_detect_gap_returns_zero_for_first_frame():
@@ -92,7 +92,7 @@ def test_format_summary_signs_negative_lag():
 # --- init_view tests ---
 
 from processing.config import CfarConfig
-from simulator.streaming_pipeline import init_view
+from simulator.streaming_subscriber import init_view
 
 
 C_EM = 299_792_458.0

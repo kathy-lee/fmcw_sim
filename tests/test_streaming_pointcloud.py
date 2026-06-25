@@ -6,7 +6,7 @@ test the per-frame processing (process_mimo_frame / frame_params) headlessly.
 import numpy as np
 
 from simulator.beat_signal_generator import FMCWBeatSignalGenerator, load_scenario
-from simulator.streaming_subscriber_pointcloud import (
+from simulator.streaming_subscriber_mimo_pointcloud import (
     deadlines, format_summary, frame_params, process_mimo_frame)
 from simulator.wire import build_header
 

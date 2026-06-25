@@ -30,7 +30,7 @@ run_case() {
     local pub_log="$sub_dir/pub.log"
 
     echo "=== [$label] starting subscriber (flag: ${extra_flag:-<none>}) ==="
-    MPLBACKEND=Agg uv run python -m simulator.streaming_pipeline \
+    MPLBACKEND=Agg uv run python -m simulator.streaming_subscriber \
         --max-frames "$N_FRAMES_SUB" \
         --save-dir "$sub_dir" \
         --stats-window 100 \

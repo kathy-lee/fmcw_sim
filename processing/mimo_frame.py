@@ -5,7 +5,8 @@ non-coherent integration -> CFAR (NCI-recalibrated) -> min-range gate -> DoA
 point cloud -> Cartesian clustering. Lives here (neutral) rather than in a
 subscriber/eval module so all three consumers — the live subscriber
 (streaming_subscriber_pointcloud), the offline runner (evaluation.mimo_pipeline),
-and the figure demo (evaluation.mimo_demo) — share one implementation.
+and the single-frame view (evaluation.mimo_single_frame_view) — share one
+implementation.
 """
 from __future__ import annotations
 

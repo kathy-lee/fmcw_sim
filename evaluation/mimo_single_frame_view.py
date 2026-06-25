@@ -1,12 +1,11 @@
-"""MIMO DoA + point-cloud demonstration figures (Part II / M2b).
+"""MIMO single-frame processing view (qualitative orientation figure).
 
-Produces two static figures:
-  report/mimo_processing_frame_view.png  -- 3-panel: integrated RD (+CFAR) | DoA spectra
-                                      (4 methods) | bird's-eye-view point cloud
-  report/mimo_superresolution.png  -- two close coherent sources: Bartlett blurs,
-                                      Capon/MUSIC/ESPRIT resolve.
+Produces one static 3-panel figure of the detect-then-angle chain on a SINGLE
+frame (no tracking — that is multi-frame, see the §6 tracking figures):
+  report/mimo_processing_frame_view.png
+    integrated RD (+CFAR) | DoA spectra (4 methods) | bird's-eye-view point cloud.
 
-Usage:  python3 -m evaluation.mimo_demo
+Usage:  python3 -m evaluation.mimo_single_frame_view
 """
 from __future__ import annotations
 
@@ -105,36 +104,11 @@ def processing_frame_view(scenario: str, out: Path) -> None:
     print("wrote", out)
 
 
-def superresolution(out: Path, az_true=(-3.0, 3.0)) -> None:
-    pos = 0.5 * np.arange(12)
-    az = np.deg2rad(np.array(az_true))
-    A = np.exp(1j * 2 * np.pi * np.outer(pos, np.sin(az)))
-    x = A @ np.ones(len(az_true))                      # two coherent sources
-    fig, ax = plt.subplots(figsize=(7, 4.5))
-    for m in SPECTRAL:
-        g, p = spectrum(x, pos, m, n_sources=2)
-        ax.plot(g, _db(p), label=m)
-    for a in estimate_doa(x, pos, method="esprit", n_sources=2):
-        ax.axvline(a, color="purple", ls=":", label="esprit")
-    for a in az_true:
-        ax.axvline(a, color="k", ls="--", lw=1, label="GT")
-    ax.set(xlabel="azimuth [deg]", ylabel="norm. power [dB]", xlim=(-30, 30),
-           title=f"Two coherent sources {az_true[0]}/{az_true[1]} deg: "
-                 f"Bartlett blurs, super-res resolves")
-    h, l = ax.get_legend_handles_labels()
-    ax.legend(dict(zip(l, h)).values(), dict(zip(l, h)).keys(), fontsize=8)
-    fig.tight_layout()
-    fig.savefig(out, dpi=120)
-    plt.close(fig)
-    print("wrote", out)
-
-
 def main() -> None:
     rep = ROOT / "report" / "mimo_evaluation"
     # Two-target scene: shows the cloud collapsing to two separated objects.
     processing_frame_view(str(ROOT / "scenarios/scenario_mimo_2targets.json"),
-                    rep / "mimo_processing_frame_view.png")
-    superresolution(rep / "mimo_superresolution.png")
+                          rep / "mimo_processing_frame_view.png")
 
 
 if __name__ == "__main__":

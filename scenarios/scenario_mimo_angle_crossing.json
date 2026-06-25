@@ -1,0 +1,21 @@
+{
+  "_comment": "MIMO azimuth crossing (M5, §6.2) — two OFF-boresight targets crossing in the x-y plane. A: (3,-2) moving (vx=1,vy=1); B: (7,2) moving (vx=-1,vy=-1). They meet at (5,0) around frame 40 (t=2s at 20 Hz), so their BEARINGS cross (A: -34deg -> +16deg through 0; B: +16deg -> -34deg through 0) and so do their y-coordinates — a genuine 2-D crossing, unlike scenario_mimo_crossing (boresight, collapses to y=0). The 2-D positions require the DoA/angle stage (the MIMO point). At the meeting point they share (x,y) but have OPPOSITE radial velocity (+1 vs -1 m/s), so they fall in different Doppler cells and stay resolvable with n_sources=1 (no unresolved merge). Tests the 2-D tracker's multi-target ID continuity through an angular crossing.",
+  "radar": {
+    "fc_hz": 77000000000.0,
+    "bandwidth_hz": 2000000000.0,
+    "ramp_duration_s": 0.00004,
+    "chirp_period_s": 0.00005,
+    "n_range": 256,
+    "n_chirps": 64,
+    "noise_power": 0.0001,
+    "frame_period_s": 0.05,
+    "n_tx": 3,
+    "n_rx": 4,
+    "mimo_scheme": "tdm",
+    "rx_spacing_wl": 0.5
+  },
+  "targets": [
+    {"x": 3.0, "y": -2.0, "vx": 1.0, "vy": 1.0, "amplitude": 0.05, "motion_model": "cv_xy"},
+    {"x": 7.0, "y": 2.0, "vx": -1.0, "vy": -1.0, "amplitude": 0.05, "motion_model": "cv_xy"}
+  ]
+}

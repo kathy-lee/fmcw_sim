@@ -99,3 +99,15 @@ def test_tracking_eval_turn_tracks_with_stable_id():
     res = run_turn_eval(cfg, targets, n_frames=30)
     assert res["rmse_m"] < 1.5                          # tracked through the turn
     assert res["n_track_ids"] <= 2                      # stable lock (<=1 re-acquire)
+
+
+def test_track_scenario_angle_crossing_no_id_swap():
+    # Two off-boresight targets cross in azimuth at (5,0) near frame 40. Each must
+    # keep a single track ID through the crossing (no swap) and track closely.
+    from evaluation.mimo_tracking_eval import track_scenario
+    cfg, targets = load_scenario("scenarios/scenario_mimo_angle_crossing.json")
+    res = track_scenario(cfg, targets, n_frames=60)
+    assert len(res["per_gt"]) == 2                       # both targets tracked
+    for m in res["per_gt"].values():
+        assert m["n_track_ids"] == 1                     # one ID each -> no swap
+        assert m["rmse_m"] < 0.3                         # tracked closely

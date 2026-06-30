@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import numpy as np
 
+from processing.fixed_point import quantize_stage
+
 
 def range_doppler(
     frame: np.ndarray,
     window: str = "hann",
     dc_removal: bool = True,
     clutter_removal: bool = True,
+    fp=None,
 ) -> np.ndarray:
     """Compute the 2D range-Doppler map from a complex beat-signal frame.
 
@@ -41,6 +44,8 @@ def range_doppler(
         x = x * np.hanning(n_range)[None, :]
 
     rfft = np.fft.fft(x, axis=1)[:, : n_range // 2]
+    if fp is not None:                                    # Q_cube (radar-cube word)
+        rfft = quantize_stage(rfft, fp.cube_bits, fp, fp.cube_full_scale)
 
     if clutter_removal:
         rfft = rfft - rfft.mean(axis=0, keepdims=True)
@@ -48,4 +53,7 @@ def range_doppler(
     if window == "hann":
         rfft = rfft * np.hanning(n_chirps)[:, None]
 
-    return np.fft.fftshift(np.fft.fft(rfft, axis=0), axes=0)
+    out = np.fft.fftshift(np.fft.fft(rfft, axis=0), axes=0)
+    if fp is not None:                                    # Q_rd
+        out = quantize_stage(out, fp.rd_bits, fp, fp.rd_full_scale)
+    return out

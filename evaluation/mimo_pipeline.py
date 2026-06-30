@@ -30,7 +30,7 @@ def _snapshot(t):
 
 def run_pipeline_mimo(radar_cfg, targets, n_frames, *, doa_method="music",
                       cfar_method="ca", eps_m=0.8, vel_scale=1.0, min_samples=2,
-                      tracker_config=None, seed=None):
+                      tracker_config=None, seed=None, fp=None):
     """generate_frame_mimo -> process_mimo_frame -> CartesianTracker.step per
     frame. Returns list[(frame_idx, [CartesianTrackSnapshot, ...])].
 
@@ -52,7 +52,8 @@ def run_pipeline_mimo(radar_cfg, targets, n_frames, *, doa_method="music",
                               timestamp_unix_s=0.0)
         out = process_mimo_frame(frame, header, doa_method=doa_method,
                                  cfar_method=cfar_method, eps_m=eps_m,
-                                 vel_scale=vel_scale, min_samples=min_samples)
+                                 vel_scale=vel_scale, min_samples=min_samples,
+                                 fp=fp)
         tracks = tracker.step(out["objects"])
         history.append((fi, [_snapshot(t) for t in tracks]))
     return history

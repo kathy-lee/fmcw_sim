@@ -16,6 +16,7 @@ import numpy as np
 
 from processing.cfar import cfar_2d
 from processing.clustering import cluster_point_cloud
+from processing.fixed_point import quantize
 from processing.point_cloud import integrate, mimo_point_cloud
 from processing.range_doppler import range_doppler
 
@@ -48,7 +49,7 @@ def process_mimo_frame(frame: np.ndarray, header: dict,
                        doa_method: str = "music", n_sources: int = 1,
                        cfar_method: str = "ca", eps_m: float = 0.8,
                        vel_scale: float = 1.0, min_samples: int = 2,
-                       min_range_bins: int = 6) -> dict:
+                       min_range_bins: int = 6, fp=None) -> dict:
     """Run the pipeline on one MIMO frame (testable core).
 
     Returns the stage outputs (incl. the raw `cloud` and clustered `objects`)
@@ -57,9 +58,12 @@ def process_mimo_frame(frame: np.ndarray, header: dict,
     """
     p = frame_params(header)
     t0 = time.perf_counter()
-    rd = np.stack([range_doppler(frame[v]) for v in range(frame.shape[0])])
+    if fp is not None:                       # Q_adc (digitizer; always fixed scale)
+        frame = quantize(frame, fp.adc_bits, fp.adc_full_scale, is_complex=True,
+                         rounding=fp.rounding, overflow=fp.overflow)
+    rd = np.stack([range_doppler(frame[v], fp=fp) for v in range(frame.shape[0])])
     t1 = time.perf_counter()
-    power = integrate(rd)
+    power = integrate(rd, fp=fp)
     power_db = 10.0 * np.log10(power + 1e-12)
     t2 = time.perf_counter()
     # n_integrate = n_virtual: α is recalibrated for the non-coherently

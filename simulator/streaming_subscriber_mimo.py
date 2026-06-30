@@ -45,7 +45,29 @@ def parse_args() -> argparse.Namespace:
                    help="CFAR method: ca (fast, real-time) or os (robust, slow)")
     p.add_argument("--stats-window", type=int, default=20,
                    help="frames between real-time summary prints")
+    p.add_argument("--fixed-point", nargs="?", const="", default=None, metavar="SPEC",
+                   help="enable fixed-point front end; optional SPEC overrides bit "
+                        "widths, e.g. --fixed-point adc=6,cube=10 "
+                        "(keys: adc,cube,rd,mag,acc,fs)")
     return p.parse_args()
+
+
+def build_fixed_point(spec):
+    """Build a FixedPointConfig from a compact 'key=val,...' spec, or None.
+
+    spec is None -> float path; "" -> defaults; "adc=6,cube=10" -> overrides.
+    Keys: adc, cube, rd, mag, acc (bits) and fs (adc_full_scale)."""
+    if spec is None:
+        return None
+    from processing.config import FixedPointConfig
+    keymap = {"adc": "adc_bits", "cube": "cube_bits", "rd": "rd_bits",
+              "mag": "mag_bits", "acc": "acc_bits", "fs": "adc_full_scale"}
+    kw = {}
+    for tok in filter(None, (t.strip() for t in spec.split(","))):
+        k, _, v = tok.partition("=")
+        field = keymap[k.strip()]
+        kw[field] = float(v) if field == "adc_full_scale" else int(v)
+    return FixedPointConfig(**kw)
 
 
 def deadlines(header: dict) -> tuple[float, float]:
@@ -145,6 +167,12 @@ def main() -> None:
     import matplotlib.pyplot as plt
     import zmq
 
+    fp = build_fixed_point(args.fixed_point)
+    if fp is not None:
+        print(f"Fixed-point front end: adc={fp.adc_bits} cube={fp.cube_bits} "
+              f"rd={fp.rd_bits} mag={fp.mag_bits} acc={fp.acc_bits} "
+              f"adc_full_scale={fp.adc_full_scale}")
+
     ctx = zmq.Context.instance()
     sock = ctx.socket(zmq.SUB)
     sock.connect(args.connect)
@@ -191,7 +219,7 @@ def main() -> None:
 
             frame = deserialize_frame(header, payload)
             out = process_mimo_frame(frame, header, doa_method=args.doa,
-                                     cfar_method=args.cfar)
+                                     cfar_method=args.cfar, fp=fp)
             t_track0 = time.perf_counter()
             tracks = tracker.step(out["objects"])
             track_s = time.perf_counter() - t_track0

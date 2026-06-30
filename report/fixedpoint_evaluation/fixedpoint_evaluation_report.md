@@ -66,17 +66,31 @@ generate_frame_mimo            ← ideal "analog" truth, UNCHANGED (no fp here)
 | `mag_bits` | per-channel power `abs(rd_v)²` | magnitude word |
 | `acc_bits` | NCI accumulator | 32–40-bit accumulator |
 
-The ADC uses a **fixed** full-scale (so saturation of the strong return is a
-studied effect); the internal stages default to **per-frame block scaling**
+The ADC uses a **fixed** full-scale, sized to contain the strong return (an
+over-range input would clip, but here the strong return sits at full-scale and
+does not — so saturation is a checked guard, not a triggered effect); the internal
+stages default to **per-frame block scaling**
 (a block-floating-point exponent at frame granularity, applied at the boundary).
 CFAR consumes the quantized integer power map and emits a boolean mask, so it is
 fixed-point at its input boundary but not quantized internally (no knob).
+
+Fixed-point has two failure modes, split here by boundary. **Overflow** at the
+MSB (Most Significant Bit) end is bounded by construction — the ADC's fixed
+full-scale, per-stage block scaling, and the accumulator's bit-growth headroom
+(§3) — so it never triggers in this scene. What remains free to vary is
+**quantization / underflow** at the LSB (Least Significant Bit) end, the weak
+target dropping below the LSB, which is what the §3 sweeps study.
 
 ## 3. Per-stage evaluation
 
 **Goal.** Determine each swept stage's *knee* — the fewest bits at which the
 front end still matches the float pipeline — and identify which metric binds each
-stage. Each stage is swept across a bit range while the others are held wide
+stage. Four of the five boundaries are swept (`adc`, `cube`, `rd`, `mag`); the
+NCI accumulator (`acc`) is held wide and not swept. An accumulator that
+sums `K` magnitude terms needs `mag_bits + ceil(log2(K))` bits to hold the sum
+without losing the LSBs the `mag` stage already paid for, so its width is a
+derived headroom requirement rather than an independent precision knob with its
+own knee. Each swept stage is run across a bit range while the others are held wide
 (≈float), so every curve isolates that one stage's cost; statistics are
 Monte-Carlo over `element_noise_seed`. The dashed line in each figure is the
 float-golden value, the plateau a stage should approach as bits increase. All four
@@ -89,7 +103,7 @@ CMD: `python -m evaluation.fixedpoint_sweep`
 **Pd is the binding metric.** Pd is the weak-target detection rate on the
 dynamic-range scene, gated per frame at the moving target's cell. The **ADC** stage
 shows a clean Pd knee — its fixed full-scale means too few bits push the weak target
-below the LSB (Least Significant Bit). The block-scaled internal stages behave differently from one another:
+below the LSB. The block-scaled internal stages behave differently from one another:
 `rd` recovers by ~10 bits, while `cube` and `mag` carry their own binding limits: The cube Pd curve is non-monotonic (8 bits scores worse than 6), and the mag Pd curve recovers only at ~20 bits — double every other stage. Each is a clue to a binding constraint the plots don't directly measure, will discuss in §3.1 and §3.2.
 
 ![False-alarm rate vs bits, per stage](fixedpoint_pfa_vs_bits.png)
@@ -169,15 +183,21 @@ right measure, not the peak-spur ratio.
 
 ### 3.2 Power-domain quantization (the mag-stage bit-driver)
 
-mag recovering only at ~20 bits — twice the others — is the clue. The power domain
+The mag Pd curve recovers only at ~20 bits — twice the others. The power domain
 explains the cost.
 
-`mag_bits` quantizes **power** (`abs(rd)²`), which *doubles* the dB spread: the
-~60 dB voltage dynamic range becomes ~120 dB in power. 16-bit block-scaled power
-spans only ~96 dB, so once the strong return sets the block scale the weak target's
-power falls below the LSB and is lost — Pd stays ~0.6 through 16 bits and only
-recovers at **~20 bits** (≈120 dB), as the extended `mag_bits` sweep shows. The power domain needs roughly **twice** the word
-length for the same dynamic range.
+`mag_bits` quantizes **power** (`abs(rd)²`) linearly, and a linear word delivers
+only half the dynamic range per bit for power as for a voltage/amplitude quantity:
+~3 dB/bit (`10·log10 2`) versus ~6 dB/bit (`20·log10 2`). The scene's dynamic range
+in dB is unchanged — it is ~60 dB either way (strong/weak amplitude 0.3/0.00025 →
+61.6 dB, identical in power) — but because power is the square, the
+*linear* ratio that must be stored squares (voltage ratio 2¹⁰ → power ratio 2²⁰), so
+it takes twice as many bits. A 16-bit power word therefore spans only ~48 dB: once
+the strong return sets the block scale, the weak target's power (~60 dB down) falls
+below the LSB and is lost — Pd stays ~0.6 through 16 bits and recovers only at
+**~20 bits** (~60 dB), as the `mag_bits` sweep shows. The power domain needs
+roughly **twice** the word length of the voltage stages (`cube`/`rd`, ~10 bits) for
+the same dynamic range.
 
 ### 3.3 Bit widths chosen
 
@@ -210,28 +230,32 @@ float prototype (computed by `processing.fixed_point.cube_bytes`, 2 components/s
 | 32-bit (complex64) | 768 KiB | 2× | 1× |
 | 16-bit | 384 KiB | 4× | 2× |
 | 12-bit | 288 KiB | 5.3× | 2.7× |
+| 10-bit | 240 KiB | 6.4× | 3.2× |
 
 This is an **analytic word-length → storage** translation, it quantifies the
 radar-cube SRAM saving the chosen word lengths imply.
 
-## 5. Scope & limitations (results are optimistic bounds)
+## 5. Scope & limitations
 
 The methodology (fixed/float split, quantize-in-float, sweep-against-golden,
 Pd-primary knee) is standard first-pass practice, but boundary quantization
-makes the recommended bit widths **lower bounds** and the savings **upper bounds**.
-A silicon sign-off additionally needs the bit-true follow-up:
+makes the recommended bit widths **lower bounds** and the savings **upper bounds**,
+and a few further choices bound the scope:
 
-1. **Intra-FFT bit growth is not modeled** — the FFT computes in float, so the
-   `cube_bits`/`rd_bits` knees assume ideal FFT arithmetic; real silicon likely
-   needs a bit or two more.
-2. **Per-frame block scaling is coarse, boundary-only BFP** — real BFP rescales
-   between every butterfly stage (or a fixed ÷2 schedule is used); both are
-   intra-FFT and unmodeled. At the *storage* boundary a per-block shared exponent
-   is realistic; the idealization is specifically inside the FFT.
-3. **Twiddle-factor quantization is skipped** (intra-FFT; needs the bit-true FFT).
-4. **Window-coefficient quantization is skipped** — a separable mid-stage multiply,
-   left out to keep the boundary model clean; effect is minor.
-5. **The signal model is clean** (no PA nonlinearity / phase noise), so the only
+1. **The scaling policy is assumed, not compared.** All sweeps use one number-format
+   choice — fixed-scale ADC plus per-frame BFP on the internal stages
+   (`scaling='block'`). The code also supports a static global scale
+   (`scaling='fixed'`, plain Q-format), but it is not compared, so the recommended
+   widths are **conditional on BFP**; whether a static Q-format or BFP better fits
+   this pipeline is a question this study hasn't answered yet.
+2. **The FFT is computed in float, not fixed-point.** A bit-true fixed-point FFT is
+   a substantially larger, more involved implementation — per-stage bit growth and
+   rescaling, quantized twiddle factors, quantized window coefficients (a separable
+   pre-FFT multiply, minor effect) — so for this first-pass study it is deliberately
+   left in float and deferred to a bit-true sign-off. Consequence: the
+   `cube_bits`/`rd_bits` knees assume ideal FFT arithmetic and are optimistic by
+   perhaps a bit or two.
+3. **The signal model is clean** (no PA nonlinearity / phase noise), so the only
    added spur *sources* are quantization — but the **SFDR floor here is set by the
    strong target's own range leakage**, not quantization (§3). So SFDR mainly
    confirms that quantization stays below that leakage floor; read it that way, not

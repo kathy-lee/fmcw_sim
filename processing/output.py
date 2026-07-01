@@ -14,7 +14,7 @@ from typing import Iterable, Optional, Tuple
 
 from processing.clustering import Detection
 from processing.tracking import Track
-from processing.viz import doppler_bin_to_mps
+from processing.layered_rd_view import doppler_bin_to_mps
 
 
 class DetectionWriter:

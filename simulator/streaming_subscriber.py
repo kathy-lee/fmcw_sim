@@ -20,7 +20,7 @@ from processing.config import CfarConfig, ClusteringConfig, TrackerConfig
 from processing.output import open_csv_writers
 from processing.range_doppler import range_doppler
 from processing.tracking import Tracker
-from processing.viz import LayeredRDView
+from processing.layered_rd_view import LayeredRDView
 
 C_EM = 299_792_458.0
 

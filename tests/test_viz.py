@@ -8,7 +8,7 @@ import pytest
 
 from processing.clustering import Detection
 from processing.tracking import Track
-from processing.viz import LayeredRDView
+from processing.layered_rd_view import LayeredRDView
 from collections import deque
 
 

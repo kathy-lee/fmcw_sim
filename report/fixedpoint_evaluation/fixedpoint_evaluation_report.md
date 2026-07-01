@@ -1,7 +1,7 @@
 # Fixed-Point MIMO Front-End — Evaluation Report
 
 **Pipeline stage under test:** the MIMO detection front end (ADC → range-Doppler → non-coherent integration → CFAR input)
-**Fidelity:** boundary quantization (stages compute in float; values re-gridded at five boundaries)
+**Fidelity:** boundary quantization (stages compute in float with values re-gridded at boundaries)
 **Golden reference:** the float pipeline (`fp=None`)
 
 ---
@@ -12,7 +12,7 @@ This study exercises an
 opt-in fixed-point mode on our own MIMO front end to show the realistic process:
 which steps go fixed-point, how each step's bit width is chosen, and what it
 costs against the float reference. The result is an early estimate of how many bits each stage needs, not the exact,
-final check that would run before committing a design to hardware. §5 lists the
+final check that would run before committing a design to hardware, §5 lists the
 limitations.
 
 The evaluation uses one **dynamic-range scene**
@@ -62,8 +62,8 @@ generate_frame_mimo            ← ideal "analog" truth, UNCHANGED (no fp here)
 |------|----------|-----------------|
 | `adc_bits` (+ `adc_full_scale`) | `Q_adc` (digitizer) | 12–16-bit ADC |
 | `cube_bits` | range-FFT output | 16-bit I/Q radar cube (SRAM-dominant) |
-| `rd_bits` | Doppler-FFT output | Doppler word |
-| `mag_bits` | per-channel power `abs(rd_v)²` | magnitude word |
+| `rd_bits` | Doppler-FFT output | derived (≈ cube word + FFT bit growth) |
+| `mag_bits` | per-channel power `abs(rd_v)²` | derived (≈ 2× the `rd` word) |
 | `acc_bits` | NCI accumulator | 32–40-bit accumulator |
 
 The ADC uses a **fixed** full-scale, sized to contain the strong return (an
@@ -151,9 +151,14 @@ two subsections run them down.
 
 ### 3.1 Strong-return spur flooding (the cube-stage bit-driver)
 
-The cube Pd dip is the clue: a stage scoring *worse* with more bits isn't losing
-real detections — its weak-gate "Pd" is being padded by spurious ones. Measuring the
-false-alarm rate directly confirms it.
+The cube Pd curve dips from 6 to 8 bits — scoring *worse* with more bits. That looks
+backwards, but no real detection is lost: at 6 bits the weak target is already buried,
+and its "Pd" is entirely spurious padding. At 6 bits the coarsest quantization (largest
+step → tallest signal-correlated spurs) generates the most strong-return spurs, some of
+which land in the weak-target gate and inflate its "Pd"; going to 8 bits strips those
+spurs away, so the padded count falls before the weak target is genuinely detected
+(~10 bits) and Pd recovers for real. The 6→8 dip is that padding being removed, not
+detections being lost. Measuring the false-alarm rate directly confirms it.
 
 The false-alarm cost that *does* vary with bit width comes from the **signal**, not
 the noise: the strong return's quantization spurs cross the CFAR threshold and flood

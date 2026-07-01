@@ -274,3 +274,42 @@ class CartesianTrackerConfig:
                 raise ValueError(f"CartesianTrackerConfig.{name} must be >= 0")
         if self.history_len < 1:
             raise ValueError("history_len must be >= 1")
+
+
+@dataclass(frozen=True)
+class FixedPointConfig:
+    """Bit widths + scaling policy for the fixed-point MIMO front end.
+    None (no config) => the float path. See the design spec."""
+    adc_bits: int = 12
+    adc_full_scale: float = 1.0      # FIXED ADC scale; set per scenario/sweep
+    cube_bits: int = 16
+    rd_bits: int = 16
+    mag_bits: int = 16
+    acc_bits: int = 32
+    scaling: str = "block"           # internal stages: "block" | "fixed"
+    rounding: str = "nearest"        # "nearest" | "truncate"
+    overflow: str = "saturate"       # "saturate" | "wrap"
+    cube_full_scale: float | None = None   # required when scaling == "fixed"
+    rd_full_scale: float | None = None
+    mag_full_scale: float | None = None
+    acc_full_scale: float | None = None
+
+    def __post_init__(self):
+        for name in ("adc_bits", "cube_bits", "rd_bits", "mag_bits", "acc_bits"):
+            if getattr(self, name) < 2:
+                raise ValueError(f"FixedPointConfig.{name} must be >= 2")
+        if self.adc_full_scale <= 0:
+            raise ValueError("FixedPointConfig.adc_full_scale must be > 0")
+        if self.scaling not in ("block", "fixed"):
+            raise ValueError("FixedPointConfig.scaling must be 'block' or 'fixed'")
+        if self.rounding not in ("nearest", "truncate"):
+            raise ValueError("FixedPointConfig.rounding must be 'nearest'|'truncate'")
+        if self.overflow not in ("saturate", "wrap"):
+            raise ValueError("FixedPointConfig.overflow must be 'saturate'|'wrap'")
+        if self.scaling == "fixed":
+            for name in ("cube_full_scale", "rd_full_scale", "mag_full_scale",
+                         "acc_full_scale"):
+                v = getattr(self, name)
+                if v is None or v <= 0:
+                    raise ValueError(
+                        f"scaling='fixed' requires {name} > 0 (got {v})")

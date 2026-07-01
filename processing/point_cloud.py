@@ -9,16 +9,26 @@ from __future__ import annotations
 import numpy as np
 
 from processing.doa import estimate_doa
+from processing.fixed_point import quantize_stage
 
 
-def integrate(rd_stack: np.ndarray) -> np.ndarray:
+def integrate(rd_stack: np.ndarray, fp=None) -> np.ndarray:
     """Non-coherent integration across virtual channels.
 
     rd_stack: (n_virtual, D, Rn) complex range-Doppler stack.
     Returns: (D, Rn) real power map = sum_v |rd_stack[v]|^2 — the detection map
     CFAR runs on (channel SNR boost, channel axis collapsed).
+
+    With fp set, each |rd_v|^2 is quantized (Q_mag) and the running sum (Q_acc).
     """
-    return np.sum(np.abs(rd_stack) ** 2, axis=0)
+    if fp is None:
+        return np.sum(np.abs(rd_stack) ** 2, axis=0)
+    acc = np.zeros(rd_stack.shape[1:], dtype=np.float64)
+    for v in range(rd_stack.shape[0]):
+        mag = np.abs(rd_stack[v]) ** 2
+        mag = quantize_stage(mag, fp.mag_bits, fp, fp.mag_full_scale)
+        acc = quantize_stage(acc + mag, fp.acc_bits, fp, fp.acc_full_scale)
+    return acc
 
 
 def tdm_doppler_compensation(snapshot: np.ndarray, doppler_bin: float,

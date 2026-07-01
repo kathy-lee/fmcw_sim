@@ -43,7 +43,9 @@ def tdm_doppler_compensation(snapshot: np.ndarray, doppler_bin: float,
     i_tx = np.arange(snapshot.shape[0]) // n_rx
     phase = (-2.0 * np.pi * (doppler_bin - n_chirps / 2.0) * i_tx
              / (n_chirps * n_tx))
-    return snapshot * np.exp(1j * phase)
+    factor = np.exp(1j * phase)
+    factor = factor.reshape(factor.shape + (1,) * (snapshot.ndim - 1))
+    return snapshot * factor
 
 
 def to_point_cloud(detections, range_per_bin: float,

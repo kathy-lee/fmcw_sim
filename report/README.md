@@ -10,7 +10,8 @@ attributable.
 | 1 | [Detection Performance Test](detection_evaluation/detection_performance_test_report.md) | CFAR + clustering | steady point-target Pd/Pfa curves |
 | 2 | [Tracker Stress Test](tracker_stress/tracker_stress_test_report.md) | Tracker (association, M-of-N, coasting, KF/EKF/IMM) | track survival & association on steady targets |
 | 3 | [Target Realism Test](target_realism/target_realism_test_report.md) | Target models (generator) → effects across the whole chain | — |
-| 4 | [Fixed-Point MIMO Front-End](fixedpoint_evaluation/fixedpoint_evaluation_report.md) | Front-end finite precision (ADC→FFT→NCI→CFAR input) | bit-width knees + radar-cube memory benefit |
+| 4 | [MIMO Evaluation](mimo_evaluation/mimo_evaluation_report.md) | TDM-MIMO front end (NCI, DoA, Cartesian clustering + tracking) | float MIMO detection/angle/tracking baseline |
+| 5 | [Fixed-Point MIMO Front-End](fixedpoint_evaluation/fixedpoint_evaluation_report.md) | Front-end finite precision (ADC→FFT→NCI→CFAR input) | bit-width knees + radar-cube memory benefit |
 
 ## Shared conventions
 
@@ -21,6 +22,9 @@ attributable.
   (Monte Carlo: `1…30`). Report 3 adds a **third stream**,
   `RadarConfig.fluctuation_seed` (default `77777`) for Swerling fades
   (Part I), and a **fourth stream**, `RadarConfig.extent_seed` (default
-  `555`) for extended-target scatterers (Part II).
+  `555`) for extended-target scatterers (Part II). Report 4 (MIMO, §2) adds a
+  **fifth stream**, `RadarConfig.element_noise_seed` (default `33333`) for
+  per-element thermal noise, frame-addressed by
+  `(element_noise_seed, frame_index, element_index)`.
 - **Run classification taxonomy** (report 2 §2.3): CLEAN / ID SWITCH /
   TRACK BREAK / TOTAL CONFUSION from the `has_switches` × `has_break` axes.

@@ -11,6 +11,7 @@ drop in without code changes.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -18,14 +19,14 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import scipy.optimize
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from processing.config import CartesianTrackerConfig
 from simulator.beat_signal_generator import FMCWBeatSignalGenerator, load_scenario
-from evaluation.mimo_pipeline import (
-    run_pipeline_mimo, build_gt_xy, associate_xy, track_rmse_xy)
+from evaluation.mimo_pipeline_runner import run_pipeline_mimo
 
 OUT = ROOT / "report" / "mimo_evaluation"
 
@@ -39,6 +40,63 @@ def _tracker_cfg(frame_period):
 
 
 # --------------------------------------------------------------------------- #
+# Cartesian scorers (ground truth, GT-track association, position RMSE)        #
+# --------------------------------------------------------------------------- #
+
+def build_gt_xy(targets, gen, n_frames):
+    """Per-frame GT as (frame_idx, [(gt_id, x, y, vx, vy, az_deg), ...]).
+    Cartesian from ground_truth()'s range_m + azimuth_deg; vx/vy are the
+    radial-frame components (v·cos az, v·sin az) — adequate for position
+    scoring (velocity RMSE uses radial speed only)."""
+    out = []
+    for fi in range(n_frames):
+        rows = []
+        for gid, g in enumerate(gen.ground_truth(targets, frame_index=fi)):
+            az = math.radians(g["azimuth_deg"])
+            r, v = g["range_m"], g["velocity_mps"]
+            rows.append((gid, r * math.cos(az), r * math.sin(az),
+                         v * math.cos(az), v * math.sin(az), g["azimuth_deg"]))
+        out.append((fi, rows))
+    return out
+
+
+def associate_xy(gt_rows, snapshots, max_dist_m=2.0):
+    """Hungarian match GT (x,y) to confirmed track (x,y). {gt_id: track_id|None}."""
+    confirmed = [s for s in snapshots if s.status == "confirmed"]
+    out = {row[0]: None for row in gt_rows}
+    if not confirmed:
+        return out
+    cost = np.full((len(gt_rows), len(confirmed)), np.inf)
+    for i, row in enumerate(gt_rows):
+        for j, s in enumerate(confirmed):
+            cost[i, j] = np.hypot(s.state[0] - row[1], s.state[1] - row[2])
+    ri, ci = scipy.optimize.linear_sum_assignment(
+        np.where(np.isfinite(cost), cost, 1e9))
+    for r, c in zip(ri, ci):
+        if cost[r, c] <= max_dist_m:
+            out[gt_rows[r][0]] = confirmed[c].id
+    return out
+
+
+def track_rmse_xy(gt_traj, tracks_history, assoc_history, cutoff_m=None):
+    """Position RMSE (m) over associated GT-frames (GOSPA cutoff optional)."""
+    sq = []
+    for (_, rows), (_, snaps), (_, mapping) in zip(gt_traj, tracks_history,
+                                                   assoc_history):
+        by_id = {s.id: s for s in snaps}
+        for row in rows:
+            tid = mapping.get(row[0])
+            s = by_id.get(tid) if tid is not None else None
+            if s is None:
+                if cutoff_m is not None:
+                    sq.append(cutoff_m ** 2)
+                continue
+            e2 = (s.state[0] - row[1]) ** 2 + (s.state[1] - row[2]) ** 2
+            sq.append(min(e2, cutoff_m ** 2) if cutoff_m is not None else e2)
+    return float(np.sqrt(np.mean(sq))) if sq else float("nan")
+
+
+# --------------------------------------------------------------------------- #
 # Generic core                                                                #
 # --------------------------------------------------------------------------- #
 
@@ -49,7 +107,7 @@ def track_scenario(cfg, targets, n_frames, tracker_cfg=None, max_dist_m=2.5):
     gen = FMCWBeatSignalGenerator(cfg)
     gt = build_gt_xy(targets, gen, n_frames)
     tc = tracker_cfg or _tracker_cfg(cfg.frame_period_s)
-    history = run_pipeline_mimo(cfg, targets, n_frames, tracker_config=tc)
+    history = run_pipeline_mimo(gen, targets, n_frames, tracker_config=tc)
     assoc = [(fi, associate_xy(rows, snaps, max_dist_m))
              for (fi, rows), (_, snaps) in zip(gt, history)]
     return dict(gt=gt, history=history, assoc=assoc,

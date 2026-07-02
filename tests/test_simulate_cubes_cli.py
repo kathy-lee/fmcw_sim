@@ -1,6 +1,6 @@
 import numpy as np
 
-from evaluation.export_cubes import run_export
+from simulator.simulate_cubes import run_export
 
 _SCENARIO = "scenarios/scenario_mimo_fixedpoint_dynrange.json"
 

@@ -1,9 +1,9 @@
-"""CLI driver: export cube datasets from a scenario, with optional preview.
+"""CLI driver: simulate radar cubes from a scenario, export .npz, preview/view.
 
 Usage:
-  python -m evaluation.export_cubes --scenario <path> --out <dir> --frames N \
+  python -m simulator.simulate_cubes --scenario <path> --out <dir> --frames N \
       [--levels adc,rd_cube,rad] [--fp] [--preview] [--doppler D]
-  python -m evaluation.export_cubes --view <path.npz> [--doppler D]
+  python -m simulator.simulate_cubes --view <path.npz> [--doppler D]
 """
 from __future__ import annotations
 

@@ -15,7 +15,7 @@ model**: per-frame RCS fluctuation (Swerling 1/3).
   - Target.fluctuation + RadarConfig.fluctuation_seed (77777, third RNG stream), generator integration, run_pipeline(..., fluctuation_seed=) hook, run_one_point(..., advance_frame_index=)
   refactor
   - evaluation/sweep_amplitude_fluctuation.py and evaluation/tracker_stress_swerling_sweep.py
-  - scenarios/scenario_missed_detections_swerling.json, report/README.md, report/target_realism_test_report.md (Part I, complete), plus all PNG/CSV artifacts
+  - scenarios/scenario_missed_detections_swerling.json, report/target_realism_test_report.md (Part I, complete), plus all PNG/CSV artifacts
 
   Headline results (all anchors against the published baselines passed):
   - Detection: Swerling 1 costs +8.0 dB at Pd 0.9 (textbook value) but only +1.4 dB at Pd 0.5; Swerling 3 in between (+4.1 dB). FA unchanged across cases.
@@ -51,8 +51,7 @@ target occupying many cells) follows separately.
 ## 2. Methodology — deltas only
 
 All conventions of the baseline reports are inherited (fixed front-end
-lens, seed hygiene, classification taxonomy — see
-[report/README.md](README.md)). Two deltas:
+lens, seed hygiene). Two deltas:
 
 ### 2.1 The fluctuation model
 
@@ -658,7 +657,7 @@ K = 1).
   - Target.extent + RadarConfig.extent_seed (555); generator coherent-sum integration (point path byte-identical); ground_truth reports the object's range half-width
   - evaluation/sweep_amplitude.py detect_frame shared lens (golden-pinned); evaluation/sweep_extent.py (detection) and evaluation/tracker_stress_extent_sweep.py (tracking, σ_glint + matched R)
   - tracker_stress.py: distance-to-span scorer in `associate_per_frame()`, track_position_rmse with GOSPA cutoff in `track_position_rmse()`, run_pipeline R / clustering-method overrides
-  - scenarios/scenario_extended_detection.json + scenario_extended_tracking.json, report/README.md, this report (Part II), plus all CSV/PNG artifacts
+  - scenarios/scenario_extended_detection.json + scenario_extended_tracking.json, this report (Part II), plus all CSV/PNG artifacts
 
   Headline results (all anchors passed; detector/tracker never see ground truth at runtime):
   - Detection: spreading loss is a *per-cell* effect (per-cell fraction 0.42 → 0.02 across extents at −26.9 dB); object-level Pd is robust — even improves — at moderate extent (cell multiplicity) and collapses only at 1.2 m; the steady point curve crosses Pd 0.5 at −25.3 dB (Part I: −25.4).
@@ -682,8 +681,7 @@ out of scope (§12).
 
 ## 8. Methodology — deltas only (Part II)
 
-All baseline conventions are inherited (front-end lens, seed hygiene,
-classification taxonomy — see report/README.md). Deltas:
+All baseline conventions are inherited (front-end lens, seed hygiene). Deltas:
 
 ### 8.1 The extended-target model
 

@@ -106,6 +106,35 @@ export its intermediate **radar cubes** to `.npz`, with quick-look plots. This c
 saved `adc` is the quantized `Q_adc` frame the downstream cubes derive from, so
 each file is internally reproducible.
 
+The levels form a chain that branches at the complex range-Doppler cube; any
+subset can be selected with `--levels`:
+
+```text
+raw beat frame
+   │  adc = raw   (or Q_adc when --fp)
+   ▼
+ [adc] ── range FFT ──▶ [range_cube] ── Doppler FFT ──▶ [rd_cube]  (complex)
+                                                            │
+                          ┌─────────────── integrate ───────┤
+                          ▼                                  ▼  Bartlett beamform
+                       [power]                             [rad]
+                     RD power map                  range-azimuth-Doppler tensor
+
+--levels picks any subset:  adc, range_cube, rd_cube, power, rad (default: all 5)
+```
+
+The following table shows the data dimension (if exported) and the default plot config. Only three
+levels have a quick-look plot; `range_cube` and `rd_cube` are export-only. Dimensions are `V` = virtual channels, `C` = chirps (slow-time),
+`S` = ADC samples per chirp (fast-time), `R` = range bins (`= S/2`), `D` = Doppler bins (`= C`), `A` = azimuth grid points. 
+
+| Level | Dimensions | Dtype | Preview plot |
+|---|---|---|---|
+| `adc` | `V × C × S` (virtual × chirp × sample) | complex | ADC magnitude (channel 0) |
+| `range_cube` | `V × C × R` (virtual × chirp × range) | complex | — (export only) |
+| `rd_cube` | `V × D × R` (virtual × Doppler × range) | complex | — (export only) |
+| `power` | `D × R` (Doppler × range) | real | RD power map [dB] |
+| `rad` | `A × D × R` (azimuth × Doppler × range) | real | RAD slice at given Doppler bin (`--doppler`, default: 0) |
+
 ```bash
 # Export 15 frames of a scenario to .npz (one file per frame)
 python -m simulator.simulate_cubes \

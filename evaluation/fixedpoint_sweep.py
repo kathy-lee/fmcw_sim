@@ -119,8 +119,7 @@ def sweep_stage(cfg, targets, *, stage, bits, n_frames=10, n_seeds=5,
         gen = FMCWBeatSignalGenerator(cfg)
         adc_full_scale = float(np.max(np.abs(
             gen.generate_frame_mimo(targets, frame_index=0))))
-    wide = base or dict(adc_bits=20, cube_bits=24, rd_bits=24, mag_bits=24,
-                        acc_bits=32)
+    wide = base or dict(adc_bits=20, cube_bits=24, rd_bits=24, acc_bits=32)
     gold = frame_metrics(cfg, targets, fp=None, n_frames=n_frames, n_seeds=n_seeds)
     rows = []
     for b in bits:
@@ -212,10 +211,10 @@ def main():
     args = ap.parse_args()
 
     cfg, targets = load_scenario(args.scenario)
-    stages = ["adc_bits", "cube_bits", "rd_bits", "mag_bits"]
+    stages = ["adc_bits", "cube_bits", "rd_bits", "acc_bits"]
     bit_grids = {"adc_bits": [6, 8, 10, 12, 14], "cube_bits": [6, 8, 10, 12, 16],
                  "rd_bits": [6, 8, 10, 12, 16],
-                 "mag_bits": [6, 8, 10, 12, 16, 20, 24]}  # power-domain: needs ~20+
+                 "acc_bits": [16, 20, 24, 28, 32]}  # summed-power word: needs ~24+
     results = [sweep_stage(cfg, targets, stage=s, bits=bit_grids[s],
                            n_frames=args.frames, n_seeds=args.seeds) for s in stages]
     _plot_sweep(results, "report/fixedpoint_evaluation")

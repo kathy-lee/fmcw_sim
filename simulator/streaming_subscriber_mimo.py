@@ -48,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--fixed-point", nargs="?", const="", default=None, metavar="SPEC",
                    help="enable fixed-point front end; optional SPEC overrides bit "
                         "widths, e.g. --fixed-point adc=6,cube=10 "
-                        "(keys: adc,cube,rd,mag,acc,fs)")
+                        "(keys: adc,cube,rd,acc,fs)")
     return p.parse_args()
 
 
@@ -61,7 +61,7 @@ def build_fixed_point(spec):
         return None
     from processing.config import FixedPointConfig
     keymap = {"adc": "adc_bits", "cube": "cube_bits", "rd": "rd_bits",
-              "mag": "mag_bits", "acc": "acc_bits", "fs": "adc_full_scale"}
+              "acc": "acc_bits", "fs": "adc_full_scale"}
     kw = {}
     for tok in filter(None, (t.strip() for t in spec.split(","))):
         k, _, v = tok.partition("=")
@@ -170,7 +170,7 @@ def main() -> None:
     fp = build_fixed_point(args.fixed_point)
     if fp is not None:
         print(f"Fixed-point front end: adc={fp.adc_bits} cube={fp.cube_bits} "
-              f"rd={fp.rd_bits} mag={fp.mag_bits} acc={fp.acc_bits} "
+              f"rd={fp.rd_bits} acc={fp.acc_bits} "
               f"adc_full_scale={fp.adc_full_scale}")
 
     ctx = zmq.Context.instance()

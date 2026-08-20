@@ -13,7 +13,7 @@ def test_run_pipeline_mimo_accepts_fp():
     assert len(hist) == 3
 
 
-# --- Task 7: metrics + sweep harness ---
+# --- metrics + sweep harness ---
 
 from evaluation.fixedpoint_sweep import (
     frame_metrics, sweep_stage, _weak_target_cell)

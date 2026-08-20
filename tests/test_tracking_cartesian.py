@@ -176,9 +176,7 @@ def test_spawn_observability_psi_omega_var_shrinks():
         tr.step([o])
     t = tr.tracks[0]
     assert t.cov[3, 3] < psi_var0               # heading var shrinks (observable)
-    assert np.isfinite(t.cov[4, 4])             # ω stays finite (unobservable on a
-    #                                             straight track; convergence is
-    #                                             tested on a turn in Task 7)
+    assert np.isfinite(t.cov[4, 4])             # ω stays finite (unobservable on a straight track; convergence is tested on a turn)
 
 
 def test_two_separated_targets_two_tracks():

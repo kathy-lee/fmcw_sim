@@ -77,7 +77,7 @@ def test_invalid_args_raise():
         quantize(np.ones(3), n_bits=8, full_scale=0.0)
 
 
-# --- Task 2: FixedPointConfig ---
+# --- FixedPointConfig ---
 
 from processing.config import FixedPointConfig
 

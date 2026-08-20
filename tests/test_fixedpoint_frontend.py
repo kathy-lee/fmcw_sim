@@ -30,7 +30,7 @@ def test_range_doppler_narrow_fp_changes_output():
     assert not np.allclose(range_doppler(f, fp=narrow), range_doppler(f))
 
 
-# --- Task 4: integrate (NCI) Q_acc ---
+# --- integrate (NCI) Q_acc ---
 
 from processing.point_cloud import integrate
 
@@ -53,7 +53,7 @@ def test_integrate_wide_fp_close_to_float():
     assert np.max(np.abs(out_q - out_f)) / np.max(out_f) < 1e-3
 
 
-# --- Task 5: process_mimo_frame Q_adc + threading ---
+# --- process_mimo_frame Q_adc + threading ---
 
 from simulator.beat_signal_generator import FMCWBeatSignalGenerator, load_scenario
 from simulator.wire import build_header

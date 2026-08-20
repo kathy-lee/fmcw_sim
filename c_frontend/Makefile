@@ -4,7 +4,7 @@ DBGFLAGS = -std=c11 -Wpedantic -Wall -Wextra -Werror -g -fsanitize=address,undef
 LDLIBS  = -lm
 
 SRC = src/fft.c src/io.c
-TESTS = tests/test_cplx tests/test_fft tests/test_params
+TESTS = tests/test_cplx tests/test_fft tests/test_params tests/test_io
 
 all: fmcw_frontend
 

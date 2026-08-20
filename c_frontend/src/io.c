@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "io.h"
 #include "params.h"
 
 /* Parse a comma-separated double list ("1.0,2.5,...") into out[0..max).
@@ -111,4 +112,53 @@ int params_load(const char *path, FrontendParams *p)
 fail:
     fclose(f);
     return ok ? 0 : -1;
+}
+
+/* ---- frame / buffer half (contracts in io.h) ---- */
+
+int buffers_alloc(FrontendBuffers *b, const FrontendParams *p)
+{
+    size_t V = (size_t)p->n_virtual, C = (size_t)p->n_chirps, S = (size_t)p->n_samples;
+    b->adc_n = V * C * S;
+    b->rd_n = V * C * (S / 2);
+    b->adc = malloc(b->adc_n * sizeof(cplx));
+    b->rd = malloc(b->rd_n * sizeof(cplx));
+    if (!b->adc || !b->rd) { buffers_free(b); return -1; }
+    return 0;
+}
+
+void buffers_free(FrontendBuffers *b)
+{
+    free(b->adc);
+    free(b->rd);
+    b->adc = NULL;
+    b->rd = NULL;
+    b->adc_n = b->rd_n = 0;
+}
+
+void print_memory_summary(const FrontendBuffers *b, FILE *out)
+{
+    size_t adc_bytes = b->adc_n * sizeof(cplx);
+    size_t rd_bytes = b->rd_n * sizeof(cplx);
+    fprintf(out, "memory summary:\n");
+    fprintf(out, "  adc_cube  %10zu bytes\n", adc_bytes);
+    fprintf(out, "  rd_cube   %10zu bytes\n", rd_bytes);
+    fprintf(out, "  total     %10zu bytes\n", adc_bytes + rd_bytes);
+}
+
+/* fread returns the number of complete items read; the extra fgetc probes
+ * whether the file has bytes beyond the n we asked for (EOF means it ended
+ * exactly where the config said it should). */
+int load_frame(const char *path, cplx *buf, size_t n)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    size_t got = fread(buf, sizeof(cplx), n, f);
+    int extra = (fgetc(f) != EOF);
+    fclose(f);
+    if (got != n || extra) {
+        fprintf(stderr, "frame %s: expected %zu samples\n", path, n);
+        return -1;
+    }
+    return 0;
 }

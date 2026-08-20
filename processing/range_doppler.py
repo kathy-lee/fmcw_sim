@@ -13,6 +13,7 @@ def range_doppler(
     dc_removal: bool = True,
     clutter_removal: bool = True,
     fp=None,
+    return_range_cube: bool = False,
 ) -> np.ndarray:
     """Compute the 2D range-Doppler map from a complex beat-signal frame.
 
@@ -33,6 +34,8 @@ def range_doppler(
 
     Returns:
         Complex RD map of shape (n_chirps, n_range // 2).
+        If return_range_cube, returns (out, rfft) where rfft is the post-Q_cube
+        range-FFT tensor of the same shape.
     """
     n_chirps, n_range = frame.shape
     x = frame.astype(np.complex64, copy=True)
@@ -56,4 +59,6 @@ def range_doppler(
     out = np.fft.fftshift(np.fft.fft(rfft, axis=0), axes=0)
     if fp is not None:                                    # Q_rd
         out = quantize_stage(out, fp.rd_bits, fp, fp.rd_full_scale)
+    if return_range_cube:
+        return out, rfft
     return out

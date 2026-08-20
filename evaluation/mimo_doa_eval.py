@@ -21,7 +21,7 @@ from processing.doa import estimate_doa
 METHODS = ("bartlett", "capon", "music", "esprit")
 
 
-def _snapshot(pos, az_deg_list, snr_db, rng):
+def _array_snapshot(pos, az_deg_list, snr_db, rng):
     """One array snapshot: unit sources at the given azimuths + complex noise."""
     a = np.deg2rad(np.atleast_1d(az_deg_list))
     A = np.exp(1j * 2 * np.pi * np.outer(pos, np.sin(a)))      # (n_elem, n_src)
@@ -41,7 +41,7 @@ def azimuth_rmse_vs_snr(az_true_deg, n_elem, snr_db_list, methods=METHODS,
     for snr in snr_db_list:
         errs = {m: [] for m in methods}
         for _ in range(n_trials):
-            x = _snapshot(pos, az_true_deg, snr, rng)
+            x = _array_snapshot(pos, az_true_deg, snr, rng)
             for m in methods:
                 est = estimate_doa(x, pos, method=m, n_sources=1)
                 if len(est):
@@ -65,7 +65,7 @@ def min_resolvable_separation(n_elem, seps_deg, snr_db=20.0, methods=METHODS,
             azs = [center_deg - sep / 2, center_deg + sep / 2]
             ok = 0
             for _ in range(n_trials):
-                x = _snapshot(pos, azs, snr_db, rng)
+                x = _array_snapshot(pos, azs, snr_db, rng)
                 est = np.sort(estimate_doa(x, pos, method=m, n_sources=2))
                 if len(est) == 2 and abs(est[1] - est[0] - sep) < 0.5 * sep:
                     ok += 1

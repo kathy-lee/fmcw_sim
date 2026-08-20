@@ -1,12 +1,13 @@
 import numpy as np
 
-from simulator.beat_signal_generator import load_scenario
-from evaluation.mimo_pipeline import run_pipeline_mimo
+from simulator.beat_signal_generator import FMCWBeatSignalGenerator, load_scenario
+from evaluation.mimo_pipeline_runner import run_pipeline_mimo
 
 
 def test_run_pipeline_mimo_tracks_single_target():
     cfg, targets = load_scenario("scenarios/scenario_mimo.json")
-    history = run_pipeline_mimo(cfg, targets, n_frames=10)
+    gen = FMCWBeatSignalGenerator(cfg)
+    history = run_pipeline_mimo(gen, targets, n_frames=10)
     assert len(history) == 10
     last = history[-1][1]                                  # snapshots, final frame
     confirmed = [s for s in last if s.status == "confirmed"]
@@ -16,9 +17,9 @@ def test_run_pipeline_mimo_tracks_single_target():
     assert np.hypot(s.state[0] - 8.0, s.state[1] - 2.0) < 1.5
 
 
-from evaluation.mimo_pipeline import (
-    build_gt_xy, associate_xy, track_rmse_xy, CartesianTrackSnapshot)
-from simulator.beat_signal_generator import FMCWBeatSignalGenerator
+from evaluation.mimo_pipeline_runner import CartesianTrackSnapshot
+from evaluation.mimo_tracking_eval import (
+    build_gt_xy, associate_xy, track_rmse_xy)
 
 
 def test_build_gt_xy_converts_polar_to_cartesian():

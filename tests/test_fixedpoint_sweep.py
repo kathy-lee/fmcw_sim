@@ -1,14 +1,15 @@
 import numpy as np
 
 from processing.config import FixedPointConfig
-from simulator.beat_signal_generator import load_scenario
-from evaluation.mimo_pipeline import run_pipeline_mimo
+from simulator.beat_signal_generator import FMCWBeatSignalGenerator, load_scenario
+from evaluation.mimo_pipeline_runner import run_pipeline_mimo
 
 
 def test_run_pipeline_mimo_accepts_fp():
     cfg, targets = load_scenario("scenarios/scenario_mimo_fixedpoint_dynrange.json")
     fp = FixedPointConfig(adc_full_scale=2.0)
-    hist = run_pipeline_mimo(cfg, targets, n_frames=3, fp=fp)
+    gen = FMCWBeatSignalGenerator(cfg)
+    hist = run_pipeline_mimo(gen, targets, n_frames=3, fp=fp)
     assert len(hist) == 3
 
 

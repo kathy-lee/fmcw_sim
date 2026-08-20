@@ -104,5 +104,5 @@ def test_fixedpoint_config_fixed_requires_full_scales():
     with pytest.raises(ValueError):
         FixedPointConfig(scaling="fixed")          # no full-scales
     ok = FixedPointConfig(scaling="fixed", cube_full_scale=1.0, rd_full_scale=1.0,
-                          mag_full_scale=1.0, acc_full_scale=1.0)
+                          acc_full_scale=1.0)
     assert ok.scaling == "fixed"

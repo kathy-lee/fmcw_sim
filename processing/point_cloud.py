@@ -19,15 +19,22 @@ def integrate(rd_stack: np.ndarray, fp=None) -> np.ndarray:
     Returns: (D, Rn) real power map = sum_v |rd_stack[v]|^2 — the detection map
     CFAR runs on (channel SNR boost, channel axis collapsed).
 
-    With fp set, each |rd_v|^2 is quantized (Q_mag) and the running sum (Q_acc).
+    With fp set, each channel's power |rd_v|^2 is formed *exactly* from the
+    already-quantized (Q_rd) complex cube — squaring finite I/Q is lossless — and
+    only the running accumulator is quantized (Q_acc). There is deliberately no
+    separate magnitude/power word: in hardware the power is computed from the I/Q
+    at full product width, so a distinct narrow, peak-scaled power stage does not
+    exist. (Quantizing |rd_v|^2 directly doubles the dynamic range and, block-
+    scaled to the strong-target peak, zeroed the noise floor into -inf dB holes
+    that flooded CFAR; see test_fixedpoint_nci_does_not_flood_cfar.) acc_bits must
+    stay wide enough to hold summed power (~24-32 bits).
     """
     if fp is None:
         return np.sum(np.abs(rd_stack) ** 2, axis=0)
     acc = np.zeros(rd_stack.shape[1:], dtype=np.float64)
     for v in range(rd_stack.shape[0]):
-        mag = np.abs(rd_stack[v]) ** 2
-        mag = quantize_stage(mag, fp.mag_bits, fp, fp.mag_full_scale)
-        acc = quantize_stage(acc + mag, fp.acc_bits, fp, fp.acc_full_scale)
+        power_v = np.abs(rd_stack[v]) ** 2       # exact power from the Q_rd cube
+        acc = quantize_stage(acc + power_v, fp.acc_bits, fp, fp.acc_full_scale)
     return acc
 
 
@@ -43,7 +50,9 @@ def tdm_doppler_compensation(snapshot: np.ndarray, doppler_bin: float,
     i_tx = np.arange(snapshot.shape[0]) // n_rx
     phase = (-2.0 * np.pi * (doppler_bin - n_chirps / 2.0) * i_tx
              / (n_chirps * n_tx))
-    return snapshot * np.exp(1j * phase)
+    factor = np.exp(1j * phase)
+    factor = factor.reshape(factor.shape + (1,) * (snapshot.ndim - 1))
+    return snapshot * factor
 
 
 def to_point_cloud(detections, range_per_bin: float,

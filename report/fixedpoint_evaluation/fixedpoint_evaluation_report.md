@@ -35,7 +35,7 @@ Each candidate bit width is judged against the float pipeline by a set of metric
 
 ## 2. Implementation
 
-The front end is quantized at five boundaries as following, everything else (the FFT butterflies,
+The front end is quantized at four boundaries as following, everything else (the FFT butterflies,
 the CFAR sliding-window arithmetic, the whole back end) computes in float.
 
 ```
@@ -50,7 +50,8 @@ generate_frame_mimo            ← ideal "analog" truth, UNCHANGED (no fp here)
    │        [Q_rd]    Doppler-FFT output → rd_bits
    │
    ▼ integrate(fp):  Σ_v |rd_v|²
-   │     [Q_mag]  each |rd_v|² → mag_bits
+   │     each |rd_v|² formed EXACTLY from the Q_rd cube (squaring finite I/Q is
+   │     lossless — no separate power word)
    │     [Q_acc]  running sum  → acc_bits   (the integrated power map = CFAR input)
    │
    ▼ CFAR  (float compute on the quantized integer power map; output = boolean mask)
@@ -63,8 +64,7 @@ generate_frame_mimo            ← ideal "analog" truth, UNCHANGED (no fp here)
 | `adc_bits` (+ `adc_full_scale`) | `Q_adc` (digitizer) | 12–16-bit ADC |
 | `cube_bits` | range-FFT output | 16-bit I/Q radar cube (SRAM-dominant) |
 | `rd_bits` | Doppler-FFT output | derived (≈ cube word + FFT bit growth) |
-| `mag_bits` | per-channel power `abs(rd_v)²` | derived (≈ 2× the `rd` word) |
-| `acc_bits` | NCI accumulator | 32–40-bit accumulator |
+| `acc_bits` | NCI accumulator (summed power) | 24–40-bit accumulator |
 
 The ADC uses a **fixed** full-scale, sized to contain the strong return (an
 over-range input would clip, but here the strong return sits at full-scale and
@@ -72,7 +72,7 @@ does not — so saturation is a checked guard, not a triggered effect); the inte
 stages default to **per-frame block scaling**
 (a block-floating-point exponent at frame granularity, applied at the boundary).
 CFAR consumes the quantized integer power map and emits a boolean mask, so it is
-fixed-point at its input boundary but not quantized internally (no knob).
+fixed-point at its input boundary but not quantized internally.
 
 Fixed-point has two failure modes, split here by boundary. **Overflow** at the
 MSB (Most Significant Bit) end is bounded by construction — the ADC's fixed
@@ -85,15 +85,10 @@ target dropping below the LSB, which is what the §3 sweeps study.
 
 **Goal.** Determine each swept stage's *knee* — the fewest bits at which the
 front end still matches the float pipeline — and identify which metric binds each
-stage. Four of the five boundaries are swept (`adc`, `cube`, `rd`, `mag`); the
-NCI accumulator (`acc`) is held wide and not swept. An accumulator that
-sums `K` magnitude terms needs `mag_bits + ceil(log2(K))` bits to hold the sum
-without losing the LSBs the `mag` stage already paid for, so its width is a
-derived headroom requirement rather than an independent precision knob with its
-own knee. Each swept stage is run across a bit range while the others are held wide
+stage. All four boundaries are swept (`adc`, `cube`, `rd`, `acc`). Each swept stage is run across a bit range while the others are held wide
 (≈float), so every curve isolates that one stage's cost; statistics are
 Monte-Carlo over `element_noise_seed`. The dashed line in each figure is the
-float-golden value, the plateau a stage should approach as bits increase. All four
+float-golden value. All four
 figures are produced by one run:
 
 CMD: `python -m evaluation.fixedpoint_sweep`
@@ -102,52 +97,88 @@ CMD: `python -m evaluation.fixedpoint_sweep`
 
 **Pd is the binding metric.** Pd is the weak-target detection rate on the
 dynamic-range scene, gated per frame at the moving target's cell. The **ADC** stage
-shows a clean Pd knee — its fixed full-scale means too few bits push the weak target
+shows a clean Pd knee (~8 bits) — its fixed full-scale means too few bits push the weak target
 below the LSB. The block-scaled internal stages behave differently from one another:
-`rd` recovers by ~10 bits, while `cube` and `mag` carry their own binding limits: The cube Pd curve is non-monotonic (8 bits scores worse than 6), and the mag Pd curve recovers only at ~20 bits — double every other stage. Each is a clue to a binding constraint the plots don't directly measure, will discuss in §3.1 and §3.2.
+`rd` recovers by ~10 bits, while `cube` and `acc` carry their own binding limits: The cube Pd curve is non-monotonic (8 bits scores worse than 6), and the acc Pd curve recovers only at ~24–28 bits — roughly double every other stage. The `acc` knee is bit-growth arithmetic (below); the cube dip is spur flooding (§3.1).
+
+**Why `acc` needs ~24 bits.** The accumulator width is the integer bit-growth of
+`Σ_v (I_v² + Q_v²)`. Starting from `I, Q` at `rd_bits` each: squaring doubles the
+word, so `I_v² + Q_v²` is `~2·rd_bits` wide; summing `N_v = n_tx·n_rx = 12` channels
+adds `ceil(log2 N_v) = 4`. So `2·rd_bits + 4 ≈ 2·10 + 4 = 24` bits — the width that
+carries the sum *losslessly*. (Equivalently in dB: a linear *power* word buys only
+~3 dB/bit versus ~6 dB/bit for amplitude, so the scene's 61.6 dB dynamic range (the
+strong/weak amplitude ratio, `20·log10(0.3/0.00025)`) costs ~20 bits —
+twice the voltage stages — even though squaring leaves the dB range itself unchanged;
+the `+4` is the accumulation headroom.) Since `rd_bits ≈ 10` already sits the weak
+target one LSB above zero, *lossless* means *the weak target survives*, so this is
+exactly where Pd recovers — 0.98 at 24 bits, full at 28 — while below it the weak
+target's power falls under the LSB and Pd stalls at 0.63–0.69 (16–20 bits).
 
 ![False-alarm rate vs bits, per stage](fixedpoint_pfa_vs_bits.png)
 
 **Pfa is a bit-robust sanity check.** Pfa is the classical false-alarm rate,
 measured on a **noise-only companion** (same config and seeds, targets removed). It
-holds at the **designed (constant) false-alarm rate** across *all* bit widths — CFAR
-sets its threshold from the local noise, so quantizing the noise does not move the
-rate — so Pfa confirms
-quantization does not break the false-alarm calibration but **does not constrain the
-bit width** (the flat curve hugging the golden line). The bit-dependent false-alarm
-cost lives in spur flooding instead (§3.1).
+holds at the **designed constant rate** across *all* bit widths — CFAR sets its
+threshold from the local noise, so quantizing the noise doesn't move it. A flat
+curve binds no stage, so the bit-dependent false-alarm cost lives in spur flooding
+instead (§3.1).
 
 ![SNR loss vs bits, per stage](fixedpoint_snrloss_vs_bits.png)
 
 SNR loss is how far the weak target's output SNR falls below the float pipeline —
-the dB "budget" view of the detection cost. The curves top out at ~7 dB — the target's entire float
-SNR — so that plateau means it is fully buried. The curve largely
-**mirrors Pd**: both track the weak target being lost as bits are starved, and the
-knees agree — `adc` recovers by ~8 bits, `cube` by ~10, `mag` only by ~20 (its
-power-domain span, §3.2). It is **clamped at 0** — quantization cannot improve SNR,
-so a negative reading would only be a noise-floor-estimator artifact (where Pd, not
-SNR, is the real truth).
+the dB "budget" view of the detection cost. It **mirrors Pd**, and the knees agree:
+`adc` by ~8 bits, `cube` by ~10, `acc` only by ~24–28. One wrinkle: the `acc`
+SNR-loss curve is **non-monotonic** (0.0 dB at 20 bits → 1.3 at 24 → ~0 at 28) — the
+**0.0 reading at 20 bits is a noise-floor-estimator artifact**, not a genuine recovery.
+The metric is `Loss = SNR_float − SNR_fp` (clamped at 0), and each SNR is the
+weak-target *peak* minus the **median off-DC power** (the noise-floor estimate);
+`SNR_float ≈ 7 dB` (measured on the float summed-power map: weak-cell peak +11 dB,
+median off-DC floor +4 dB). At `acc = 20` bits **two things break
+together**: (i) the noise floor collapses — ≈99% of off-target cells quantize to zero
+(measured 98.7% → the −120 dB log-floor) — so the median noise estimate is garbage;
+and (ii) the weak target sits right at the accumulator LSB (effective LSB = 31.9,
+weak-target = 13.2 → weak / LSB = 0.41, derivation as below), so per frame it is a
+**coin-flip** — its peak is bimodal: alive in ~50% of frames (measured 49%; a survivor
+rounds up to ≥1 LSB, ≈ +15 dB) and dead (−120 dB) in the rest, nothing in between.
+Averaging `peak − median` (a dB quantity) across that
+collapsed, bimodal regime yields a mean far above `SNR_float`, so the loss clamps to
+0 — even though the exact weak cell survives only ~half the frames and gated Pd is just
+0.69. By 24 bits the floor is back (measured 4.5% dead, median +6 dB) and the peak is
+intact every frame, so `SNR_fp ≈ 5.6 dB` (peak +11.2 − floor +5.6, both measured) gives
+the genuine ≈1.3 dB loss (matching the figure) and Pd jumps to 0.98.
+**Pd — a per-frame detection count, not an averaged dB — is the truth** (monotonic
+0.63 → 0.69 → 0.98 → 0.99).
+
+*Derivation of those two numbers.* The accumulator block-scales to the strong-target
+peak, so its quantization step (from `fixed_point.quantize`) is
+`LSB = block_max / 2^(acc_bits − 1)`. The strong return sets `block_max ≈ 1.67×10⁷`
+(the measured peak of the fixed-point summed-power map) and `acc_bits = 20`, giving
+`LSB = 1.67×10⁷ / 2¹⁹ ≈ 31.9` in linear power — matching the measured smallest nonzero
+output quantum exactly. The weak-target level is its measured float power, ≈ `13.2`
+(= +11.2 dB, the +11 above). Hence `weak / LSB ≈ 13.2 / 31.9 ≈ 0.41` — below the
+½-LSB round-up threshold, which is
+why survival is a per-frame coin-flip.
 
 ![SFDR vs bits, per stage](fixedpoint_sfdr_vs_bits.png)
 
 **SFDR** is the dominant (strong) return's peak minus the largest spur outside the
-target gates. **The flat ~27 dB floor is the strong target's own range leakage** — a
-deterministic windowing/processing artifact ~2 range bins from the peak (≈ −27 dBc),
-not a quantization spur. So SFDR is **bit-independent** here: quantization spurs stay
-below that leakage floor across the usable bit range, so adding bits does not move
-it. The lone exception — `mag` at 6–8 bits spiking to ~190 dB — is a degenerate
-artifact, not a clean spectrum: coarse power-domain quantization drives every
-non-target cell below the LSB to zero, and a zeroed cell reads the −120 dB numerical
-floor (`power_db = 10·log10(power + 1e-12)` with `power = 0`). So the "largest spur"
-is that floor and SFDR jumps to a huge value. The weak target is already lost there
-(Pd ≈ 0).
+target gates. **The flat ~27.5 dB floor is the strong target's own range leakage**,
+confirmed two ways rather than asserted: (i) the limiting spur is spatially *locked to
+the strong target* — same Doppler row, exactly ±2 range bins from the peak — and tracks
+it as it walks in range frame-to-frame, so it is not noise, not the weak target, and not
+a bit-dependent quantization spur; (ii) simulating the strong target *alone* reproduces
+the same −27 dBc skirt at +2 bins, so the floor is the strong return's own range
+response. That −27 dBc sits ~4 dB *above* the ideal Hann first sidelobe (−31.5 dBc): the
+target is off-bin and the pre-FFT DC/clutter high-pass lifts the near skirt, so the level
+is windowing **plus** off-bin straddle **plus** filtering — genuine range leakage. The spur
+shows at ±2 bins, not ±1: the ±1 skirt is stronger (≈ −4 dBc) but falls inside the ±1
+exclusion gate and is counted as the target. Because this floor is set by the signal, not the
+quantizer, SFDR is **bit-independent** across *every* swept stage:
+quantization spurs stay below it across the usable bit range, so adding bits does not move it.
 
 Taken together, the four figures say Pd is what binds, Pfa is bit-robust, SNR
-loss mirrors Pd, and SFDR is leakage-limited. They also show two **oddities** the
-metrics alone don't explain: the **cube** Pd curve is non-monotonic (8 bits scores
-worse than 6), and the **mag** Pd curve recovers only at ~20 bits — double every other stage.
-Each is a clue to a binding constraint the plots don't directly measure; the next
-two subsections run them down.
+loss mirrors Pd, and SFDR is leakage-limited. The one remaining oddity the metrics don't explain — the
+**cube** Pd curve scoring *worse* at 8 bits than 6 — is run down next.
 
 ### 3.1 Strong-return spur flooding (the cube-stage bit-driver)
 
@@ -170,11 +201,11 @@ other stages held wide (Monte-Carlo over seeds) gives the spurious-detection rat
 
 | `cube_bits` | spurious-detection rate | vs float |
 |---|---|---|
-| float | 1.6e-5 | 1× |
-| 6 | 8.7e-2 | ~5300× |
-| 8 | 6.1e-3 | ~370× |
-| 10 | 1.9e-5 | ~1× |
-| 12 / 16 | ~3e-5 | ~2× |
+| float | 2.3e-5 | 1× |
+| 6 | 8.6e-2 | ~3800× |
+| 8 | 5.5e-3 | ~240× |
+| 10 | 2.0e-5 | ~1× |
+| 12 / 16 | ~2e-5 | ~1× |
 
 Reproduce: `strong_return_spur_rate(cfg, targets, fp)` in
 `evaluation/fixedpoint_sweep.py`.
@@ -186,25 +217,7 @@ operationally is the spur level vs the *detection threshold* (~60 dB below the
 strong target), not vs the strong target — so the spurious-detection *rate* is the
 right measure, not the peak-spur ratio.
 
-### 3.2 Power-domain quantization (the mag-stage bit-driver)
-
-The mag Pd curve recovers only at ~20 bits — twice the others. The power domain
-explains the cost.
-
-`mag_bits` quantizes **power** (`abs(rd)²`) linearly, and a linear word delivers
-only half the dynamic range per bit for power as for a voltage/amplitude quantity:
-~3 dB/bit (`10·log10 2`) versus ~6 dB/bit (`20·log10 2`). The scene's dynamic range
-in dB is unchanged — it is ~60 dB either way (strong/weak amplitude 0.3/0.00025 →
-61.6 dB, identical in power) — but because power is the square, the
-*linear* ratio that must be stored squares (voltage ratio 2¹⁰ → power ratio 2²⁰), so
-it takes twice as many bits. A 16-bit power word therefore spans only ~48 dB: once
-the strong return sets the block scale, the weak target's power (~60 dB down) falls
-below the LSB and is lost — Pd stays ~0.6 through 16 bits and recovers only at
-**~20 bits** (~60 dB), as the `mag_bits` sweep shows. The power domain needs
-roughly **twice** the word length of the voltage stages (`cube`/`rd`, ~10 bits) for
-the same dynamic range.
-
-### 3.3 Bit widths chosen
+### 3.2 Bit widths chosen
 
 Reading each stage's knee off the sweeps — the fewest bits that meet the criterion.
 The §1 Pfa gate is bit-robust (satisfied everywhere), so the operative gates are
@@ -215,13 +228,13 @@ The §1 Pfa gate is bit-robust (satisfied everywhere), so the operative gates ar
 | `adc` | ~8 | Pd (weak-target loss) |
 | `cube` | ~10 | spurious-detection rate (spur flooding, §3.1) |
 | `rd` | ~10 | Pd |
-| `mag` | ~20 | Pd (power-domain, §3.2) |
-| `acc` | 32 | — (held wide; not swept) |
+| `acc` | ~24–28 | Pd (bit-growth: 2·rd_bits + accumulation headroom) |
 
-The **mag** word dominates the cost — quantizing *power* needs roughly twice the
-bits of the others for the same dynamic range — and the **cube** word is set by
-false alarms, not detection. The accumulator was held wide throughout, so its own
-knee is left for future work.
+The **accumulator** dominates the cost — it is the one place *power* is quantized,
+so it pays both the ~2× power-domain penalty and the ~4-bit accumulation headroom,
+needing roughly 2.5–3× the bits of the voltage stages (`cube`/`rd`, ~10) — while the
+**cube** word is set by false alarms, not detection. The voltage stages (`adc`,
+`cube`, `rd`) all knee at ~8–10 bits.
 
 ## 4. Memory benefit (analytic)
 

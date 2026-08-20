@@ -3,8 +3,8 @@ CFLAGS  = -std=c11 -Wpedantic -Wall -Wextra -Werror -O2 -Iinclude
 DBGFLAGS = -std=c11 -Wpedantic -Wall -Wextra -Werror -g -fsanitize=address,undefined -Iinclude
 LDLIBS  = -lm
 
-SRC = src/fft.c
-TESTS = tests/test_cplx tests/test_fft
+SRC = src/fft.c src/io.c
+TESTS = tests/test_cplx tests/test_fft tests/test_params
 
 all: fmcw_frontend
 

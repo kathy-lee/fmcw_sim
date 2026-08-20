@@ -28,3 +28,10 @@ docs/
 tests/golden/*.npy
 
 data/**
+
+# c_frontend build artifacts
+c_frontend/fmcw_frontend
+c_frontend/fmcw_frontend_debug
+c_frontend/tests/test_*
+!c_frontend/tests/test_*.c
+c_frontend/tests/tmp_*

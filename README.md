@@ -14,11 +14,23 @@ The core of the project is an end-to-end chain from a synthetic FMCW beat-signal
 frame to confirmed tracks. Pure NumPy; each stage is an independent, testable
 module.
 
+SISO (single channel):
+
 ```
-generate ─► range-Doppler ─► CFAR ─► clustering ─┬────────────────────────► tracking
- (frame)      (RD map)       (cells)  (detections)│                            (tracks)
-                                                  └─(MIMO)─► NCI ─► DoA ─► point cloud ─┘
+generate ─► range-Doppler ─► CFAR ─► clustering ─► tracking
+ (frame)      (RD map)      (cells) (detections)   (tracks)
 ```
+
+MIMO (virtual array):
+
+```
+generate ─► range-Doppler ─► NCI ─► CFAR ─► DoA ─► point cloud ─► clustering ─► tracking
+ (frame)    (per channel)  (power) (cells)  (az)  (x,y,v,snr)     (objects)    (tracks)
+```
+
+The two paths differ after CFAR: SISO clusters detected *cells* directly on the
+RD grid, while MIMO first turns each detected cell into Cartesian points (via
+per-cell DoA), then clusters the *point cloud*.
 
 | Stage | Module | Entry point | What it does |
 |-------|--------|-------------|--------------|

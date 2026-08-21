@@ -12,7 +12,8 @@ import scipy.ndimage
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from processing.doa import _peaks, bartlett, spectrum, steering_matrix
+from processing.doa import _peaks, bartlett, estimate_doa, spectrum, steering_matrix
+from processing.point_cloud import tdm_doppler_compensation
 from processing.range_doppler import range_doppler
 
 OUT = Path(__file__).resolve().parents[1] / "c_frontend" / "tests" / "vectors"
@@ -90,6 +91,35 @@ def main():
     pos8.astype(np.float64).tofile(OUT / "doa_pos.bin")
     P.astype(np.float64).tofile(OUT / "doa_spec.bin")
     pk.astype(np.float64).tofile(OUT / "doa_peaks.bin")
+
+    # --- point cloud (V=4 as 2x2 TDM, C=8, R=6, 3 detections) ------------- #
+    PV, PC, PR, NTX, NRX = 4, 8, 6, 2, 2
+    RPB = 0.3
+    pvel = np.linspace(-2.0, 1.5, PC)                # exact halves
+    ppos = 0.5 * np.arange(PV)
+    pc_stack = cvec(rng, PV * PC * PR).reshape(PV, PC, PR)
+    pc_mask = np.zeros((PC, PR), dtype=bool)
+    pc_mask[0, 5] = pc_mask[3, 2] = pc_mask[7, 4] = True
+    grid_deg = np.arange(-90.0, 90.0 + 1e-9, 1.0)
+    A32p = steering_matrix(ppos, np.deg2rad(grid_deg)).astype(np.complex64)
+    rows, snap0 = [], None
+    for d, r in np.argwhere(pc_mask):
+        cs = tdm_doppler_compensation(pc_stack[:, d, r], d, PC, NTX, NRX)
+        if snap0 is None:
+            snap0 = cs.astype(np.complex64)
+        snr = 10.0 * np.log10(np.sum(np.abs(cs) ** 2) + 1e-12)
+        for az in estimate_doa(cs, ppos, method="bartlett", n_sources=1):
+            # Determinism guard: float32 steering + float32 snapshot (the C
+            # arithmetic) must land on the same grid maximum.
+            P32p = np.abs(A32p.conj().T.astype(np.complex128)
+                          @ cs.astype(np.complex64).astype(np.complex128)) ** 2
+            assert _peaks(P32p, grid_deg, 1)[0] == az, "float32 flips a PC angle"
+            rows.append([r, d, az, r * RPB * np.cos(np.deg2rad(az)),
+                         r * RPB * np.sin(np.deg2rad(az)), pvel[d], snr])
+    pc_stack.tofile(OUT / "pc_in.bin")
+    pc_mask.astype(np.uint8).tofile(OUT / "pc_mask.bin")
+    np.array(rows, dtype=np.float64).tofile(OUT / "pc_out.bin")
+    snap0.tofile(OUT / "pc_snap0.bin")
 
     for f in sorted(OUT.iterdir()):
         print(f"{f.name}: {f.stat().st_size} bytes")

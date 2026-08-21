@@ -121,29 +121,39 @@ int buffers_alloc(FrontendBuffers *b, const FrontendParams *p)
     size_t V = (size_t)p->n_virtual, C = (size_t)p->n_chirps, S = (size_t)p->n_samples;
     b->adc_n = V * C * S;
     b->rd_n = V * C * (S / 2);
+    b->cells_n = C * (S / 2);
     b->adc = malloc(b->adc_n * sizeof(cplx));
     b->rd = malloc(b->rd_n * sizeof(cplx));
-    if (!b->adc || !b->rd) { buffers_free(b); return -1; }
+    b->power = malloc(b->cells_n * sizeof(double));
+    b->mask = malloc(b->cells_n);
+    b->det = malloc(b->cells_n * sizeof(Detection));
+    if (!b->adc || !b->rd || !b->power || !b->mask || !b->det)
+        { buffers_free(b); return -1; }
     return 0;
 }
 
 void buffers_free(FrontendBuffers *b)
 {
-    free(b->adc);
-    free(b->rd);
-    b->adc = NULL;
-    b->rd = NULL;
-    b->adc_n = b->rd_n = 0;
+    free(b->adc); free(b->rd); free(b->power); free(b->mask); free(b->det);
+    b->adc = NULL; b->rd = NULL;
+    b->power = NULL; b->mask = NULL; b->det = NULL;
+    b->adc_n = b->rd_n = b->cells_n = 0;
 }
 
 void print_memory_summary(const FrontendBuffers *b, FILE *out)
 {
-    size_t adc_bytes = b->adc_n * sizeof(cplx);
-    size_t rd_bytes = b->rd_n * sizeof(cplx);
+    size_t adc_b = b->adc_n * sizeof(cplx);
+    size_t rd_b = b->rd_n * sizeof(cplx);
+    size_t pw_b = b->cells_n * sizeof(double);
+    size_t mk_b = b->cells_n;
+    size_t dt_b = b->cells_n * sizeof(Detection);
     fprintf(out, "memory summary:\n");
-    fprintf(out, "  adc_cube  %10zu bytes\n", adc_bytes);
-    fprintf(out, "  rd_cube   %10zu bytes\n", rd_bytes);
-    fprintf(out, "  total     %10zu bytes\n", adc_bytes + rd_bytes);
+    fprintf(out, "  adc_cube    %10zu bytes\n", adc_b);
+    fprintf(out, "  rd_cube     %10zu bytes\n", rd_b);
+    fprintf(out, "  power_map   %10zu bytes\n", pw_b);
+    fprintf(out, "  cfar_mask   %10zu bytes\n", mk_b);
+    fprintf(out, "  detections  %10zu bytes\n", dt_b);
+    fprintf(out, "  total       %10zu bytes\n", adc_b + rd_b + pw_b + mk_b + dt_b);
 }
 
 /* fread returns the number of complete items read; the extra fgetc probes
@@ -160,5 +170,39 @@ int load_frame(const char *path, cplx *buf, size_t n)
         fprintf(stderr, "frame %s: expected %zu samples\n", path, n);
         return -1;
     }
+    return 0;
+}
+
+int csv_write_header(FILE *f)
+{
+    return fprintf(f,
+        "frame,x,y,v_radial,snr_db,range_bin,doppler_bin,azimuth_deg\n") < 0
+        ? -1 : 0;
+}
+
+/* Column order differs from the Detection field order on purpose: the
+ * Cartesian row leads (what consumers plot), provenance trails. */
+int csv_write_detections(FILE *f, int frame, const Detection *det, int n)
+{
+    for (int i = 0; i < n; i++) {
+        if (fprintf(f, "%d,%.9g,%.9g,%.9g,%.9g,%d,%d,%.9g\n",
+                    frame, det[i].x, det[i].y, det[i].v_radial, det[i].snr_db,
+                    det[i].range_bin, det[i].doppler_bin,
+                    det[i].azimuth_deg) < 0)
+            return -1;
+    }
+    return 0;
+}
+
+int dump_stage(const char *dir, const char *stem, int frame,
+               const void *buf, size_t nbytes)
+{
+    char path[1024];
+    snprintf(path, sizeof path, "%s/%s_%04d.bin", dir, stem, frame);
+    FILE *f = fopen(path, "wb");
+    if (!f) { fprintf(stderr, "cannot open %s\n", path); return -1; }
+    size_t wrote = fwrite(buf, 1, nbytes, f);
+    fclose(f);
+    if (wrote != nbytes) { fprintf(stderr, "short write to %s\n", path); return -1; }
     return 0;
 }

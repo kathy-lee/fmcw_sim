@@ -1,7 +1,8 @@
 """Golden validation of the C front end against the Python reference.
 
-Task 7 adds the exporter test; Task 9 adds the build fixture, the C unit-test
-wrapper, and the RD-cube comparison.
+Covers the exporter contract, the C unit-test suite (via make), and
+stage-level comparisons of the C binary's output against the Python
+pipeline on exported frames.
 """
 import shutil
 import subprocess
@@ -10,7 +11,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import scipy.ndimage
 
+from processing.doa import estimate_doa
+from processing.point_cloud import integrate, tdm_doppler_compensation
 from processing.range_doppler import range_doppler
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -96,3 +100,125 @@ def test_rd_cube_matches_python(binary, exported, tmp_path):
         scale = np.max(np.abs(ref))
         err = np.max(np.abs(got.astype(np.complex128) - ref))
         assert err <= 1e-4 * scale, f"frame {i}: max err {err:.3g} vs scale {scale:.3g}"
+
+
+@pytest.fixture(scope="module")
+def c_run(binary, exported, tmp_path_factory):
+    """One full C run over the exported frames: CSV + per-stage dumps."""
+    out = tmp_path_factory.mktemp("c_run")
+    dump = out / "dump"
+    dump.mkdir()
+    subprocess.run(
+        [str(binary), "--config", str(exported / "params.cfg"),
+         "--frames", str(exported / "frames"),
+         "--out", str(out / "detections.csv"), "--dump", str(dump)],
+        check=True)
+    return out
+
+
+def _dims(cfg):
+    return int(cfg["n_virtual"]), int(cfg["n_chirps"]), int(cfg["n_samples"])
+
+
+def _python_rd_power(exported, cfg, i):
+    V, C, S = _dims(cfg)
+    raw = np.fromfile(exported / "frames" / f"frame_{i:04d}.bin",
+                      dtype=np.complex64).reshape(V, C, S)
+    rd = np.stack([range_doppler(raw[v]) for v in range(V)])
+    return rd, integrate(rd)
+
+
+def _cfar_reference(cfg, power):
+    """Python-side mask plus borderline classification.
+
+    Noise via scipy uniform_filter (the authentic Python operator) but with
+    the exported alpha — identical to the alpha the C binary used, and
+    itself validated by test_export_frames_and_config. Cells whose
+    cell/threshold ratio sits within 1e-4 of 1.0 are 'borderline': a float
+    rounding difference can legitimately flip them, so mask comparisons
+    exempt them.
+    """
+    Gd, Gr = int(cfg["cfar_guard_d"]), int(cfg["cfar_guard_r"])
+    Td, Tr = int(cfg["cfar_training_d"]), int(cfg["cfar_training_r"])
+    alpha = float(cfg["cfar_alpha"])
+    lin = power + 1e-12
+    fd, fr = 2 * (Gd + Td) + 1, 2 * (Gr + Tr) + 1
+    gd, gr = 2 * Gd + 1, 2 * Gr + 1
+    sum_full = scipy.ndimage.uniform_filter(lin, size=(fd, fr), mode="nearest") * fd * fr
+    sum_inner = scipy.ndimage.uniform_filter(lin, size=(gd, gr), mode="nearest") * gd * gr
+    noise = (sum_full - sum_inner) / (fd * fr - gd * gr)
+    ratio = lin / (alpha * noise)
+    borderline = np.abs(ratio - 1.0) <= 1e-4
+    mask = ratio > 1.0
+    mask[:, :int(cfg["min_range_bins"])] = False
+    return mask, borderline
+
+
+@needs_gcc
+def test_power_map_matches_python(c_run, exported):
+    cfg = _read_cfg(exported / "params.cfg")
+    _, C, S = _dims(cfg)
+    for i in range(3):
+        _, ref = _python_rd_power(exported, cfg, i)
+        got = np.fromfile(c_run / "dump" / f"power_{i:04d}.bin",
+                          dtype=np.float64).reshape(C, S // 2)
+        err = np.max(np.abs(got - ref))
+        assert err <= 1e-6 * ref.max(), f"frame {i}: power err {err:.3g}"
+
+
+@needs_gcc
+def test_cfar_mask_matches_python(c_run, exported):
+    cfg = _read_cfg(exported / "params.cfg")
+    _, C, S = _dims(cfg)
+    n_border_total = 0
+    for i in range(3):
+        _, power = _python_rd_power(exported, cfg, i)
+        mask_py, border = _cfar_reference(cfg, power)
+        mask_c = np.fromfile(c_run / "dump" / f"mask_{i:04d}.bin",
+                             dtype=np.uint8).reshape(C, S // 2).astype(bool)
+        n_border_total += int(border.sum())
+        bad = (mask_c != mask_py) & ~border
+        assert not bad.any(), \
+            f"frame {i}: {bad.sum()} non-borderline cell(s) differ at {np.argwhere(bad)[:5]}"
+    print(f"\nborderline cells exempted: {n_border_total}")
+
+
+@needs_gcc
+def test_point_cloud_matches_python(c_run, exported):
+    cfg = _read_cfg(exported / "params.cfg")
+    V, C, S = _dims(cfg)
+    pos = np.array([float(v) for v in cfg["pos_wl"].split(",")])
+    vel = np.array([float(v) for v in cfg["velocity_axis"].split(",")])
+    rpb = float(cfg["range_per_bin"])
+    rows = np.genfromtxt(c_run / "detections.csv", delimiter=",", names=True)
+    rows = np.atleast_1d(rows)
+
+    for i in range(3):
+        rd, power = _python_rd_power(exported, cfg, i)
+        mask_py, border = _cfar_reference(cfg, power)
+        fr = rows[rows["frame"] == i]
+        c_cells = {(int(r["doppler_bin"]), int(r["range_bin"])): r for r in fr}
+
+        # Every C detection must be a Python detection or borderline.
+        for (d, r) in c_cells:
+            assert mask_py[d, r] or border[d, r], \
+                f"frame {i}: C-only detection at d={d}, r={r}"
+
+        # Every non-borderline Python detection must appear with matching values.
+        for d, r in np.argwhere(mask_py & ~border):
+            key = (int(d), int(r))
+            assert key in c_cells, f"frame {i}: missing detection d={d}, r={r}"
+            row = c_cells[key]
+            snap = tdm_doppler_compensation(rd[:, d, r], d, C,
+                                            int(cfg["n_tx"]), int(cfg["n_rx"]))
+            snr = 10.0 * np.log10(np.sum(np.abs(snap) ** 2) + 1e-12)
+            az = estimate_doa(snap, pos, method="bartlett",
+                              n_sources=int(cfg["doa_n_sources"]))[0]
+            assert row["azimuth_deg"] == az, \
+                f"frame {i} d={d} r={r}: az {row['azimuth_deg']} != {az}"
+            for name, ref in (("x", r * rpb * np.cos(np.deg2rad(az))),
+                              ("y", r * rpb * np.sin(np.deg2rad(az))),
+                              ("v_radial", vel[d]), ("snr_db", snr)):
+                tol = 1e-4 * max(abs(ref), 1.0)
+                assert abs(row[name] - ref) <= tol, \
+                    f"frame {i} d={d} r={r}: {name} {row[name]} != {ref}"

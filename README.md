@@ -173,7 +173,7 @@ slice). The reusable logic lives in `processing/cube_export.py` (`extract_cubes`
 
 The following reports probe where each stage of the chain fails and what the governing
 lever is. They **build on one another**: later reports state only their
-methodology deltas and quote earlier results as baselines. Report 1&2 are failure analysis, report 3&4&5 are extensions.
+methodology deltas and quote earlier results as baselines. Report 1&2 are failure analysis, report 3&4&5 are extensions, report 6 is an implementation study.
 
 | # | Report | Stage under test | Serves as baseline for |
 |---|---|---|---|
@@ -182,6 +182,7 @@ methodology deltas and quote earlier results as baselines. Report 1&2 are failur
 | 3 | [Target Realism Test](report/target_realism/target_realism_test_report.md) | Target models (generator) → effects across the whole chain | realistic-target (Swerling fluctuation + extended multi-scatterer) detection & track penalties |
 | 4 | [MIMO Evaluation](report/mimo_evaluation/mimo_evaluation_report.md) | TDM-MIMO front end (NCI, DoA, Cartesian clustering + tracking) | float MIMO detection/angle/tracking baseline |
 | 5 | [Fixed-Point MIMO Front-End](report/fixedpoint_evaluation/fixedpoint_evaluation_report.md) | Front-end finite precision (ADC→FFT→NCI→CFAR input) | bit-width knees + radar-cube memory benefit |
+| 6 | [C Implementation](report/c_implementation/c_implementation.md) | C11 port of the MIMO front end (`c_frontend/`) | stage-validated C baseline + C-vs-Python timing |
 
 ---
 

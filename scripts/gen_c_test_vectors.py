@@ -38,6 +38,12 @@ def main():
     frame.tofile(OUT / "rd_in.bin")
     out.astype(np.complex64).tofile(OUT / "rd_out.bin")
 
+    # --- NCI: non-coherent integration ----------------------------------- #
+    stack = cvec(rng, 3 * 4 * 6).reshape(3, 4, 6)        # (V, C, R)
+    power = np.sum(np.abs(stack.astype(np.complex128)) ** 2, axis=0)
+    stack.tofile(OUT / "nci_in.bin")
+    power.astype(np.float64).tofile(OUT / "nci_out.bin")
+
     for f in sorted(OUT.iterdir()):
         print(f"{f.name}: {f.stat().st_size} bytes")
 

@@ -12,6 +12,7 @@ import scipy.ndimage
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from processing.doa import _peaks, bartlett, spectrum, steering_matrix
 from processing.range_doppler import range_doppler
 
 OUT = Path(__file__).resolve().parents[1] / "c_frontend" / "tests" / "vectors"
@@ -72,6 +73,23 @@ def main():
     cmask[:, :MIN_RANGE] = False
     pw.tofile(OUT / "cfar_power.bin")
     cmask.astype(np.uint8).tofile(OUT / "cfar_mask.bin")
+
+    # --- Bartlett DoA (two sources, 8-element half-wavelength ULA) -------- #
+    pos8 = 0.5 * np.arange(8)
+    a20 = np.exp(1j * 2 * np.pi * pos8 * np.sin(np.deg2rad(20.0)))
+    am40 = np.exp(1j * 2 * np.pi * pos8 * np.sin(np.deg2rad(-40.0)))
+    snap = (a20 + 0.5 * am40 + 0.05 * cvec(rng, 8)).astype(np.complex64)
+    g, P = spectrum(snap, pos8, "bartlett")
+    pk = bartlett(snap, pos8, 2)
+    # Determinism guard: C stores the steering matrix in float32. Recompute
+    # the spectrum through a float32 matrix and require the same peaks.
+    A32 = steering_matrix(pos8, np.deg2rad(g)).astype(np.complex64)
+    P32 = np.abs(A32.conj().T.astype(np.complex128) @ snap.astype(np.complex128)) ** 2
+    assert np.array_equal(_peaks(P32, g, 2), pk), "float32 steering flips a DoA peak"
+    snap.tofile(OUT / "doa_snap.bin")
+    pos8.astype(np.float64).tofile(OUT / "doa_pos.bin")
+    P.astype(np.float64).tofile(OUT / "doa_spec.bin")
+    pk.astype(np.float64).tofile(OUT / "doa_peaks.bin")
 
     for f in sorted(OUT.iterdir()):
         print(f"{f.name}: {f.stat().st_size} bytes")

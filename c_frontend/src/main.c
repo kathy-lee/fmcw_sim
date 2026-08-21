@@ -66,7 +66,8 @@ int main(int argc, char **argv)
     print_memory_summary(&buf, stdout);
 
     RdPlan rd_plan;
-    DoaPlan doa_plan;
+    DoaPlan doa_plan = {0};
+    CfarPlan cfar_plan = {0};
     FILE *csv = NULL;
     int status = 1;
     if (rd_plan_init(&rd_plan, p.n_chirps, p.n_samples) != 0) {
@@ -76,6 +77,10 @@ int main(int argc, char **argv)
     }
     if (doa_plan_init(&doa_plan, p.pos_wl, p.n_virtual) != 0) {
         fprintf(stderr, "doa plan init failed\n");
+        goto done;
+    }
+    if (cfar_plan_init(&cfar_plan, &p) != 0) {
+        fprintf(stderr, "cfar plan init failed\n");
         goto done;
     }
     if (out_csv) {
@@ -110,7 +115,7 @@ int main(int argc, char **argv)
         double t1 = now_s();
         nci_integrate(buf.rd, p.n_virtual, (int)buf.cells_n, buf.power);
         double t2 = now_s();
-        cfar_ca_mask(buf.power, &p, buf.mask);
+        cfar_ca_mask(&cfar_plan, buf.power, &p, buf.mask);
         double t3 = now_s();
         int n_det = pointcloud_build(buf.rd, buf.mask, &p, &doa_plan,
                                      buf.det, (int)buf.cells_n);
@@ -149,6 +154,7 @@ int main(int argc, char **argv)
 
 done:
     if (csv) fclose(csv);
+    cfar_plan_free(&cfar_plan);
     doa_plan_free(&doa_plan);
     rd_plan_free(&rd_plan);
     buffers_free(&buf);

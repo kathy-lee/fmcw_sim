@@ -3,6 +3,7 @@
 Task 7 adds the exporter test; Task 9 adds the build fixture, the C unit-test
 wrapper, and the RD-cube comparison.
 """
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -10,7 +11,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from processing.range_doppler import range_doppler
+
 ROOT = Path(__file__).resolve().parents[1]
+CDIR = ROOT / "c_frontend"
+
+needs_gcc = pytest.mark.skipif(shutil.which("gcc") is None,
+                               reason="gcc not available")
 
 
 def _read_cfg(path):
@@ -55,3 +62,37 @@ def test_export_frames_and_config(exported):
         data = np.fromfile(f, dtype=np.complex64)
         assert data.size == V * C * S
         assert np.all(np.isfinite(data.view(np.float32)))
+
+
+@pytest.fixture(scope="module")
+def binary():
+    subprocess.run(["make", "-C", str(CDIR)], check=True)
+    return CDIR / "fmcw_frontend"
+
+
+@needs_gcc
+def test_c_unit_tests():
+    subprocess.run(["make", "-C", str(CDIR), "test"], check=True)
+
+
+@needs_gcc
+def test_rd_cube_matches_python(binary, exported, tmp_path):
+    dump = tmp_path / "dump"
+    dump.mkdir()
+    subprocess.run(
+        [str(binary), "--config", str(exported / "params.cfg"),
+         "--frames", str(exported / "frames"), "--dump", str(dump)],
+        check=True)
+
+    cfg = _read_cfg(exported / "params.cfg")
+    V, C, S = int(cfg["n_virtual"]), int(cfg["n_chirps"]), int(cfg["n_samples"])
+
+    for i in range(3):
+        raw = np.fromfile(exported / "frames" / f"frame_{i:04d}.bin",
+                          dtype=np.complex64).reshape(V, C, S)
+        ref = np.stack([range_doppler(raw[v]) for v in range(V)])
+        got = np.fromfile(dump / f"rd_{i:04d}.bin",
+                          dtype=np.complex64).reshape(V, C, S // 2)
+        scale = np.max(np.abs(ref))
+        err = np.max(np.abs(got.astype(np.complex128) - ref))
+        assert err <= 1e-4 * scale, f"frame {i}: max err {err:.3g} vs scale {scale:.3g}"

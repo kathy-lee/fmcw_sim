@@ -78,6 +78,7 @@ both SISO (2-D) and MIMO (3-D) frames. Subscribers deserialize with
 | SISO tracked | `streaming_subscriber.py` | RD → CFAR → cluster → track (1-D) | layered RD view + track plot |
 | MIMO point cloud | `streaming_subscriber_mimo_pointcloud.py` | RD → NCI → CFAR → DoA → cloud | RD+CFAR / DoA spectra / BEV cloud |
 | MIMO tracked | `streaming_subscriber_mimo.py` | + Cartesian clustering & CTRV-EKF | BEV 2-D tracks (id-labelled trails) |
+| MIMO tracked, hybrid | `streaming_subscriber_mimo_hybrid.py` | as above, front end switchable `--frontend {python,c}` (C via `libfmcw.so`) | live A/B of Python vs C front end, same tracks |
 
 ### Usage
 

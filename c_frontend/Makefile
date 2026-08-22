@@ -3,8 +3,8 @@ CFLAGS  = -std=c11 -Wpedantic -Wall -Wextra -Werror -O2 -Iinclude
 DBGFLAGS = -std=c11 -Wpedantic -Wall -Wextra -Werror -g -fsanitize=address,undefined -Iinclude
 LDLIBS  = -lm
 
-SRC = src/fft.c src/io.c src/rd.c src/nci.c src/cfar.c src/doa.c src/pointcloud.c
-TESTS = tests/test_cplx tests/test_fft tests/test_params tests/test_io tests/test_rd tests/test_nci tests/test_cfar tests/test_doa tests/test_pointcloud
+SRC = src/fft.c src/io.c src/rd.c src/nci.c src/cfar.c src/doa.c src/pointcloud.c src/api.c
+TESTS = tests/test_cplx tests/test_fft tests/test_params tests/test_io tests/test_rd tests/test_nci tests/test_cfar tests/test_doa tests/test_pointcloud tests/test_api
 
 all: fmcw_frontend
 
@@ -14,6 +14,9 @@ fmcw_frontend: src/main.c $(SRC) include/fmcw.h
 debug: src/main.c $(SRC) include/fmcw.h
 	$(CC) $(DBGFLAGS) -o fmcw_frontend_debug src/main.c $(SRC) $(LDLIBS)
 
+lib: $(SRC) include/fmcw.h
+	$(CC) $(CFLAGS) -fPIC -shared -o libfmcw.so $(SRC) $(LDLIBS)
+
 tests/%: tests/%.c $(SRC) include/fmcw.h tests/check.h
 	$(CC) $(CFLAGS) -Itests -o $@ $< $(SRC) $(LDLIBS)
 
@@ -21,6 +24,6 @@ test: $(TESTS)
 	@set -e; for t in $(TESTS); do ./$$t; done
 
 clean:
-	rm -f fmcw_frontend fmcw_frontend_debug $(TESTS)
+	rm -f fmcw_frontend fmcw_frontend_debug libfmcw.so $(TESTS)
 
-.PHONY: all debug test clean
+.PHONY: all debug test lib clean

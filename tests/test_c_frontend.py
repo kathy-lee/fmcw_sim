@@ -222,3 +222,55 @@ def test_point_cloud_matches_python(c_run, exported):
                 tol = 1e-4 * max(abs(ref), 1.0)
                 assert abs(row[name] - ref) <= tol, \
                     f"frame {i} d={d} r={r}: {name} {row[name]} != {ref}"
+
+
+@pytest.fixture(scope="module")
+def c_binding(exported):
+    subprocess.run(["make", "-C", str(CDIR), "lib"], check=True)
+    from processing.c_frontend import CFrontend
+    fe = CFrontend(exported / "params.cfg")
+    yield fe
+    fe.close()
+
+
+@needs_gcc
+def test_c_binding_matches_python(c_binding, exported):
+    """In-process, per-stage comparison of the C library against the Python
+    reference — each stage's C output against the Python chain, same
+    tolerances and borderline rule as the file-based tests."""
+    fe = c_binding
+    cfg = _read_cfg(exported / "params.cfg")
+    V, C, S = _dims(cfg)
+    assert fe.dims == (V, C, S)
+
+    for i in range(3):
+        rd_py, power_py = _python_rd_power(exported, cfg, i)
+        raw = np.fromfile(exported / "frames" / f"frame_{i:04d}.bin",
+                          dtype=np.complex64).reshape(V, C, S)
+
+        rd_c = fe.rd(raw)
+        scale = np.max(np.abs(rd_py))
+        assert np.max(np.abs(rd_c - rd_py)) <= 1e-4 * scale
+
+        power_c = fe.nci(rd_c)
+        assert np.max(np.abs(power_c - power_py)) <= 1e-6 * power_py.max()
+
+        mask_py, border = _cfar_reference(cfg, power_py)
+        mask_c = fe.cfar(power_c)
+        assert not ((mask_c != mask_py) & ~border).any()
+
+        det = fe.pointcloud(rd_c, mask_c)
+        cells_c = {(int(r[1]), int(r[0])): r for r in det}
+        for d, r in np.argwhere(mask_py & ~border):
+            key = (int(d), int(r))
+            assert key in cells_c, f"frame {i}: missing detection d={d}, r={r}"
+            snap = tdm_doppler_compensation(rd_py[:, d, r], d, C,
+                                            int(cfg["n_tx"]), int(cfg["n_rx"]))
+            az = estimate_doa(snap, np.array(
+                [float(v) for v in cfg["pos_wl"].split(",")]),
+                method="bartlett", n_sources=int(cfg["doa_n_sources"]))[0]
+            assert cells_c[key][2] == az
+
+        # The facade must agree with its own per-stage chain exactly.
+        det_facade = fe.process_frame(raw)
+        assert np.array_equal(det_facade, det)

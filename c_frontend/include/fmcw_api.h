@@ -35,4 +35,42 @@ int fmcw_nci(void *h, const float *rd, double *power);
 int fmcw_cfar(void *h, const double *power, uint8_t *mask);
 int fmcw_pointcloud(void *h, const float *rd, const uint8_t *mask,
                     double *det, int max_out);
+
+/* ---- fixed-point (Q15) entries ---- */
+
+/* The integer chain, mirroring the float entries above one for one and
+ * sharing the same handle, so both can run on one frame in one process.
+ *
+ * Input is the same float ADC frame the float path takes, because
+ * quantization is the integer path's first stage — moving it outside would
+ * mean the two paths no longer see identical input. Outputs come back in
+ * their native integer types rather than pre-converted, so a caller can see
+ * how many counts a weak target actually occupies:
+ *   rd_q     V*C*(S/2) complex int16 = 2*V*C*(S/2) int16, interleaved I/Q
+ *   power_q  C*(S/2) int64
+ *   mask     C*(S/2) uint8 (0/1), same as the float path
+ *   det      rows of 7 float64, same as the float path — DoA and the
+ *            Cartesian conversion are float in both.
+ *
+ * fmcw_q15_process_frame deliberately has the float facade's exact
+ * signature and contract, so the two are drop-in swappable. */
+int fmcw_q15_rd(void *h, const float *adc, int16_t *rd_q);
+int fmcw_q15_nci(void *h, const int16_t *rd_q, int64_t *power_q);
+int fmcw_q15_cfar(void *h, const int64_t *power_q, uint8_t *mask);
+int fmcw_q15_pointcloud(void *h, const int16_t *rd_q, const uint8_t *mask,
+                        double *det, int max_out);
+int fmcw_q15_process_frame(void *h, const float *adc, double *det, int max_out);
+
+/* Multiply an integer RD value by this to reach the float path's units.
+ * A constant for the life of the handle — with shift-every-stage the whole
+ * scale ledger collapses to one number. Returns 0.0 on a NULL handle. */
+double fmcw_q15_rd_scale(void *h);
+
+/* Saturation counts since the last reset: out[0] from input quantization
+ * (signal beyond the ADC's full scale), out[1] from the range-Doppler
+ * stage (the slow-time mean removal, or the FFT if its magnitude
+ * precondition was broken). Nonzero means an input assumption failed, not
+ * merely that precision was lost. Returns 0, or -1. */
+int fmcw_q15_saturations(void *h, long long out[2]);
+void fmcw_q15_reset_saturations(void *h);
 #endif

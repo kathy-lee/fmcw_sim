@@ -2,6 +2,7 @@
 #define IO_H
 #include <stdio.h>
 #include "fmcw.h"
+#include "fmcw_q15.h"
 #include "params.h"
 #include "pointcloud.h"
 
@@ -14,6 +15,13 @@ typedef struct {
     uint8_t *mask;    /* CFAR mask,   C * (S/2)      cells   */
     Detection *det;   /* point cloud, C * (S/2) capacity (worst case: every
                          cell detected, one source each) */
+    /* The integer working set, sized from the same dimensions as the float
+     * buffers above. There is no mask_q or det_q because neither type
+     * differs between the paths — which means those two buffers hold
+     * whichever chain ran most recently, not both at once. */
+    cplx_q15 *adc_q;  /* quantized input cube, V * C * S      samples */
+    cplx_q15 *rd_q;   /* integer RD cube,      V * C * (S/2)  samples */
+    int64_t *power_q; /* integer NCI map,      C * (S/2)      cells   */
     size_t adc_n, rd_n, cells_n;
 } FrontendBuffers;
 

@@ -30,6 +30,14 @@ int main(void)
     CHECK(fmcw_nci(NULL, NULL, NULL) == -1);
     CHECK(fmcw_cfar(NULL, NULL, NULL) == -1);
     CHECK(fmcw_pointcloud(NULL, NULL, NULL, NULL, 0) == -1);
+    CHECK(fmcw_q15_process_frame(NULL, NULL, NULL, 0) == -1);
+    CHECK(fmcw_q15_rd(NULL, NULL, NULL) == -1);
+    CHECK(fmcw_q15_nci(NULL, NULL, NULL) == -1);
+    CHECK(fmcw_q15_cfar(NULL, NULL, NULL) == -1);
+    CHECK(fmcw_q15_pointcloud(NULL, NULL, NULL, NULL, 0) == -1);
+    CHECK(fmcw_q15_rd_scale(NULL) == 0.0);
+    CHECK(fmcw_q15_saturations(NULL, NULL) == -1);
+    fmcw_q15_reset_saturations(NULL);
 
     void *h = fmcw_create("tests/tmp_api.cfg");
     CHECK(h != NULL);
@@ -55,6 +63,36 @@ int main(void)
     CHECK(fmcw_cfar(h, power, mask) == 0);
     for (int i = 0; i < C * R; i++) CHECK(mask[i] == 0);
     CHECK(fmcw_pointcloud(h, rd, mask, det, MAXD) == 0);
+
+    /* ---- fixed-point chain on the same zeros ---- */
+
+    /* The reconstruction factor: a positive constant for the handle's
+     * lifetime. With adc_full_scale = 1.0 it is S*C/16384 = 8*4/16384. */
+    double scale = fmcw_q15_rd_scale(h);
+    CHECK(scale > 0.0);
+    CHECK_CLOSE(scale, 32.0 / 16384.0, 1e-12);
+
+    long long sat[2];
+    fmcw_q15_reset_saturations(h);
+    CHECK(fmcw_q15_saturations(h, sat) == 0);
+    CHECK(sat[0] == 0 && sat[1] == 0);
+
+    /* The facade takes the same float frame and returns the same row
+     * layout as its float twin — deliberately drop-in swappable. */
+    CHECK(fmcw_q15_process_frame(h, adc, det, MAXD) == 0);
+
+    int16_t rd_q[V * C * R * 2];
+    int64_t power_q[C * R];
+    CHECK(fmcw_q15_rd(h, adc, rd_q) == 0);
+    CHECK(fmcw_q15_nci(h, rd_q, power_q) == 0);
+    for (int i = 0; i < C * R; i++) CHECK(power_q[i] == 0);
+    CHECK(fmcw_q15_cfar(h, power_q, mask) == 0);
+    for (int i = 0; i < C * R; i++) CHECK(mask[i] == 0);
+    CHECK(fmcw_q15_pointcloud(h, rd_q, mask, det, MAXD) == 0);
+
+    /* A silent frame must not have clipped anything. */
+    CHECK(fmcw_q15_saturations(h, sat) == 0);
+    CHECK(sat[0] == 0 && sat[1] == 0);
 
     fmcw_destroy(h);
     CHECK_DONE();

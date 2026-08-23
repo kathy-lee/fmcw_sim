@@ -132,7 +132,11 @@ int buffers_alloc(FrontendBuffers *b, const FrontendParams *p)
     b->power = malloc(b->cells_n * sizeof(double));
     b->mask = malloc(b->cells_n);
     b->det = malloc(b->cells_n * sizeof(Detection));
-    if (!b->adc || !b->rd || !b->power || !b->mask || !b->det)
+    b->adc_q = malloc(b->adc_n * sizeof(cplx_q15));
+    b->rd_q = malloc(b->rd_n * sizeof(cplx_q15));
+    b->power_q = malloc(b->cells_n * sizeof(int64_t));
+    if (!b->adc || !b->rd || !b->power || !b->mask || !b->det ||
+        !b->adc_q || !b->rd_q || !b->power_q)
         { buffers_free(b); return -1; }
     return 0;
 }
@@ -140,8 +144,10 @@ int buffers_alloc(FrontendBuffers *b, const FrontendParams *p)
 void buffers_free(FrontendBuffers *b)
 {
     free(b->adc); free(b->rd); free(b->power); free(b->mask); free(b->det);
+    free(b->adc_q); free(b->rd_q); free(b->power_q);
     b->adc = NULL; b->rd = NULL;
     b->power = NULL; b->mask = NULL; b->det = NULL;
+    b->adc_q = NULL; b->rd_q = NULL; b->power_q = NULL;
     b->adc_n = b->rd_n = b->cells_n = 0;
 }
 
@@ -152,13 +158,25 @@ void print_memory_summary(const FrontendBuffers *b, FILE *out)
     size_t pw_b = b->cells_n * sizeof(double);
     size_t mk_b = b->cells_n;
     size_t dt_b = b->cells_n * sizeof(Detection);
+    size_t adcq_b = b->adc_n * sizeof(cplx_q15);
+    size_t rdq_b = b->rd_n * sizeof(cplx_q15);
+    size_t pwq_b = b->cells_n * sizeof(int64_t);
     fprintf(out, "memory summary:\n");
-    fprintf(out, "  adc_cube    %10zu bytes\n", adc_b);
-    fprintf(out, "  rd_cube     %10zu bytes\n", rd_b);
-    fprintf(out, "  power_map   %10zu bytes\n", pw_b);
-    fprintf(out, "  cfar_mask   %10zu bytes\n", mk_b);
-    fprintf(out, "  detections  %10zu bytes\n", dt_b);
-    fprintf(out, "  total       %10zu bytes\n", adc_b + rd_b + pw_b + mk_b + dt_b);
+    fprintf(out, "  adc_cube      %10zu bytes\n", adc_b);
+    fprintf(out, "  rd_cube       %10zu bytes\n", rd_b);
+    fprintf(out, "  power_map     %10zu bytes\n", pw_b);
+    fprintf(out, "  cfar_mask     %10zu bytes\n", mk_b);
+    fprintf(out, "  detections    %10zu bytes\n", dt_b);
+    fprintf(out, "  adc_cube_q15  %10zu bytes\n", adcq_b);
+    fprintf(out, "  rd_cube_q15   %10zu bytes\n", rdq_b);
+    fprintf(out, "  power_map_q15 %10zu bytes\n", pwq_b);
+    fprintf(out, "  total         %10zu bytes\n",
+            adc_b + rd_b + pw_b + mk_b + dt_b + adcq_b + rdq_b + pwq_b);
+    /* The comparison the fixed-point port exists to make: same cube, half
+     * the bytes. Both are resident here only because this build runs both
+     * chains; a deployed integer front end would carry the q15 pair alone. */
+    fprintf(out, "  (rd_cube_q15 is %.0f%% of rd_cube)\n",
+            100.0 * (double)rdq_b / (double)rd_b);
 }
 
 /* fread returns the number of complete items read; the extra fgetc probes

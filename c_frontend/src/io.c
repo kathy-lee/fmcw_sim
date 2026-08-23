@@ -51,7 +51,7 @@ static int parse_double(const char *val, double *out)
 }
 
 /* Contract in params.h. Mechanism: read line by line, split each at '=' and
- * dispatch on the key through a strcmp chain (16 keys — a table would be
+ * dispatch on the key through a strcmp chain (17 keys — a table would be
  * over-engineering); tick off each key in seen[]. After EOF, reject any
  * missing key, then cross-check the dimensions against each other. All error
  * paths funnel through `goto fail` so fclose happens exactly once. */
@@ -62,7 +62,7 @@ int params_load(const char *path, FrontendParams *p)
     memset(p, 0, sizeof *p);
 
     /* One flag per required key, in declaration order. */
-    enum { N_KEYS = 16 };
+    enum { N_KEYS = 17 };
     int seen[N_KEYS] = {0};
     char line[8192];
     int ok = 0, lineno = 0;
@@ -92,8 +92,9 @@ int params_load(const char *path, FrontendParams *p)
         else if (!strcmp(key, "range_per_bin"))   { r = parse_double(val, &p->range_per_bin); seen[11] = 1; }
         else if (!strcmp(key, "pfa"))             { r = parse_double(val, &p->pfa);          seen[12] = 1; }
         else if (!strcmp(key, "cfar_alpha"))      { r = parse_double(val, &p->cfar_alpha);   seen[13] = 1; }
-        else if (!strcmp(key, "velocity_axis"))   { r = parse_list(val, p->velocity_axis, FMCW_MAX_LIST, &p->n_velocity); seen[14] = 1; }
-        else if (!strcmp(key, "pos_wl"))          { r = parse_list(val, p->pos_wl, FMCW_MAX_LIST, &p->n_pos); seen[15] = 1; }
+        else if (!strcmp(key, "adc_full_scale"))  { r = parse_double(val, &p->adc_full_scale); seen[14] = 1; }
+        else if (!strcmp(key, "velocity_axis"))   { r = parse_list(val, p->velocity_axis, FMCW_MAX_LIST, &p->n_velocity); seen[15] = 1; }
+        else if (!strcmp(key, "pos_wl"))          { r = parse_list(val, p->pos_wl, FMCW_MAX_LIST, &p->n_pos); seen[16] = 1; }
         else { fprintf(stderr, "params:%d: unknown key '%s'\n", lineno, key); goto fail; }
         if (r != 0) { fprintf(stderr, "params:%d: bad value for '%s'\n", lineno, key); goto fail; }
     }
@@ -106,6 +107,10 @@ int params_load(const char *path, FrontendParams *p)
         p->n_virtual != p->n_tx * p->n_rx ||
         p->n_velocity != p->n_chirps || p->n_pos != p->n_virtual) {
         fprintf(stderr, "params: inconsistent dimensions\n");
+        goto fail;
+    }
+    if (p->adc_full_scale <= 0.0) {
+        fprintf(stderr, "params: adc_full_scale must be > 0\n");
         goto fail;
     }
     ok = 1;

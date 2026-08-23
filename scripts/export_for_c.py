@@ -1,11 +1,13 @@
 """Export MIMO ADC frames + params.cfg for the C front end.
 
 Frames: raw complex64 (interleaved float32 I/Q), shape V x C x S, C-order —
-the C `cplx` buffer format. params.cfg: flat key=value, the 16 keys the C
-`params_load` requires (spec 2026-08-20-c-frontend-design.md §4). cfar_alpha
-is calibrated here (offline, as firmware config) with the exact arguments
-`process_mimo_frame` uses: CA, guard/training/pfa from _CFAR_KW,
-window="hann", dc_removal=True, clutter_removal=False, n_integrate=V.
+the C `cplx` buffer format. params.cfg: flat key=value, the 17 keys the C
+`params_load` requires. cfar_alpha is calibrated here (offline, as firmware
+config) with the exact arguments `process_mimo_frame` uses: CA,
+guard/training/pfa from _CFAR_KW, window="hann", dc_removal=True,
+clutter_removal=False, n_integrate=V. adc_full_scale is derived from the
+exported frames' peak component with headroom, standing in for the fixed
+input range a real ADC is built with.
 """
 import argparse
 import sys
@@ -22,6 +24,12 @@ from simulator.wire import build_header
 
 MIN_RANGE_BINS = 6   # near-DC gate, matching process_mimo_frame's default
 
+# Margin between the exported frames' peak and the ADC's full scale. A real
+# converter's range is fixed at design time, so live frames may well be
+# louder than the ones this value came from; the headroom absorbs the usual
+# case and the front end's saturation counter reports the rest.
+ADC_HEADROOM = 1.2
+
 
 def export(scenario, out_dir, frames):
     cfg, targets = load_scenario(scenario)
@@ -31,13 +39,21 @@ def export(scenario, out_dir, frames):
 
     header = None
     frame = None
+    peak = 0.0
     for i in range(frames):
         frame = gen.generate_frame_mimo(targets, frame_index=i)
         if header is None:
             header = build_header(frame=frame, frame_id=i, topic="cube",
                                   metadata=gen.metadata(), ground_truth=[],
                                   timestamp_unix_s=0.0)
+        # Peak per component, not per complex magnitude: the quantizer grids
+        # I and Q separately, so each one's excursion is what can clip.
+        peak = max(peak, float(np.max(np.abs(frame.real))),
+                   float(np.max(np.abs(frame.imag))))
         frame.astype(np.complex64).tofile(out / "frames" / f"frame_{i:04d}.bin")
+    # An all-zero export would otherwise write a full scale of 0, which the C
+    # parser rejects; any positive value is equally meaningless there.
+    adc_full_scale = peak * ADC_HEADROOM if peak > 0.0 else 1.0
 
     p = frame_params(header)
     n_virtual, n_chirps, n_samples = frame.shape
@@ -64,6 +80,7 @@ def export(scenario, out_dir, frames):
         f"range_per_bin={float(p['range_axis'][1])!r}",
         f"pfa={pfa!r}",
         f"cfar_alpha={alpha!r}",
+        f"adc_full_scale={adc_full_scale!r}",
         f"velocity_axis={fmt_list(p['vel_axis'])}",
         f"pos_wl={fmt_list(p['pos'])}",
     ]

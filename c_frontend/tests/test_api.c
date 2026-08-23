@@ -8,7 +8,7 @@ static const char *CFG =
     "n_virtual=6\nn_chirps=4\nn_samples=8\nn_tx=2\nn_rx=3\n"
     "doa_n_sources=1\ncfar_guard_d=1\ncfar_guard_r=1\n"
     "cfar_training_d=1\ncfar_training_r=2\nmin_range_bins=1\n"
-    "range_per_bin=0.5\npfa=1e-4\ncfar_alpha=8.0\n"
+    "range_per_bin=0.5\npfa=1e-4\ncfar_alpha=8.0\nadc_full_scale=1.0\n"
     "velocity_axis=-1.0,-0.5,0.0,0.5\n"
     "pos_wl=0.0,0.5,1.0,1.5,2.0,2.5\n";
 

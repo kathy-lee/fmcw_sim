@@ -3,7 +3,7 @@
 #include "params.h"
 #include "check.h"
 
-/* A minimal but complete params.cfg: all 16 required keys, tiny dimensions
+/* A minimal but complete params.cfg: all 17 required keys, tiny dimensions
  * (V=6=2x3, C=4, S=8) so expected values are easy to eyeball. */
 static const char *GOOD =
     "n_virtual=6\n"
@@ -20,6 +20,7 @@ static const char *GOOD =
     "range_per_bin=0.5859375\n"
     "pfa=0.0001\n"
     "cfar_alpha=14.83\n"
+    "adc_full_scale=0.5\n"
     "velocity_axis=-2.0,-1.0,0.0,1.0\n"
     "pos_wl=0.0,0.5,1.0,1.5,2.0,2.5\n";
 
@@ -43,6 +44,7 @@ int main(void)
     CHECK(p.min_range_bins == 6);
     CHECK_CLOSE(p.range_per_bin, 0.5859375, 1e-12);
     CHECK_CLOSE(p.cfar_alpha, 14.83, 1e-12);
+    CHECK_CLOSE(p.adc_full_scale, 0.5, 1e-12);
     CHECK(p.n_velocity == 4);
     CHECK_CLOSE(p.velocity_axis[0], -2.0, 1e-12);
     CHECK_CLOSE(p.velocity_axis[3], 1.0, 1e-12);

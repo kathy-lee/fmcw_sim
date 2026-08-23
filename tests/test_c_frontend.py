@@ -50,7 +50,7 @@ def test_export_frames_and_config(exported):
     required = {"n_virtual", "n_chirps", "n_samples", "n_tx", "n_rx",
                 "doa_n_sources", "cfar_guard_d", "cfar_guard_r",
                 "cfar_training_d", "cfar_training_r", "min_range_bins",
-                "range_per_bin", "pfa", "cfar_alpha",
+                "range_per_bin", "pfa", "cfar_alpha", "adc_full_scale",
                 "velocity_axis", "pos_wl"}
     assert required == set(cfg)
 
@@ -59,6 +59,7 @@ def test_export_frames_and_config(exported):
     assert len(cfg["velocity_axis"].split(",")) == C
     assert len(cfg["pos_wl"].split(",")) == V
     assert float(cfg["cfar_alpha"]) > 1.0
+    assert float(cfg["adc_full_scale"]) > 0.0
 
     frames = sorted((exported / "frames").glob("frame_*.bin"))
     assert len(frames) == 3

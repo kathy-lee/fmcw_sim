@@ -275,3 +275,89 @@ def test_c_binding_matches_python(c_binding, exported):
         # The facade must agree with its own per-stage chain exactly.
         det_facade = fe.process_frame(raw)
         assert np.array_equal(det_facade, det)
+
+
+def _sqnr_db(ref, got):
+    """Signal-to-quantization-noise ratio of `got` against `ref`, in dB."""
+    err = float(np.sum(np.abs(ref - got) ** 2))
+    if err == 0.0:
+        return float("inf")
+    return float(10.0 * np.log10(float(np.sum(np.abs(ref) ** 2)) / err))
+
+
+# Floors, not targets: a broken shift or a lost scale factor collapses
+# SQNR by tens of dB, so these catch regressions without pinning numbers
+# that legitimately drift with the scenario. Measured on this scenario:
+# rd 24.0-24.1 dB, power 59.8-62.8 dB.
+#
+# The gap between the two is not a defect. RD-cube SQNR sums |rd|^2 over
+# every cell while the error is about one LSB in each, so the tens of
+# thousands of near-empty noise cells dominate the error and contribute
+# almost nothing to the signal. The power map weights by |rd|^4, which
+# concentrates the measure on target cells where quantization is
+# negligible. Same cube, two questions.
+#
+# The cube's low figure has a physical cause worth remembering: the
+# per-stage shifts divide by S*C while a coherent tone gains it back, so
+# targets survive at roughly their input amplitude, but thermal noise
+# grows only as sqrt(S*C) and lands below one count. The integer noise
+# floor is set by rounding, not by the radar's own noise.
+SQNR_FLOOR_RD_DB = 20.0
+SQNR_FLOOR_POWER_DB = 50.0
+
+
+@needs_gcc
+def test_q15_matches_float_within_sqnr(c_binding, exported):
+    """Fixed-point chain against the float chain, per stage.
+
+    Integer arithmetic cannot reproduce float results exactly, so this is
+    a statistical comparison rather than the equality the float-vs-Python
+    tests use: SQNR floors per stage, mask agreement, and no saturation.
+    """
+    fe = c_binding
+    cfg = _read_cfg(exported / "params.cfg")
+    V, C, S = _dims(cfg)
+    cells = C * (S // 2)
+
+    for i in range(3):
+        raw = np.fromfile(exported / "frames" / f"frame_{i:04d}.bin",
+                          dtype=np.complex64).reshape(V, C, S)
+        fe.reset_saturations()
+
+        rd_f = fe.rd(raw)
+        rd_q = fe.q15_rd(raw)
+        sqnr_rd = _sqnr_db(rd_f, fe.dequantize_rd(rd_q))
+
+        power_f = fe.nci(rd_f)
+        power_q = fe.q15_nci(rd_q)
+        sqnr_power = _sqnr_db(power_f, power_q * fe.power_scale)
+
+        mask_f = fe.cfar(power_f)
+        mask_q = fe.q15_cfar(power_q)
+        differing = int((mask_f != mask_q).sum())
+
+        sat = fe.saturations()
+        print(f"\nframe {i}: rd {sqnr_rd:.1f} dB, power {sqnr_power:.1f} dB, "
+              f"mask differs {differing}/{cells} "
+              f"(float {int(mask_f.sum())} vs q15 {int(mask_q.sum())} "
+              f"detections), saturations {sat}")
+
+        assert sqnr_rd > SQNR_FLOOR_RD_DB
+        assert sqnr_power > SQNR_FLOOR_POWER_DB
+
+        # What the cube's SQNR does not tell you: detections survive. CFAR
+        # compares a cell against its neighbours, and quantization lifts
+        # both, so a rounding-limited floor largely cancels. Measured here:
+        # at most one differing cell, counts 10/10, 19/18, 12/12.
+        assert differing <= 0.002 * cells
+        n_f, n_q = int(mask_f.sum()), int(mask_q.sum())
+        assert abs(n_f - n_q) <= max(2, 0.1 * n_f)
+
+        # Nothing may clip: the exporter sets the ADC's full scale from
+        # these very frames, with headroom.
+        assert sat == (0, 0)
+
+        # The integer facade must agree with its own per-stage chain, the
+        # same contract the float facade is held to.
+        det = fe.q15_pointcloud(rd_q, mask_q)
+        assert np.array_equal(fe.q15_process_frame(raw), det)

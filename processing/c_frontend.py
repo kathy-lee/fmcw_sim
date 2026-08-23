@@ -3,11 +3,19 @@
 Build the library first:  make -C c_frontend lib
 
 CFrontend exposes the C implementation's whole-frame facade and its
-individual stages. Equivalence contract: same numbers as range_doppler /
+individual stages, in both arithmetics: the float chain (rd, nci, cfar,
+pointcloud, process_frame) and the fixed-point one (the q15_* methods).
+One handle serves both, so the two can be run against the same frame and
+compared directly.
+
+Equivalence contract for the float chain: same numbers as range_doppler /
 integrate / cfar_2d / mimo_point_cloud within the tolerances enforced by
-tests/test_c_frontend.py. All validation (dtype, contiguity, shape)
-happens here, before any pointer crosses into C — a ValueError beats a
-segfault.
+tests/test_c_frontend.py. The fixed-point chain is held to a statistical
+standard instead — per-stage SQNR floors and mask agreement — because
+integer arithmetic is not expected to reproduce float results exactly.
+
+All validation (dtype, contiguity, shape) happens here, before any
+pointer crosses into C — a ValueError beats a segfault.
 """
 from __future__ import annotations
 
@@ -60,6 +68,38 @@ def _load() -> ctypes.CDLL:
     lib.fmcw_pointcloud.argtypes = [ctypes.c_void_p, c_float_p, c_uint8_p,
                                     c_double_p, ctypes.c_int]
     lib.fmcw_pointcloud.restype = ctypes.c_int
+
+    c_int16_p = ctypes.POINTER(ctypes.c_int16)
+    c_int64_p = ctypes.POINTER(ctypes.c_int64)
+    c_ll_p = ctypes.POINTER(ctypes.c_longlong)
+    # int fmcw_q15_rd(void *h, const float *adc, int16_t *rd_q);
+    lib.fmcw_q15_rd.argtypes = [ctypes.c_void_p, c_float_p, c_int16_p]
+    lib.fmcw_q15_rd.restype = ctypes.c_int
+    # int fmcw_q15_nci(void *h, const int16_t *rd_q, int64_t *power_q);
+    lib.fmcw_q15_nci.argtypes = [ctypes.c_void_p, c_int16_p, c_int64_p]
+    lib.fmcw_q15_nci.restype = ctypes.c_int
+    # int fmcw_q15_cfar(void *h, const int64_t *power_q, uint8_t *mask);
+    lib.fmcw_q15_cfar.argtypes = [ctypes.c_void_p, c_int64_p, c_uint8_p]
+    lib.fmcw_q15_cfar.restype = ctypes.c_int
+    # int fmcw_q15_pointcloud(void *h, const int16_t *rd_q,
+    #                         const uint8_t *mask, double *det, int max_out);
+    lib.fmcw_q15_pointcloud.argtypes = [ctypes.c_void_p, c_int16_p, c_uint8_p,
+                                        c_double_p, ctypes.c_int]
+    lib.fmcw_q15_pointcloud.restype = ctypes.c_int
+    # int fmcw_q15_process_frame(void *h, const float *adc,
+    #                            double *det, int max_out);
+    lib.fmcw_q15_process_frame.argtypes = [ctypes.c_void_p, c_float_p,
+                                           c_double_p, ctypes.c_int]
+    lib.fmcw_q15_process_frame.restype = ctypes.c_int
+    # double fmcw_q15_rd_scale(void *h);
+    lib.fmcw_q15_rd_scale.argtypes = [ctypes.c_void_p]
+    lib.fmcw_q15_rd_scale.restype = ctypes.c_double
+    # int fmcw_q15_saturations(void *h, long long out[2]);
+    lib.fmcw_q15_saturations.argtypes = [ctypes.c_void_p, c_ll_p]
+    lib.fmcw_q15_saturations.restype = ctypes.c_int
+    # void fmcw_q15_reset_saturations(void *h);
+    lib.fmcw_q15_reset_saturations.argtypes = [ctypes.c_void_p]
+    lib.fmcw_q15_reset_saturations.restype = None
     _lib = lib
     return lib
 
@@ -111,7 +151,7 @@ class CFrontend:
             raise ValueError("CFrontend is closed")
         return self._h
 
-    # -- stages ------------------------------------------------------- #
+    # -- float stages ------------------------------------------------- #
     def rd(self, adc: np.ndarray) -> np.ndarray:
         """Per-channel range-Doppler: (V, C, S) complex64 -> (V, C, S//2)."""
         V, C, S = self.dims
@@ -171,4 +211,107 @@ class CFrontend:
             _ptr(det, ctypes.c_double), cap)
         if n < 0:
             raise RuntimeError("fmcw_process_frame failed")
+        return det[:n].copy()
+
+    # -- fixed-point stages ------------------------------------------- #
+    #
+    # The integer chain takes the same float ADC frame the float stages
+    # take, because quantization is its first step. It returns native
+    # int16/int64 rather than pre-scaled floats, so the caller can see
+    # how many counts a value actually occupies; dequantize_rd and the
+    # scale properties do the conversion when it is wanted.
+    #
+    # NumPy has no complex-int16 dtype, so an integer RD cube is carried
+    # as (V, C, S//2, 2) with the last axis holding I and Q — the same
+    # bytes the C side reads as cplx_q15.
+
+    @property
+    def rd_scale(self) -> float:
+        """Multiply an integer RD value by this to reach float-path units."""
+        return float(self._lib.fmcw_q15_rd_scale(self._handle()))
+
+    @property
+    def power_scale(self) -> float:
+        """Multiply an integer NCI value by this to reach float-path power.
+
+        The square of rd_scale, since power is a squared magnitude."""
+        return self.rd_scale ** 2
+
+    def saturations(self) -> tuple[int, int]:
+        """(quantization, range-Doppler) clip counts since the last reset.
+
+        Nonzero means an input assumption failed — the signal exceeded the
+        ADC's full scale, or a stage's magnitude bound — not merely that
+        precision was lost."""
+        out = (ctypes.c_longlong * 2)()
+        if self._lib.fmcw_q15_saturations(self._handle(), out) != 0:
+            raise RuntimeError("fmcw_q15_saturations failed")
+        return int(out[0]), int(out[1])
+
+    def reset_saturations(self) -> None:
+        self._lib.fmcw_q15_reset_saturations(self._handle())
+
+    def dequantize_rd(self, rd_q: np.ndarray) -> np.ndarray:
+        """(V, C, S//2, 2) int16 -> complex128 in the float path's units."""
+        return (rd_q[..., 0] + 1j * rd_q[..., 1]) * self.rd_scale
+
+    def q15_rd(self, adc: np.ndarray) -> np.ndarray:
+        """Integer range-Doppler: (V, C, S) complex64 -> (V, C, S//2, 2)."""
+        V, C, S = self.dims
+        adc = _checked(adc, np.complex64, (V, C, S), "adc")
+        out = np.empty((V, C, S // 2, 2), dtype=np.int16)
+        if self._lib.fmcw_q15_rd(self._handle(), _ptr(adc, ctypes.c_float),
+                                 _ptr(out, ctypes.c_int16)) != 0:
+            raise RuntimeError("fmcw_q15_rd failed")
+        return out
+
+    def q15_nci(self, rd_q: np.ndarray) -> np.ndarray:
+        """Integer integration: (V, C, S//2, 2) int16 -> (C, S//2) int64."""
+        V, C, S = self.dims
+        rd_q = _checked(rd_q, np.int16, (V, C, S // 2, 2), "rd_q")
+        out = np.empty((C, S // 2), dtype=np.int64)
+        if self._lib.fmcw_q15_nci(self._handle(), _ptr(rd_q, ctypes.c_int16),
+                                  _ptr(out, ctypes.c_int64)) != 0:
+            raise RuntimeError("fmcw_q15_nci failed")
+        return out
+
+    def q15_cfar(self, power_q: np.ndarray) -> np.ndarray:
+        """Integer CA-CFAR: (C, S//2) int64 -> (C, S//2) bool."""
+        V, C, S = self.dims
+        power_q = _checked(power_q, np.int64, (C, S // 2), "power_q")
+        out = np.empty((C, S // 2), dtype=np.uint8)
+        if self._lib.fmcw_q15_cfar(self._handle(), _ptr(power_q, ctypes.c_int64),
+                                   _ptr(out, ctypes.c_uint8)) != 0:
+            raise RuntimeError("fmcw_q15_cfar failed")
+        return out.astype(bool)
+
+    def q15_pointcloud(self, rd_q: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        """Detections from an integer cube; same (N, 7) rows as the float
+        stage, since DoA and the Cartesian conversion are float in both."""
+        V, C, S = self.dims
+        rd_q = _checked(rd_q, np.int16, (V, C, S // 2, 2), "rd_q")
+        mask8 = np.ascontiguousarray(mask.astype(np.uint8))
+        if mask8.shape != (C, S // 2):
+            raise ValueError(f"mask: expected shape {(C, S // 2)}, "
+                             f"got {mask8.shape}")
+        cap = C * (S // 2)
+        det = np.empty((cap, 7), dtype=np.float64)
+        n = self._lib.fmcw_q15_pointcloud(
+            self._handle(), _ptr(rd_q, ctypes.c_int16),
+            _ptr(mask8, ctypes.c_uint8), _ptr(det, ctypes.c_double), cap)
+        if n < 0:
+            raise RuntimeError("fmcw_q15_pointcloud failed")
+        return det[:n].copy()
+
+    def q15_process_frame(self, adc: np.ndarray) -> np.ndarray:
+        """Whole integer chain; same signature and rows as process_frame."""
+        V, C, S = self.dims
+        adc = _checked(adc, np.complex64, (V, C, S), "adc")
+        cap = C * (S // 2)
+        det = np.empty((cap, 7), dtype=np.float64)
+        n = self._lib.fmcw_q15_process_frame(
+            self._handle(), _ptr(adc, ctypes.c_float),
+            _ptr(det, ctypes.c_double), cap)
+        if n < 0:
+            raise RuntimeError("fmcw_q15_process_frame failed")
         return det[:n].copy()

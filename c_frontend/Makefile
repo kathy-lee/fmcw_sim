@@ -3,7 +3,7 @@ CFLAGS  = -std=c11 -Wpedantic -Wall -Wextra -Werror -O2 -Iinclude
 DBGFLAGS = -std=c11 -Wpedantic -Wall -Wextra -Werror -g -fsanitize=address,undefined -Iinclude
 LDLIBS  = -lm
 
-SRC = src/fft.c src/io.c src/rd.c src/nci.c src/cfar.c src/doa.c src/pointcloud.c src/api.c src/convert_q15.c src/fft_q15.c src/rd_q15.c src/nci_q15.c src/cfar_q15.c src/pointcloud_q15.c
+SRC = src/fft.c src/io.c src/rd.c src/nci.c src/cfar.c src/doa.c src/pointcloud.c src/fmcw_api.c src/convert_q15.c src/fft_q15.c src/rd_q15.c src/nci_q15.c src/cfar_q15.c src/pointcloud_q15.c
 TESTS = tests/test_cplx tests/test_q15 tests/test_convert_q15 tests/test_fft tests/test_fft_q15 tests/test_params tests/test_io tests/test_rd tests/test_rd_q15 tests/test_nci tests/test_nci_q15 tests/test_cfar tests/test_cfar_q15 tests/test_doa tests/test_pointcloud tests/test_api
 
 all: fmcw_frontend

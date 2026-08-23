@@ -14,10 +14,15 @@
 /* One component onto the grid. The range test is written against the
  * rounding boundary (+/- 0.5 of the extreme code) rather than against the
  * rounded result, so the clip decision is made before lround is asked to
- * convert a value that might not fit in a long. */
-static int16_t quantize_one(double x, double step, long long *sat)
+ * convert a value that might not fit in a long.
+ *
+ * Takes the reciprocal of the step rather than the step: this runs once per
+ * I and Q component of every sample, and a division there costs far more
+ * than the multiply, for a 1-ULP difference that could only change a value
+ * sitting exactly on a rounding boundary. */
+static int16_t quantize_one(double x, double inv_step, long long *sat)
 {
-    double r = x / step;
+    double r = x * inv_step;
     long q;
     if (r >= (double)ADC_CODE_MAX + 0.5) {
         if (sat) (*sat)++;
@@ -34,10 +39,10 @@ static int16_t quantize_one(double x, double step, long long *sat)
 void adc_to_q15(const cplx *in, int n, double adc_full_scale,
                 cplx_q15 *out, long long *sat)
 {
-    double step = adc_full_scale / (double)(1 << (ADC_BITS - 1));
+    double inv_step = (double)(1 << (ADC_BITS - 1)) / adc_full_scale;
     for (int i = 0; i < n; i++) {
-        out[i].re = quantize_one((double)in[i].re, step, sat);
-        out[i].im = quantize_one((double)in[i].im, step, sat);
+        out[i].re = quantize_one((double)in[i].re, inv_step, sat);
+        out[i].im = quantize_one((double)in[i].im, inv_step, sat);
     }
 }
 

@@ -7,8 +7,8 @@
  *
  * - twiddle[k] = exp(-2*pi*i*k/n): the "rotation constants" the butterflies
  *   multiply by. Only n/2 are needed — every stage indexes a stride through
- *   this one table. Computed in double, stored as float32 (spec: complex
- *   data is float32; constants are computed at full precision first).
+ *   this one table. Computed in double, stored as float32 — the data path
+ *   is float32, but the constants are derived at full precision first.
  *
  * - bitrev[i]: i with its low log2(n) bits mirrored (e.g. n=8: 6=110b ->
  *   3=011b). A radix-2 DIT FFT consumes its input in this shuffled order;

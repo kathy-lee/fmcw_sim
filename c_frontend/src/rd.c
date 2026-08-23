@@ -1,9 +1,9 @@
 /* Range-Doppler stage. Contracts in rd.h; numerics notes here.
  *
- * Faithfulness to the Python reference is the design goal (spec section 6):
- * complex data stays float32, but every mean is accumulated in double before
- * subtraction — at least as accurate as NumPy's pairwise float32 summation,
- * so the golden comparison stays within float32 rounding noise. */
+ * Faithfulness to the Python reference is the design goal: complex data
+ * stays float32, but every mean is accumulated in double before subtraction
+ * — at least as accurate as NumPy's pairwise float32 summation, so the
+ * golden comparison stays within float32 rounding noise. */
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>

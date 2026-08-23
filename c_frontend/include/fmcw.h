@@ -5,7 +5,7 @@
 #define FMCW_PI 3.14159265358979323846
 
 /* Interleaved float I/Q sample — memory-layout-identical to the exported
- * frame format (float32 re, float32 im). See spec section 6. */
+ * frame format (float32 re, float32 im). */
 typedef struct { float re, im; } cplx;
 
 static inline cplx cadd(cplx a, cplx b) { return (cplx){a.re + b.re, a.im + b.im}; }

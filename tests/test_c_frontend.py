@@ -297,11 +297,14 @@ def _sqnr_db(ref, got):
 # concentrates the measure on target cells where quantization is
 # negligible. Same cube, two questions.
 #
-# The cube's low figure has a physical cause worth remembering: the
-# per-stage shifts divide by S*C while a coherent tone gains it back, so
-# targets survive at roughly their input amplitude, but thermal noise
-# grows only as sqrt(S*C) and lands below one count. The integer noise
-# floor is set by rounding, not by the radar's own noise.
+# The cube's low figure is a headroom problem, measured rather than
+# reasoned: it peaks at ~680 counts of 32767 and its noise floor sits at
+# ~7, so a typical cell carries only about three bits above the
+# quantization step and lands near 23 dB by itself. Shift-every-stage
+# divides by S*C unconditionally while this data grows by rather less
+# than that, so several of the 16 bits go unused — which is what block
+# floating point would reclaim. evaluation/sqnr_fixed_point.py reports
+# the occupancy figures behind this.
 SQNR_FLOOR_RD_DB = 20.0
 SQNR_FLOOR_POWER_DB = 50.0
 

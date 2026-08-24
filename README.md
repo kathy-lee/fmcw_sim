@@ -183,7 +183,7 @@ methodology deltas and quote earlier results as baselines. Report 1&2 are failur
 | 3 | [Target Realism Test](report/target_realism/target_realism_test_report.md) | Target models (generator) → effects across the whole chain | realistic-target (Swerling fluctuation + extended multi-scatterer) detection & track penalties |
 | 4 | [MIMO Evaluation](report/mimo_evaluation/mimo_evaluation_report.md) | TDM-MIMO front end (NCI, DoA, Cartesian clustering + tracking) | float MIMO detection/angle/tracking baseline |
 | 5 | [Fixed-Point MIMO Front-End](report/fixedpoint_evaluation/fixedpoint_evaluation_report.md) | Front-end finite precision (ADC→FFT→NCI→CFAR input) | bit-width knees + radar-cube memory benefit |
-| 6 | [C Implementation](report/c_implementation/c_implementation.md) | C11 port of the MIMO front end (`c_frontend/`) | stage-validated C baseline + C-vs-Python timing |
+| 6 | [C Implementation](report/c_implementation/c_implementation.md) | C11 port of the MIMO front end (`c_frontend/`), float and fixed-point | stage-validated C baseline, C-vs-Python timing, and what int16 arithmetic costs: 9.4 of 16 bits used, weak-target Pd 1.00 → 0.54 |
 
 ---
 

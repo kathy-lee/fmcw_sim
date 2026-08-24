@@ -12,46 +12,144 @@ measured against it on identical frames.
 
 ## 1. Scope and structure
 
-The C front end (`c_frontend/`) reimplements the Python MIMO chain up to the
+The C front end reimplements the Python MIMO chain up to the
 raw point cloud: ADC cube in, detections CSV out. Clustering and tracking
 stay outside — the point cloud is the architectural interface a radar DSP
 exports. Validation is two-layered: C unit tests against committed golden
 vectors (`make -C c_frontend test`), and a pytest comparison against the
 live Python pipeline on exported frames (`tests/test_c_frontend.py` —
-power map, CFAR mask with a borderline-cell exemption, point cloud). All
-pass; the numbers below are from that validated state.
+power map, CFAR mask with a borderline-cell exemption, point cloud).
 
-The report has two halves. **Sections 2–5** cover the float port: how it
+### How the pieces fit
+
+One set of kernels is built into two shells — a command-line binary and a
+shared library — so the batch timing runs and the Python benches measure
+the same compute reached two different ways. No radar arithmetic lives in
+either shell.
+  
+compute kernels: in `$(SRC)`, do no I/O, no config, no timing:
+- `float`:    fft  rd  nci  cfar  doa  pointcloud
+- `integer`:  fft_q15  rd_q15  nci_q15  cfar_q15  pointcloud_q15  convert_q15
+
+`io.c` does following: 
+- params.cfg parsing
+- buffer allocation
+- memory summary
+- frame loading
+- CSV and per-stage dump writing
+```
+            the kernels and io.c go down each side
+                              │
+        ┌─────────────────────┴──────────────────────┐
+        │                                            │
+        ▼                                            ▼
+   src/main.c                                  src/fmcw_api.c
+   (args, frame loop, timers)                 (opaque handle, flat types)
+        │                                            │
+        ▼                                            ▼
+   ./fmcw_frontend  (static)                   libfmcw.so  (-fPIC -shared)
+   (memory summary, timing table,                    │
+    detection count)                                 ▼
+                                         processing/c_frontend.py
+                                        (ctypes wrapper, validates arrays)
+                                                     │
+                                                     ▼
+                                       evaluation/sqnr_fixed_point   (§7)
+                                       evaluation/fixedpoint_c_eval  (§8)
+                                    streaming_subscriber_mimo_hybrid.py (§5)
+```
+
+`make` builds the binary, `make lib` builds the shared library; both
+compile the same source list: libfmcw.so compiles `$(SRC)`, fmcw_frontend compiles `$(SRC)` plus `src/main.c`.
+
+The two shells use `io.c` unevenly: `main.c` uses all of it, while
+`fmcw_api.c` touches only config parsing and buffer allocation, since a
+library caller supplies its own arrays and does its own I/O. Both
+arithmetics are present in both products — the choice is made per call
+(`--fixed` on the binary, the `q15_*` methods in Python), not at build
+time, which is what allows a single process to run both chains on one
+frame and compare them.
+
+In this report, **Sections 2–5** cover the float port: how it
 compares against the Python pipeline, the one optimization that decided
 those numbers, and the shared library that made in-process comparison
 possible. **Sections 6–9** cover the fixed-point port: int16 arithmetic
 through CFAR, what it costs in precision, in detections, and in time and
-memory. Section 10 closes with limitations that apply to both.
+memory.
 
-The fixed-point half is the more interesting one, and its result is not
-the one the bit-width label suggests. Storing the radar cube in 16 bits
-turns out not to be the binding constraint; how the arithmetic is *scaled*
-between stages is, and it costs nearly half the weak-target detections.
+## 2. Python binding and the SIL bench
 
-## 2. Timing method
+The same kernels are also built as a shared library, `libfmcw.so`, behind
+an opaque-handle API — the vendor-SDK idiom: `fmcw_create(params.cfg)`,
+then per-stage or whole-frame calls, then `fmcw_destroy`. No struct crosses
+the FFI boundary in either direction, and the batch binary and the library
+share one set of kernels.
 
-Both implementations process the same 50 frames of `scenario_mimo.json`
-(12 virtual channels, 64 chirps, 256 samples). Frames are exported once;
-the Python timer regenerates them in-process (same generator, seed, and
-frame indices), and runs one warm-up frame first so the one-time CFAR alpha
-calibration stays out of the measurement. Both timing reports bracket
-compute only (file I/O excluded).
+`processing/c_frontend.py` wraps it with stdlib `ctypes` — no codegen, no
+build dependency, mechanics visible. Every array's dtype, shape and
+contiguity is validated on the Python side *before* any pointer crosses, on
+the principle that a `ValueError` beats a segfault. NumPy `complex64`
+arrays are byte-identical to the C `cplx` layout, so ADC and RD cubes pass
+with zero copy and zero conversion.
+
+Two things this bought:
+
+**Software-in-the-loop validation.** `test_c_binding_matches_python`
+compares the C library against the Python reference **per stage,
+in-process**, with no export-and-dump file round-trip. This is the step
+embedded teams use to verify deployment C against a reference model, and
+it is the infrastructure the entire fixed-point half of this report runs
+on: §7's and §8's measurements are only possible because both arithmetics
+are callable on the same frame from one process.
+
+**A live A/B.** `simulator/streaming_subscriber_mimo_hybrid.py
+--frontend {python,c}` runs the full tracked demo — ZMQ transport,
+Cartesian clustering, CTRV-EKF, three-panel plot — with either front end
+doing the math, so one flag against the same seeded publisher switches
+implementations. Observed over live streaming: **C ~3–4 ms per frame
+against Python's ~4–7 ms**, both comfortably real-time with zero dropped
+frames. The more interesting detail is the shape rather than the mean:
+Python's `doa_pc` swings between ~0.1 and ~1.9 ms as the detection count
+varies, while C stays flat at ~0.05 ms. That is §3's table and its tail
+argument reproduced in a live streaming context rather than a batch
+benchmark.
+
+
+## 3. Float implementation
+### 3.1 Comparison method
+
+Three chains are timed: the Python pipeline, the C float chain, and the C
+fixed-point chain. All three process the same 50 frames of
+`scenario_mimo.json` (12 virtual channels, 64 chirps, 256 samples), but
+they obtain those frames differently.
+
+The two C runs read them from disk, exported once by
+`scripts/export_for_c.py`. The Python run — `evaluation/time_mimo_pipeline.py`
+— regenerates them in memory instead, from the same generator with the same
+seed and the same frame indices, so it sees byte-identical data without
+being charged for file reads the C timers exclude anyway. It also processes
+one warm-up frame before measuring, because the first `cfar_2d` call
+triggers a one-time empirical alpha calibration that would otherwise swamp
+the real `cfar` figure; the C side has no equivalent cost, its alpha
+arriving precalibrated in `params.cfg`.
+
+Every timer brackets compute only — file I/O sits outside the measurement
+on both sides.
 
 ```bash
+# setup: 50 frames + params.cfg, consumed by both C runs below
 uv run python scripts/export_for_c.py \
     --scenario scenarios/scenario_mimo.json --out data/c_export_bench --frames 50
 
+# C, float          -> the C column of §3, and the float column of §9
 ./c_frontend/fmcw_frontend \
     --config data/c_export_bench/params.cfg --frames data/c_export_bench/frames
 
+# C, fixed-point    -> the fixed column of §9
 ./c_frontend/fmcw_frontend \
     --config data/c_export_bench/params.cfg --frames data/c_export_bench/frames --fixed
 
+# Python, float     -> the Python column of §3
 uv run python -m evaluation.time_mimo_pipeline \
     --scenario scenarios/scenario_mimo.json --frames 50
 ```
@@ -63,7 +161,7 @@ back-to-back session**, because absolute times drift with clock state while
 ratios hold; the float column in §3 and the float column in §9 therefore
 differ by a few percent despite measuring the same code.
 
-## 3. Float implementation: results and analysis
+### 3.2 Comparison results
 
 Mean microseconds per frame over 50 frames:
 
@@ -144,44 +242,9 @@ sliding sums agree with the naive reference **exactly**, with no tolerance
 and no borderline exemption, because integer addition is exact where float
 running sums accumulate drift (§6).
 
-## 5. Python binding and the SIL bench
 
-The same kernels are also built as a shared library, `libfmcw.so`, behind
-an opaque-handle API — the vendor-SDK idiom: `fmcw_create(params.cfg)`,
-then per-stage or whole-frame calls, then `fmcw_destroy`. No struct crosses
-the FFI boundary in either direction, and the batch binary and the library
-share one set of kernels.
-
-`processing/c_frontend.py` wraps it with stdlib `ctypes` — no codegen, no
-build dependency, mechanics visible. Every array's dtype, shape and
-contiguity is validated on the Python side *before* any pointer crosses, on
-the principle that a `ValueError` beats a segfault. NumPy `complex64`
-arrays are byte-identical to the C `cplx` layout, so ADC and RD cubes pass
-with zero copy and zero conversion.
-
-Two things this bought:
-
-**Software-in-the-loop validation.** `test_c_binding_matches_python`
-compares the C library against the Python reference **per stage,
-in-process**, with no export-and-dump file round-trip. This is the step
-embedded teams use to verify deployment C against a reference model, and
-it is the infrastructure the entire fixed-point half of this report runs
-on: §7's and §8's measurements are only possible because both arithmetics
-are callable on the same frame from one process.
-
-**A live A/B.** `simulator/streaming_subscriber_mimo_hybrid.py
---frontend {python,c}` runs the full tracked demo — ZMQ transport,
-Cartesian clustering, CTRV-EKF, three-panel plot — with either front end
-doing the math, so one flag against the same seeded publisher switches
-implementations. Observed over live streaming: **C ~3–4 ms per frame
-against Python's ~4–7 ms**, both comfortably real-time with zero dropped
-frames. The more interesting detail is the shape rather than the mean:
-Python's `doa_pc` swings between ~0.1 and ~1.9 ms as the detection count
-varies, while C stays flat at ~0.05 ms. That is §3's table and its tail
-argument reproduced in a live streaming context rather than a batch
-benchmark.
-
-## 6. Fixed-point implementation: scope and arithmetic
+## 5. Fixed-point implementation
+### 5.1 scope and arithmetic
 
 The integer path is **true fixed-point arithmetic**, not the
 quantize-in-float model of report 5: int16 I/Q data, int32 registers, int64
@@ -233,7 +296,7 @@ implementation notes:
   whatsoever, so of every stage in the chain, integration is the one the
   fixed-point port costs nothing at all.
 
-## 7. Fixed-point: signal quality
+### 5.2 Signal quality evaluation
 
 Measured by `evaluation/sqnr_fixed_point.py` over the same 50 frames of
 `scenario_mimo`, comparing both chains cell by cell through one library
@@ -278,7 +341,7 @@ scenario, whose targets are strong, quantization cannot plausibly lose
 them. The next section runs the same implementation on a scenario built to
 test the opposite case, and the answer changes completely.
 
-## 8. Fixed-point: detection performance
+### 5.3 Detection performance
 
 Measured by `evaluation/fixedpoint_c_eval.py` on
 `scenario_mimo_fixedpoint_dynrange.json` — two targets 62 dB apart
@@ -330,7 +393,7 @@ The mechanism is measured rather than inferred: §7 found the cube using 9.4
 of its 16 bits, so weak signals live in the bottom few bits and are the
 first thing rounding destroys.
 
-## 9. Fixed-point: cost in time and memory
+### 5.4 Cost in time and memory
 
 Both binaries run back to back on the same 50 frames, same thermal state:
 
@@ -395,7 +458,7 @@ algorithm beats language. Here, the same arithmetic is 1.91x slower on a
 desktop CPU with an FPU and 2x smaller in memory — the platform decides
 whether fixed point pays, and this platform is not the one it is for.
 
-## 10. Limitations and future work
+## 6. Limitations and future work
 
 **Measurement.** Single machine, single run of 50 frames, frequency scaling
 uncontrolled; no attempt at SIMD, threading, or FFT library substitution on

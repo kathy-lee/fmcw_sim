@@ -36,3 +36,13 @@ c_frontend/libfmcw.so
 c_frontend/tests/test_*
 !c_frontend/tests/test_*.c
 c_frontend/tests/tmp_*
+
+# embedded harness: synced kernel copies and build output
+embedded/uno_fft_q15/fft.c
+embedded/uno_fft_q15/fft.h
+embedded/uno_fft_q15/fft_q15.c
+embedded/uno_fft_q15/fft_q15.h
+embedded/uno_fft_q15/fmcw.h
+embedded/uno_fft_q15/fmcw_q15.h
+embedded/uno_fft_q15/ref_host
+embedded/uno_fft_q15/build/

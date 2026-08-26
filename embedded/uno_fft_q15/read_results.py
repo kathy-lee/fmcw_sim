@@ -32,35 +32,68 @@ class Stream:
     complete: bool = False
 
 
-def parse(text: str) -> Stream:
+def parse_block(lines: list[str]) -> Stream:
+    """One run. Malformed lines are skipped rather than raising: a capture
+    can begin part-way through a line, and one mangled sample should not
+    cost the whole run."""
     s = Stream()
     current = None
-    for line in text.splitlines():
+    for line in lines:
         line = line.strip()
         if not line:
             continue
-        if line.startswith("# arith "):
-            s.arith = line.split()[2]
-        elif line.startswith("# n "):
-            s.n = int(line.split()[2])
-        elif line.startswith("TW "):
-            _, _, re_, im_ = line.split()
-            s.twiddle.append((float(re_), float(im_)))
-        elif line.startswith("VEC "):
-            current = line.split()[1]
-            s.vectors[current] = []
-        elif line.startswith("OUT ") and current is not None:
-            _, _, re_, im_ = line.split()
-            s.vectors[current].append((float(re_), float(im_)))
-        elif line.startswith("TIME "):
-            f = line.split()[1:]
-            s.timing = {f[i]: float(f[i + 1]) for i in range(0, len(f), 2)}
-        elif line.startswith("MEM "):
-            f = line.split()[1:]
-            s.mem = {f[i]: int(f[i + 1]) for i in range(0, len(f), 2)}
-        elif line == "END":
-            s.complete = True
+        f = line.split()
+        try:
+            if line.startswith("# arith "):
+                s.arith = f[2]
+            elif line.startswith("# n "):
+                s.n = int(f[2])
+            elif f[0] == "TW" and len(f) == 4:
+                s.twiddle.append((float(f[2]), float(f[3])))
+            elif f[0] == "VEC" and len(f) == 2:
+                current = f[1]
+                s.vectors[current] = []
+            elif f[0] == "OUT" and len(f) == 4 and current is not None:
+                s.vectors[current].append((float(f[2]), float(f[3])))
+            elif f[0] == "TIME" and len(f) % 2 == 1:
+                s.timing = {f[i]: float(f[i + 1]) for i in range(1, len(f), 2)}
+            elif f[0] == "MEM" and len(f) % 2 == 1:
+                s.mem = {f[i]: int(f[i + 1]) for i in range(1, len(f), 2)}
+            elif line == "END":
+                s.complete = True
+        except (ValueError, IndexError):
+            continue
     return s
+
+
+def parse(text: str) -> Stream:
+    """The last complete run in a capture.
+
+    The sketch reports on a timer, so a capture usually holds several runs,
+    the first of them starting part-way through. Splitting on the header and
+    keeping the last block that reached END discards both the fragment at the
+    front and any run the capture cut short at the back. A host stream, being
+    a single run, falls through this unchanged.
+    """
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for line in text.splitlines():
+        if line.strip().startswith("# uno-fft"):
+            if current:
+                blocks.append(current)
+            current = [line]
+        elif current:
+            current.append(line)
+    if current:
+        blocks.append(current)
+    if not blocks:
+        return Stream()
+
+    for block in reversed(blocks):
+        s = parse_block(block)
+        if s.complete:
+            return s
+    return parse_block(blocks[-1])
 
 
 def compare_exact(a, b):

@@ -67,12 +67,14 @@ build: sync build/.dir
 flash: build
 	arduino-cli upload -p $(PORT) --fqbn $(FQBN) --input-dir build .
 
-# Opening the port resets the board, so the sketch restarts and the whole
-# stream is captured from its first line.
+# Reading the port with cat rather than through arduino-cli monitor, which
+# emits nothing when its output is redirected to a file. The sketch reports
+# every few seconds, so the window only has to be long enough to contain one
+# whole run; whether opening the port resets the board is not relied on.
 capture: build/.dir
-	-timeout 25 arduino-cli monitor -p $(PORT) --config baudrate=$(BAUD) --raw \
-	    > build/stream_$(ARITH)_uno.txt
-	@grep -q '^END$$' build/stream_$(ARITH)_uno.txt \
+	@stty -F $(PORT) $(BAUD) raw -echo
+	-timeout 20 cat $(PORT) > build/stream_$(ARITH)_uno.txt
+	@grep -q '^END' build/stream_$(ARITH)_uno.txt \
 	    && echo "captured build/stream_$(ARITH)_uno.txt" \
 	    || (echo "stream incomplete — no END line"; exit 1)
 

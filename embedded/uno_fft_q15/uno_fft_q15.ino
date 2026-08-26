@@ -163,29 +163,22 @@ static void timing(const plan_t *p)
     Serial.println(b);
 }
 
-void setup()
+static plan_t plan;
+static bool plan_ok;
+static unsigned free_start;
+
+static void report()
 {
-    Serial.begin(115200);
-    paint_stack();
-    unsigned free_start = free_ram();
-
-    plan_t p = {0};
-    if (PLAN_INIT(&p, VEC_N) != 0) {
-        Serial.println(F("# ERROR plan init failed"));
-        Serial.println(F("END"));
-        return;
-    }
-
     Serial.println(F("# uno-fft 1"));
     Serial.print(F("# arith "));
     Serial.println(ARITH_NAME);
     Serial.print(F("# n "));
     Serial.println(VEC_N);
 
-    dump_twiddles(&p);
-    run_and_dump(&p, vec_dc, F("dc"));
-    run_and_dump(&p, vec_radar, F("radar"));
-    timing(&p);
+    dump_twiddles(&plan);
+    run_and_dump(&plan, vec_dc, F("dc"));
+    run_and_dump(&plan, vec_radar, F("radar"));
+    timing(&plan);
 
     Serial.print(F("MEM heap "));
     Serial.print((unsigned)(heap_end() - &__heap_start));
@@ -197,4 +190,25 @@ void setup()
     Serial.flush();
 }
 
-void loop() {}
+void setup()
+{
+    Serial.begin(115200);
+    paint_stack();
+    free_start = free_ram();
+    plan_ok = (PLAN_INIT(&plan, VEC_N) == 0);
+}
+
+/* Repeating rather than printing once at startup: whether opening the port
+ * resets the board depends on the host tool, and a report that has already
+ * scrolled past into a port nobody was reading is unrecoverable. Emitting
+ * on a timer means a capture started at any moment catches a whole run. */
+void loop()
+{
+    if (plan_ok) {
+        report();
+    } else {
+        Serial.println(F("# ERROR plan init failed"));
+        Serial.println(F("END"));
+    }
+    delay(3000);
+}

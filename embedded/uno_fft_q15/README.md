@@ -149,7 +149,25 @@ as stack.
 
 ## Notes for the next board
 
-Two tooling problems cost time here and will recur:
+Most of this carries over unchanged. The sketch is the only real rewrite.
+
+| file | reusable |
+|---|---|
+| `gen_vectors.py` | yes, unchanged |
+| `vectors.h` | yes — the `__AVR__` shim already falls through to plain indexing, and on Cortex-M `const` lands in flash without an attribute |
+| `host/ref_host.c` | yes, unchanged |
+| `read_results.py` | yes, unchanged |
+| the stream protocol | yes |
+| `Makefile` | partly — `sync`, `host`, `check-host` and `report` carry; `build`, `flash` and `capture` are arduino-cli-specific |
+| `uno_fft_q15.ino` | no |
+
+The sketch's structure carries even so: load, transform, time with the reload subtracted, measure RAM, print the protocol. But four things inside the sketch are what do not travel: `micros()` becomes
+`DWT->CYCCNT`, `Serial` becomes a UART or semihosting, the `PROGMEM`
+accessors become plain indexing, and the stack painting keeps its idea but
+changes its symbols — `__heap_start` and `__brkval` are avr-libc, where
+newlib uses `end` and `_sbrk`. 
+
+Two tooling problems cost time here and may recur:
 
 - `arduino-cli monitor` emits nothing when its output is redirected to a
   file. `capture` reads the port with `stty` and `cat` instead.

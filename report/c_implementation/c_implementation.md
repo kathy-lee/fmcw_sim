@@ -70,12 +70,13 @@ arithmetics are present in both products — the choice is made per call
 time, which is what allows a single process to run both chains on one
 frame and compare them.
 
-In this report, **Sections 2–5** cover the float port: how it
-compares against the Python pipeline, the one optimization that decided
-those numbers, and the shared library that made in-process comparison
-possible. **Sections 6–9** cover the fixed-point port: int16 arithmetic
+In this report, **Sections 2–4** cover the float port: the shared
+library that made in-process comparison possible, how the port compares
+against the Python pipeline, and the one optimization that decided those
+numbers. **Section 5** covers the fixed-point port: int16 arithmetic
 through CFAR, what it costs in precision, in detections, and in time and
-memory.
+memory. **Section 6** takes the same integer kernel to an 8-bit
+microcontroller, where the same comparison comes out the other way.
 
 ## 2. Python binding and the SIL bench
 
@@ -458,9 +459,91 @@ algorithm beats language. Here, the same arithmetic is 1.91x slower on a
 desktop CPU with an FPU and 2x smaller in memory — the platform decides
 whether fixed point pays, and this platform is not the one it is for.
 
-## 6. Limitations and future work
+## 6. The same kernel on an 8-bit microcontroller
 
-**Measurement.** Single machine, single run of 50 frames, frequency scaling
+§5 closed by saying the platform decides whether fixed point pays, and that
+a desktop CPU with an FPU is not the platform it is for. That claim is
+testable. `embedded/uno_fft_q15/` runs the same `fft_q15.c`, unmodified, on
+an ATmega328P — 8-bit registers, 16 MHz, no FPU, no barrel shifter, 2 KB of
+RAM — and compares it against the same file compiled for the host.
+
+The comparison is a diff of two identically shaped streams. A host
+reference compiles the kernel with `gcc` and prints its twiddle table,
+both transforms, and its timing; the sketch prints the same over serial.
+Input is a 64-sample chirp segment compiled into flash, so both machines
+start from byte-identical integers and the only variable is the machine.
+
+N = 64, both builds at `-O2`:
+
+| | Q15 | float | ratio |
+|---|---:|---:|---:|
+| time per transform, Uno | 7974.4 µs | 17755.0 µs | **2.23x** |
+| time per transform, host | 0.764 µs | 0.313 µs | **0.41x** |
+| flash | 8366 B | 8064 B | |
+| static RAM | 467 B | 725 B | |
+| heap | 260 B | 388 B | |
+| stack peak | 136 B | 139 B | |
+| peak RAM of 2048 | 863 B | 1252 B | 0.69x |
+| agreement with host | bit-exact | 2.09e-07 relative | |
+
+**The sign flips.** Same source, same input, opposite verdict: fixed point
+wins by 2.23x on the microcontroller and loses by 2.4x on the laptop. The
+mechanism is not subtle — on a part with no FPU every float multiply is a
+software routine, measured here at about 148 cycles per operation, while
+the integer path pays 664 cycles per butterfly for arithmetic the AVR does
+8 bits at a time. Neither figure is impressive; the ratio between them is
+the point, and it is the ratio §5 could not obtain from one machine.
+
+**Why the ratio is only 2.23x, and why it is a floor.** Disassembling the
+integer image accounts for the gap. avr-gcc does not inline a 16x16->32
+signed multiply; it emits a libgcc call, `__mulhisi3`, and there are four of
+them in every butterfly — the four component products of the twiddle
+multiply — each paying a call, a return and operand marshalling on top of
+the `MUL` sequence itself. Around them sits 32-bit arithmetic carried out a
+byte at a time, and a `>>15` that walks down one bit per instruction because
+the part has no barrel shifter.
+
+That is §5's x86 finding arriving from the opposite direction. There the
+compiler vectorized the float butterfly and left the integer one scalar;
+here it will not even inline the integer multiply. Both times the operation
+dedicated hardware makes single-cycle — `PMULHRSW` on x86, `SMLAD` on a
+Cortex-M4 — is precisely the one portable C cannot reach, so the compiler
+substitutes something generic. So 2.23x is a floor for this kernel as
+written in C rather than a property of the arithmetic, and it is the case
+for CMSIS-DSP's intrinsics made twice, on two architectures that share
+nothing else.
+
+**Q15 is bit-exact across the two instruction sets.** The twiddle table and
+both transforms match the host count for count. This was the result most at
+risk: the twiddle table is the one part of a fixed-point build computed in
+floating point, and avr-gcc makes `double` a 32-bit type, so a twiddle near
+a rounding boundary could have landed one count off and propagated through
+every stage. At this size it does not. That exactness is what lets the
+integer chain serve as a reference model — develop on the host, trust the
+target. The float column makes no such claim and does not need to: one ULP
+of float32 separates it from the host, which is all IEEE 754 promises
+across compilers.
+
+**Memory is the structural result, and it does not depend on a benchmark.**
+863 bytes against 1252, on a part with 2048. At N = 128 the integer build
+would need about 1375 bytes and still fit; the float build would need about
+2148 and would not. That is the same argument §5 made about the radar cube
+and on-chip SRAM, at a scale small enough to verify by counting.
+
+**What this does not establish.** An 8-bit AVR is not what FMCW front ends
+run on; the contested case is a Cortex-M4F, with both a single-cycle FPU
+and the `SMLAD` DSP instructions, and nothing here speaks to it. The full
+front end cannot run on this part at all — 1.2 MiB of working set against
+2 KB. And at 7974 µs per 64-point transform, one frame's transforms would
+take about 30 seconds, so nothing here is a feasibility claim. The result
+is a bracket: §3 and §5 measure one end, this measures the other, and the
+hardware the pipeline would actually ship on sits between them.
+
+## 7. Limitations and future work
+
+**Measurement.** Two machines, neither of them the target class: a desktop
+x86-64 and an 8-bit AVR, with the Cortex-M4F case that FMCW front ends
+actually use left unmeasured. Single run of 50 frames, frequency scaling
 uncontrolled; no attempt at SIMD, threading, or FFT library substitution on
 the C side. Ratios were stable across repeated runs; absolute times varied
 by up to 2x with CPU clock state, which is why each table's columns are
@@ -491,6 +574,11 @@ the sweep, under a different scaling model.
    which would complete the fixed-point chain.
 3. **SIMD**, which is what would make the timing comparison represent
    fixed point rather than scalar C.
+4. **The Cortex-M4F measurement**, which §6 brackets but does not settle.
+   That part has both a single-cycle FPU and the `SMLAD` DSP instructions,
+   so it is the one case where the answer is genuinely open; the harness in
+   `embedded/uno_fft_q15/` carries over with only its timer and serial
+   setup changed.
 
 **One caveat on the Hann window**, which costs the integer path something
 float does not notice: it attenuates most samples by around 6 dB on

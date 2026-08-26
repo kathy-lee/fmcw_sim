@@ -43,9 +43,12 @@ sync:
 vectors:
 	python gen_vectors.py --self-check
 
+# The host reference lives in host/ rather than beside the sketch: the
+# Arduino toolchain compiles every source in the sketch root and in src/,
+# and would try to build this laptop-only file for the AVR.
 host: sync
 	gcc -std=c11 -Wall -Wextra -Wpedantic -O2 -I. $(DEFINE) \
-	    -o ref_host ref_host.c $(notdir $(SYNC_SRC)) -lm
+	    -o ref_host host/ref_host.c $(notdir $(SYNC_SRC)) -lm
 
 # The constant vector transforms to exactly 1000 in bin 0 and exactly zero
 # elsewhere. That pins the per-stage halvings to exactly 1/n and catches a

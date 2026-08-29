@@ -46,3 +46,14 @@ embedded/uno_fft_q15/fmcw.h
 embedded/uno_fft_q15/fmcw_q15.h
 embedded/uno_fft_q15/ref_host
 embedded/uno_fft_q15/build/
+
+# nucleo harness: generated HAL, synced kernel copies and build output
+embedded/nucleo_f446re_fft/Drivers/
+embedded/nucleo_f446re_fft/build/
+embedded/nucleo_f446re_fft/ref_host
+embedded/nucleo_f446re_fft/Core/Src/fft.c
+embedded/nucleo_f446re_fft/Core/Src/fft_q15.c
+embedded/nucleo_f446re_fft/Core/Inc/fft.h
+embedded/nucleo_f446re_fft/Core/Inc/fft_q15.h
+embedded/nucleo_f446re_fft/Core/Inc/fmcw.h
+embedded/nucleo_f446re_fft/Core/Inc/fmcw_q15.h

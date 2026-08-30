@@ -11,6 +11,7 @@
 
 ARITH   ?= q15
 PORT    ?= /dev/ttyACM0
+PYTHON  ?= python
 BAUD     = 115200
 KERNEL   = ../../c_frontend
 BRINGUP ?= 0
@@ -68,7 +69,7 @@ sync:
 	@echo "synced: $(notdir $(SYNC_SRC) $(SYNC_HDR))"
 
 vectors:
-	python gen_vectors.py --n 256 --self-check
+	$(PYTHON) gen_vectors.py --n 256 --self-check
 
 # The host reference lives in host/ so the layout matches the Uno harness.
 host: sync
@@ -105,7 +106,7 @@ capture:
 	    || (echo "stream incomplete — no END line"; exit 1)
 
 report:
-	python read_results.py --build-dir build
+	$(PYTHON) read_results.py --build-dir build
 
 # Makefile.cubemx already defines clean (its own build dir); this removes
 # everything the harness adds as well.

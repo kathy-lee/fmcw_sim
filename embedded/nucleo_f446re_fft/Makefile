@@ -21,11 +21,13 @@ SYNC_SRC = $(KERNEL)/src/fft_q15.c
 SYNC_HDR = $(KERNEL)/include/fft_q15.h $(KERNEL)/include/fmcw_q15.h $(KERNEL)/include/fmcw.h
 DEFINE   = -DARITH_Q15=1
 STALE    = Core/Src/fft.c Core/Inc/fft.h
+DC_BIN0  = 1000
 else
 SYNC_SRC = $(KERNEL)/src/fft.c
 SYNC_HDR = $(KERNEL)/include/fft.h $(KERNEL)/include/fmcw.h
 DEFINE   = -DARITH_FLOAT=1
 STALE    = Core/Src/fft_q15.c Core/Inc/fft_q15.h Core/Inc/fmcw_q15.h
+DC_BIN0  = 256000
 endif
 
 # Each arithmetic builds into its own directory: the two builds share
@@ -76,14 +78,17 @@ host: sync
 	gcc -std=c11 -Wall -Wextra -Wpedantic -O2 -I. -ICore/Inc $(DEFINE) \
 	    -o ref_host host/ref_host.c $(KERNEL_C) -lm
 
-# The constant vector transforms to exactly 1000 in bin 0 and exactly zero
-# elsewhere. That pins the per-stage halvings to exactly 1/n and catches a
-# bad sync or a corrupt vectors.h before anything is flashed.
+# The constant vector transforms to a single exact value in bin 0 and
+# exactly zero elsewhere: 1000 for Q15, whose per-stage halvings scale by
+# 1/n, and 1000 * n for the unscaled float kernel. That pins the scaling
+# and catches a bad sync or a corrupt vectors.h before anything is flashed.
+# Values are compared numerically because the float stream prints them
+# in exponent form.
 check-host: host
 	@./ref_host > build/stream_$(ARITH)_host.txt || exit 1
-	@awk '/^VEC dc$$/{f=1;next} /^VEC /{f=0} f&&/^OUT/{ \
-	    if ($$2==0) { if ($$3!=1000 || $$4!=0) { print "FAIL bin0", $$3, $$4; exit 1 } } \
-	    else if ($$3!=0 || $$4!=0) { print "FAIL bin", $$2, $$3, $$4; exit 1 } } \
+	@awk -v want=$(DC_BIN0) '/^VEC dc$$/{f=1;next} /^VEC /{f=0} f&&/^OUT/{ \
+	    if ($$2==0) { if ($$3+0!=want || $$4+0!=0) { print "FAIL bin0", $$3, $$4; exit 1 } } \
+	    else if ($$3+0!=0 || $$4+0!=0) { print "FAIL bin", $$2, $$3, $$4; exit 1 } } \
 	    END{print "check-host passed"}' build/stream_$(ARITH)_host.txt
 
 # The ELF is built by a second make so that sync has finished copying

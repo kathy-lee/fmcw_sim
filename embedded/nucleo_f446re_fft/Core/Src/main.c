@@ -21,6 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "harness.h"
 
 /* USER CODE END Includes */
 
@@ -92,6 +93,7 @@ int main(void)
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+  harness_init();
 
   /* USER CODE END 2 */
 
@@ -109,6 +111,11 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    /* Repeating rather than printing once: a report that scrolled past
+     * into a port nobody was reading is unrecoverable, and emitting on a
+     * timer means a capture started at any moment catches a whole run. */
+    harness_run();
+    HAL_Delay(3000);
   }
   /* USER CODE END 3 */
 }

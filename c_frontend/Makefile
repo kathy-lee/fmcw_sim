@@ -11,6 +11,10 @@ TESTS = tests/test_cplx tests/test_q15 tests/test_convert_q15 tests/test_fft tes
 # leave the binaries silently stale.
 HDRS = $(wildcard include/*.h)
 
+# The one-pass streaming front end (src/onepass/, include/onepass/) adds
+# its sources and flags there, keeping this file's lists frozen.
+include onepass.mk
+
 all: fmcw_frontend
 
 fmcw_frontend: src/main.c $(SRC) $(HDRS)

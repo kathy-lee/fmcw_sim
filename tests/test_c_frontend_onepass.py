@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from processing.c_frontend import CFrontend
-from processing.c_frontend_onepass import OnepassC, read_params
+from processing.c_frontend_onepass import CFrontendOnepass, read_params
 
 ROOT = Path(__file__).resolve().parents[1]
 SCENARIO = "scenarios/scenario_mimo_stream_128.json"
@@ -33,14 +33,14 @@ def exported(tmp_path_factory):
 
 @needs_gcc
 def test_dims(exported):
-    with OnepassC(exported / "params.cfg") as op:
+    with CFrontendOnepass(exported / "params.cfg") as op:
         assert op.dims == (12, 32, 128)
 
 
 @needs_gcc
 def test_onepass_matches_frozen_chain(exported):
     frames = sorted((exported / "frames").glob("frame_*.bin"))
-    with OnepassC(exported / "params.cfg") as op, \
+    with CFrontendOnepass(exported / "params.cfg") as op, \
          CFrontend(exported / "params.cfg") as fe:
         V, C, S = op.dims
         for f in frames:
@@ -62,7 +62,7 @@ def test_detections_land_near_ground_truth(exported):
     grid near truth."""
     cfg = read_params(exported / "params.cfg")
     frames = sorted((exported / "frames").glob("frame_*.bin"))
-    with OnepassC(exported / "params.cfg") as op:
+    with CFrontendOnepass(exported / "params.cfg") as op:
         V, C, S = op.dims
         adc = np.fromfile(frames[0], dtype=np.complex64).reshape(V, C, S)
         det = op.process(op.quantize(adc))

@@ -1,7 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "convert_q15.h"
-#include "onepass_api.h"
+#include "fmcw_onepass_api.h"
 #include "onepass_q15.h"
 
 typedef struct {

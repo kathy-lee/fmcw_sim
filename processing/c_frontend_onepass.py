@@ -2,7 +2,7 @@
 
 Build the library first:  make -C c_frontend lib
 
-OnepassC feeds a frame row by row, v-major, exactly as the wire does, and
+CFrontendOnepass feeds a frame row by row, v-major, exactly as the wire does, and
 returns the same (N, 7) detection rows as CFrontend.q15_process_frame —
 which is the equivalence the streaming bridge leans on. quantize() is the
 laptop-side ADC: the same adc_to_q15 the frozen chain applies internally,
@@ -70,7 +70,7 @@ def _ptr(arr: np.ndarray, ctype):
     return arr.ctypes.data_as(ctypes.POINTER(ctype))
 
 
-class OnepassC:
+class CFrontendOnepass:
     """One one-pass context: params + caller-invisible storage in C."""
 
     def __init__(self, params_cfg: str | Path):

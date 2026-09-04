@@ -12,6 +12,6 @@ HDRS += $(wildcard include/onepass/*.h)
 
 SRC += src/onepass/cfar_cells_q15.c src/onepass/rd_stream_q15.c \
        src/onepass/doa_cell.c src/onepass/onepass_q15.c \
-       src/onepass/onepass_api.c
+       src/onepass/fmcw_onepass_api.c
 TESTS += tests/test_cfar_cells_q15 tests/test_rd_stream_q15 \
          tests/test_doa_cell tests/test_onepass_q15

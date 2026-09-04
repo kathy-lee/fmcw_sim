@@ -1,5 +1,5 @@
-#ifndef ONEPASS_API_H
-#define ONEPASS_API_H
+#ifndef FMCW_ONEPASS_API_H
+#define FMCW_ONEPASS_API_H
 #include <stdint.h>
 
 /* Flat FFI surface over the one-pass composition, for ctypes: opaque

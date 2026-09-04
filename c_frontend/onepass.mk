@@ -10,5 +10,7 @@ CFLAGS += -Iinclude/onepass
 DBGFLAGS += -Iinclude/onepass
 HDRS += $(wildcard include/onepass/*.h)
 
-SRC += src/onepass/cfar_cells_q15.c src/onepass/rd_stream_q15.c
-TESTS += tests/test_cfar_cells_q15 tests/test_rd_stream_q15
+SRC += src/onepass/cfar_cells_q15.c src/onepass/rd_stream_q15.c \
+       src/onepass/doa_cell.c
+TESTS += tests/test_cfar_cells_q15 tests/test_rd_stream_q15 \
+         tests/test_doa_cell

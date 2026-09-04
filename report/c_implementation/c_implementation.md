@@ -59,6 +59,13 @@ compute kernels: in `$(SRC)`, do no I/O, no config, no timing:
                                     streaming_subscriber_mimo_hybrid.py (§5)
 ```
 
+The two shells serve different consumers: `fmcw_frontend` is the
+standalone batch entry point, existing so the chain can run and be timed
+without Python — frames in from disk, detections out as CSV, per-stage
+timing table at exit. `libfmcw.so` exists for in-process use: Python loads
+it to run the same kernels on arrays it already holds, which is what makes
+the frame-for-frame comparisons in this report possible.
+
 `make` builds the binary, `make lib` builds the shared library; both
 compile the same source list: libfmcw.so compiles `$(SRC)`, fmcw_frontend compiles `$(SRC)` plus `src/main.c`.
 

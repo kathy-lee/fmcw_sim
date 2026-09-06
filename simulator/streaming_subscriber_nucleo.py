@@ -180,22 +180,35 @@ class NucleoLink:
     def __init__(self, port: str, baud: int, timeout: float = 5.0):
         import serial                     # local: hardware-only dependency
         self.ser = serial.Serial(port, baud, timeout=timeout)
+        # an idle board banners into the void; whatever accumulated before
+        # open is history, and any RDY in it is expired permission
+        self.ser.reset_input_buffer()
 
     def close(self):
         self.ser.close()
 
     def wait_ready(self) -> list[str]:
-        """Read lines until RDY; return everything seen before it (the
-        banner, or a result tail)."""
+        """Discard the backlog, then read lines until an RDY that arrived
+        after the discard; return everything seen before it (the banner,
+        usually). Freshness is the point: the board banners on a cycle
+        whether or not anyone reads, so a buffered RDY is expired
+        permission — only one that arrives live proves the board is
+        entering its listen window now."""
+        while self.ser.in_waiting:
+            self.ser.readline()
         seen: list[str] = []
+        empties = 0
         while True:
             ln = self.ser.readline().decode("ascii", "replace").strip()
-            if not ln and not self.ser.is_open:
-                raise IOError("serial closed")
+            if not ln:
+                empties += 1
+                if empties >= 6 or not self.ser.is_open:
+                    raise IOError("no RDY from the board")
+                continue
+            empties = 0
             if ln == "RDY":
                 return seen
-            if ln:
-                seen.append(ln)
+            seen.append(ln)
 
     def send_frame(self, frame_id: int, rows_q: np.ndarray) -> None:
         V, C = rows_q.shape[0], rows_q.shape[1]
@@ -207,24 +220,44 @@ class NucleoLink:
 
     def read_result(self) -> BoardResult:
         """Read one result block: through END and its trailing RDY, or stop
-        right after an ERR line (main then calls wait_ready() to resync)."""
+        right after an ERR line (main then calls wait_ready() to resync).
+        A block with neither — a banner the board printed while our
+        transmission was still in flight — is discarded, not misread as an
+        empty result."""
         lines: list[str] = []
+        done = False
+        empties = 0
         while True:
             ln = self.ser.readline().decode("ascii", "replace").strip()
+            if not ln:
+                empties += 1
+                if empties >= 6 or not self.ser.is_open:
+                    raise IOError("no result from the board")
+                continue
+            empties = 0
             if ln == "RDY":
-                break
-            if ln:
-                lines.append(ln)
+                if done:
+                    break
+                lines.clear()
+                continue
+            lines.append(ln)
+            if ln.startswith("END"):
+                done = True
             if ln.startswith("ERR"):
                 break
         return parse_result(lines)
 
 
 def _process_one(link, fe, op, frame, frame_id, t_pub) -> tuple[str, BoardResult]:
-    """Quantize, send, read, diff one frame. Returns (verdict_line, result)."""
+    """Quantize, await RDY, send, read, diff one frame. Returns
+    (verdict_line, result)."""
     rows_q = op.quantize(frame)
     if op.last_sat:
         print(f"warning: {op.last_sat} samples clipped at the ADC grid")
+    # a live RDY: the board prints one at the top of every cycle, banner
+    # first, and only then listens — sending against an earlier RDY races
+    # the banner transmit and desynchronizes the block reader
+    link.wait_ready()
     t0 = time.time()
     link.send_frame(frame_id, rows_q)
     res = link.read_result()

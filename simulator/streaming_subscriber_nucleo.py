@@ -210,13 +210,20 @@ class NucleoLink:
                 return seen
             seen.append(ln)
 
-    def send_frame(self, frame_id: int, rows_q: np.ndarray) -> None:
+    def send_frame(self, frame_id: int, rows_q: np.ndarray,
+                   row_pace: float = 0.0) -> None:
+        """row_pace > 0 sleeps that long after each row — long enough to
+        cover the row's own wire time plus a quiet gap, so the board's
+        between-row compute happens on a silent wire. A diagnostic: if
+        pacing cures checksum errors, the board is deaf between rows."""
         V, C = rows_q.shape[0], rows_q.shape[1]
         self.ser.write(frame_header_bytes(frame_id, V, C,
                                           rows_q.shape[2]))
         for v in range(V):
             for c in range(C):
                 self.ser.write(row_bytes(rows_q, v, c))
+                if row_pace:
+                    time.sleep(row_pace)
 
     def read_result(self) -> BoardResult:
         """Read one result block: through END and its trailing RDY, or stop
@@ -248,7 +255,8 @@ class NucleoLink:
         return parse_result(lines)
 
 
-def _process_one(link, fe, op, frame, frame_id, t_pub) -> tuple[str, BoardResult]:
+def _process_one(link, fe, op, frame, frame_id, t_pub,
+                 row_pace: float = 0.0) -> tuple[str, BoardResult]:
     """Quantize, await RDY, send, read, diff one frame. Returns
     (verdict_line, result)."""
     rows_q = op.quantize(frame)
@@ -259,7 +267,7 @@ def _process_one(link, fe, op, frame, frame_id, t_pub) -> tuple[str, BoardResult
     # the banner transmit and desynchronizes the block reader
     link.wait_ready()
     t0 = time.time()
-    link.send_frame(frame_id, rows_q)
+    link.send_frame(frame_id, rows_q, row_pace)
     res = link.read_result()
     if res.err:
         link.wait_ready()
@@ -288,6 +296,8 @@ def main() -> None:
     ap.add_argument("--scenario",
                     default="scenarios/scenario_mimo_stream_128.json")
     ap.add_argument("--one-shot", action="store_true")
+    ap.add_argument("--row-pace", type=float, default=0.0,
+                    help="seconds to sleep after each row (diagnostic)")
     ap.add_argument("--max-frames", type=int, default=0, help="0 = forever")
     ap.add_argument("--summary-every", type=int, default=10)
     args = ap.parse_args()
@@ -317,7 +327,7 @@ def main() -> None:
         gen = FMCWBeatSignalGenerator(rcfg)
         frame = gen.generate_frame_mimo(targets, frame_index=0)
         frame = np.ascontiguousarray(frame.astype(np.complex64))
-        line, res = _process_one(link, fe, op, frame, 0, None)
+        line, res = _process_one(link, fe, op, frame, 0, None, args.row_pace)
         print(line)
         print(f"TIME row_cyc {res.row_cyc} finish_cyc {res.finish_cyc}   "
               f"MEM heap {res.heap} stack_peak {res.stack_peak} "
@@ -353,7 +363,8 @@ def main() -> None:
             frame = deserialize_frame(header, parts[2])
             frame = np.ascontiguousarray(frame.astype(np.complex64))
             line, res = _process_one(link, fe, op, frame, fid,
-                                     float(header["timestamp_unix_s"]))
+                                     float(header["timestamp_unix_s"]),
+                                     args.row_pace)
             print(line, flush=True)
             if res.err:
                 continue

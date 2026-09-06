@@ -6,10 +6,13 @@
  * detection the host-tested code computed.
  *
  * The board paces the wire: it prints RDY when it can accept a frame, and
- * the feeder transmits only after seeing it. Everything is blocking
- * programmed I/O — at 921600 baud the UART, not the CPU, is the bottleneck,
- * and the row FFT (~190 us) hides entirely inside each row's ~5.6 ms
- * transfer time. */
+ * the feeder transmits only after seeing it. Row reception is ping-pong:
+ * this UART has no FIFO — two bytes of slack — so while the kernel
+ * checksums and processes one buffer, the interrupt machinery must
+ * already be landing the next row in the other. That is what lets the
+ * row FFT (~190 us) hide inside each row's ~5.6 ms transfer time; with
+ * blocking reception those 190 us are a deaf window and rows arrive
+ * corrupt. Transmission stays blocking — nothing times it. */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -44,7 +47,10 @@ static union {
 } shared;
 
 static CfarCellQ15 cells_list[ONEPASS_MAX_DET];
-static cplx_q15 rowbuf_rx[FRONTEND_S];
+/* ping-pong pair: each holds one row plus its trailing checksum; the
+ * kernel consumes one (clobbering it in place) while the UART interrupt
+ * fills the other. plan.rowbuf is re-pointed at the full one per row. */
+static uint8_t rx_buf[2][ROW_BYTES + 4] __attribute__((aligned(4)));
 static OnepassPlanQ15 plan;
 static int plan_ok;
 static unsigned heap_after_init;
@@ -115,6 +121,37 @@ static void drain_rx(void)
     while (HAL_UART_Receive(&huart2, &b, 1, 50) == HAL_OK) { }
 }
 
+/* Interrupt-driven row reception. rx_done and rx_err are written in
+ * interrupt context and polled from the main loop — single writer,
+ * single reader, no further synchronization needed. */
+static volatile int rx_done, rx_err;
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart == &huart2) rx_done = 1;
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart == &huart2) rx_err = 1;
+}
+
+static void rx_arm(uint8_t *buf)
+{
+    rx_done = 0;
+    if (HAL_UART_Receive_IT(&huart2, buf, ROW_BYTES + 2) != HAL_OK)
+        rx_err = 1;
+}
+
+static int rx_wait(uint32_t ms)
+{
+    uint32_t start = HAL_GetTick();
+    while (!rx_done) {
+        if (rx_err || HAL_GetTick() - start > ms) return -1;
+    }
+    return 0;
+}
+
 /* Detections are printed as they are computed, from V-sized locals; the
  * cycles spent printing are counted here and subtracted from the finish
  * phase so TIME reports compute only. The DET count line rides on the
@@ -154,12 +191,14 @@ void frontend_init(void)
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
     DWT->CYCCNT = 0;
+    HAL_NVIC_SetPriority(USART2_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(USART2_IRQn);
     paint_stack();
     free_start = free_ram();
     plan_ok = (onepass_q15_init(&plan, &FRONTEND_PARAMS, planes,
                                 shared.power, cells_list,
                                 shared.post.snapshots, shared.post.spectrum,
-                                rowbuf_rx) == 0);
+                                (cplx_q15 *)rx_buf[0]) == 0);
     /* the kernel's heap only: taken before the first printf would have
      * allocated anything (it never does — stdout is statically buffered) */
     heap_after_init = (unsigned)(heap_end() - &_end);
@@ -193,29 +232,38 @@ void frontend_run(void)
 
     plan.sat = 0;               /* rows saturate too, not just the finish */
     uint32_t row_cyc = 0;
+    int cur = 0;
+    rx_err = 0;
+    rx_arm(rx_buf[0]);
     for (int v = 0; v < FRONTEND_V; v++) {
         for (int c = 0; c < FRONTEND_C; c++) {
-            uint8_t ck[2];
-            if (HAL_UART_Receive(&huart2, (uint8_t *)rowbuf_rx,
-                                 ROW_BYTES, 1000) != HAL_OK ||
-                HAL_UART_Receive(&huart2, ck, 2, 1000) != HAL_OK) {
+            if (rx_wait(1000) != 0) {
+                HAL_UART_AbortReceive(&huart2);
                 printf("ERR timeout %d %d\n", v, c);
                 fflush(stdout);
                 drain_rx();
                 return;
             }
+            /* the overlap: the next row starts landing in the other
+             * buffer before this one is checksummed and processed */
+            if (v != FRONTEND_V - 1 || c != FRONTEND_C - 1)
+                rx_arm(rx_buf[cur ^ 1]);
+            const uint8_t *raw = rx_buf[cur];
             unsigned sum = 0;
-            const uint8_t *raw = (const uint8_t *)rowbuf_rx;
             for (int i = 0; i < ROW_BYTES; i++) sum += raw[i];
-            if ((sum & 0xFFFFu) != (unsigned)(ck[0] | (ck[1] << 8))) {
+            if ((sum & 0xFFFFu) !=
+                (unsigned)(raw[ROW_BYTES] | (raw[ROW_BYTES + 1] << 8))) {
+                HAL_UART_AbortReceive(&huart2);
                 printf("ERR row %d %d\n", v, c);
                 fflush(stdout);
                 drain_rx();
                 return;
             }
+            plan.rowbuf = (cplx_q15 *)rx_buf[cur];
             uint32_t t0 = DWT->CYCCNT;
             onepass_q15_row(&plan, v, c);
             row_cyc += DWT->CYCCNT - t0;
+            cur ^= 1;
         }
     }
 

@@ -66,7 +66,7 @@ flash: build
 
 # The static regions, largest first, against the linker map.
 map: build
-	@grep -E "^\.(bss|data)|planes|shared|cells_|rowbuf_|_user_heap_stack" \
+	@grep -E "^\.(bss|data)|planes|shared|cells_|rx_buf|_user_heap_stack" \
 	    $(BUILD_DIR)/$(TARGET).map | head -40
 	@arm-none-eabi-nm --size-sort --radix=d $(ELF) | tail -15
 

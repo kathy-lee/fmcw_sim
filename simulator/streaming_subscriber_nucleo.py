@@ -344,6 +344,7 @@ def main() -> None:
           f"at {args.baud} baud")
 
     processed = mismatches = flips_total = drops = 0
+    heap_max = stack_max = 0            # session watermarks, board-reported
     last_fid = None
     lat_sum = row_sum = fin_sum = 0.0
     clk = b.get("clk", 180000000)
@@ -375,6 +376,8 @@ def main() -> None:
             lat_sum += time.time() - float(header["timestamp_unix_s"])
             row_sum += res.row_cyc
             fin_sum += res.finish_cyc
+            heap_max = max(heap_max, res.heap)
+            stack_max = max(stack_max, res.stack_peak)
             if processed % args.summary_every == 0:
                 n = args.summary_every
                 print(f"-- {processed} processed, {drops} dropped, "
@@ -383,7 +386,8 @@ def main() -> None:
                       f"row {row_sum / n / 1e6:.1f} Mcyc "
                       f"({row_sum / n / clk * 1e3:.0f} ms) "
                       f"finish {fin_sum / n / 1e6:.1f} Mcyc "
-                      f"({fin_sum / n / clk * 1e3:.0f} ms)", flush=True)
+                      f"({fin_sum / n / clk * 1e3:.0f} ms) | "
+                      f"heap<={heap_max} stack_peak<={stack_max}", flush=True)
                 lat_sum = row_sum = fin_sum = 0.0
     except KeyboardInterrupt:
         print("\nbridge stopped.")

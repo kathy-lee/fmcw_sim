@@ -55,4 +55,48 @@ additive checksum; the board answers with a text block per frame
 
 ## Measured results
 
-Populated after the first streaming session.
+One certified session (2026-09-06): publisher at 20 fps, 110 frames
+processed end to end against the live reference diff.
+
+- **Verdicts: 110/110 MATCH, 0 mismatches, 0 tie flips.** Every count,
+  cell, azimuth (grid-exact), coordinate and SNR agreed with the
+  laptop's frozen chain on the identical quantized input; `SAT 0`
+  throughout.
+- **Cadence ~0.18 frames/s** (~5.5 s per processed frame): 11 959
+  publisher frames dropped ≈ 109 per processed, by design — the
+  subscriber always takes the newest frame. Latency publish→verdict
+  4.6–7.2 s, scaling with detection count.
+- **Compute:** row phase 25.6 Mcyc/frame (142 ms at 180 MHz), hidden
+  entirely inside the ~2.1 s transfer by ping-pong interrupt reception.
+  Finish phase 0.86–1.24 s summary means (~2.3 s at 31 detections):
+  one 181-point Bartlett scan per detection in double precision, which
+  this FPU (single-precision) emulates in software.
+- **Memory:** static `data`+`bss` 124 956 of 131 072 B (margin
+  6 116 B) — planes 98 304, the power/snapshot/spectrum overlay
+  16 384, cell list 1 536, rx ping-pong pair 2×516. Heap high-water
+  1 328 of the 2 048 reserved; stack peak 1 328 of 4 096 — both
+  constant across all 110 frames (board-measured, `heap<=`/
+  `stack_peak<=` watermarks in the subscriber summaries).
+
+The receive design earned its shape on hardware: this UART has no FIFO
+(two bytes of slack at ~11 us/byte), so blocking reads corrupted rows
+within milliseconds at full wire speed. Reception is therefore
+interrupt-driven into one buffer while the kernel processes the other;
+`--row-pace` on the subscriber remains as the one-run diagnostic (a
+paced wire is silent during the board's compute gaps — if that cures
+checksum errors, the board is deaf between rows) and as a no-reflash
+fallback.
+
+Cadence is UART-and-finish bound and no real-time claim is made.
+Natural next experiments on this baseline: DMA reception, and the DoA
+scan in hardware single precision.
+
+Reproduction (two terminals):
+
+```bash
+python -m simulator.streaming_publisher \
+    --scenario scenarios/scenario_mimo_stream_128.json
+python -m simulator.streaming_subscriber_nucleo \
+    --params data/c_export_stream128/params.cfg \
+    --port /dev/ttyACM0 --baud 921600 --max-frames 110 --summary-every 10
+```

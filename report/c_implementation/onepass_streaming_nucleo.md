@@ -113,6 +113,38 @@ referee silently compares two different versions of the same code. The
 banner handshake catches mismatched parameters, but nothing detects
 mismatched code.
 
+### 2.3 Wire protocol
+
+- Laptop → board, binary, little-endian:
+  - Frame header, 14 bytes: magic `b"OPF1"`, `uint32` frame_id, `uint16` V, C, S. Board answers nothing on success; on a dimension mismatch it prints `ERR cfg <V> <C> <S>` (the dims it received) and returns to `RDY`.
+  - Then V·C rows in v-major order (channel 0 chirps 0..C−1, then channel 1, ...): 512 payload bytes (S=128 `int16` I/Q pairs, i.e. the `(S, 2)` int16 row) followed by a 2-byte checksum = sum of the 512 payload bytes mod 65536, `uint16` LE.
+- Board → laptop, text lines (`\n`-terminated):
+  - Idle/banner block, repeated every ~2 s while waiting and once at startup:
+    ```
+    # onepass-frontend 1
+    # clk 180000000
+    # fpu 1
+    # flash_ws 5
+    # flash_acr 0x00000705
+    # dims 12 32 128
+    # cfar 2 4 4 8 <alpha %.17g> 6
+    # doa 181 1
+    # maxdet 64
+    RDY
+    ```
+  - Per-frame result block:
+    ```
+    DET <n> <overflow>
+    D <range_bin> <doppler_bin> <az_idx> <x %.9e> <y %.9e> <v %.9e> <snr %.9e> <power %.17g> <thresh %.17g>
+    ... (n lines)
+    TIME row_cyc <unsigned> finish_cyc <unsigned>
+    MEM heap <unsigned> stack_peak <unsigned> free_start <unsigned>
+    SAT <ld>
+    END <frame_id>
+    RDY
+    ```
+  - Errors: `ERR cfg ...`, `ERR row <v> <c>` (checksum), `ERR timeout <v> <c>` — each followed by a return to the idle/banner block. The bridge logs them and moves on; no retry.
+
 ## 3. Experiment Design
 
 
@@ -139,7 +171,80 @@ mismatched code.
 <!-- export, CubeMX generation, make flash, one-shot, streaming session;
      the deaf-window discovery and the --row-pace experiment -->
 
-### 4.1 Flow in the subscriber
+### 4.1 Static storage and the overlay
+
+Section 1 argued the budget; this is how the budget became declarations.
+
+**Every lifetime is visible to the linker.** All the large buffers are
+`static` at file scope in `frontend.c` — no `malloc`, no large locals.
+The consequence is the one that matters for a memory claim: the linker
+map becomes the proof, and an object that no longer fits does not crash
+at 3 a.m., it fails the build. Measured with `arm-none-eabi-nm` on the
+certified binary:
+
+| object | bytes | what it holds |
+|---|---:|---|
+| `planes` | 98 304 | V·C·(S/2) range-Doppler bins, Q15 complex |
+| `shared` | 16 384 | the overlay union (below) |
+| `cells_list` | 1 536 | up to `ONEPASS_MAX_DET` = 64 CFAR cells |
+| `rx_buf` | 1 032 | the receive ping-pong pair, 2 × 516 |
+| `stdout_buf` | 512 | so `printf` never reaches the heap |
+| `plan` | 104 | the kernel's plan struct |
+| heap + stack reservation | 6 144 | `_Min_Heap_Size` 0x800, `_Min_Stack_Size` 0x1000 |
+
+Two things are deliberately *not* in SRAM: `FRONTEND_PARAMS` (8 288 B,
+including the velocity axis and the element positions) is `const` and so
+lives in flash, and the FFT twiddle tables are the plan's only heap
+allocation, built once at init.
+
+**The kernels allocate nothing.** `onepass_q15_init` takes every buffer
+as a pointer:
+
+```c
+int onepass_q15_init(OnepassPlanQ15 *p, const FrontendParams *prm,
+                     cplx_q15 *planes, int64_t *power, CfarCellQ15 *cells,
+                     cplx_q15 *snapshots, double *spectrum, cplx_q15 *rowbuf);
+```
+
+That is what lets the same kernels serve a laptop (where the wrapper
+mallocs) and a 128 KiB part (where the board decides placement), and it
+is what makes the overlay possible at all — the kernel cannot object to
+two of its arguments pointing into the same memory.
+
+**The overlay.** The header states the lifetime contract the caller may
+exploit: *power is never read after the CFAR walk, and all snapshots are
+gathered before spectrum is first written — so snapshots and spectrum may
+overlay power's storage (snapshots first, disjoint ranges).* In
+`frontend.c` that becomes a union:
+
+```c
+static union {
+    int64_t power[FRONTEND_C * R_BINS];          /* 16 384 B */
+    struct {
+        cplx_q15 snapshots[ONEPASS_MAX_DET * FRONTEND_V];   /*  3 072 B */
+        double spectrum[181];                               /*  1 448 B */
+    } post;
+} shared;
+```
+
+A union is sized by its largest member, so `shared` costs 16 384 B —
+exactly what `power` alone would have cost. The post-CFAR stage is
+therefore housed for free, and the alternative (separate arrays) would
+have added 4 520 B, cutting the final margin from 6 116 B to under
+1 600 B. At the shrunk scenario the overlay is what makes the fit
+comfortable; at the full scenario it is the difference between fitting
+and not.
+
+**The instruments.** Two small routines produce the runtime numbers in
+section 5. `paint_stack` fills the gap between the heap end and the
+current stack pointer with a known byte at startup, and `stack_peak`
+later counts how far the untouched pattern was eaten into — the stack's
+high-water mark, which no static analysis can give. The heap figure is a
+simple `sbrk(0)` probe taken right after init, before any `printf` could
+have allocated — which it never does, because `stdout` is bound to the
+static `stdout_buf` above.
+
+### 4.2 Flow in the subscriber
 The steps marked ▸ are the two call sites of
 `_process_one`, the per-frame path both modes share; the streaming loop
 and `_process_one` are each expanded in their own chart below.
@@ -293,45 +398,90 @@ that); otherwise the verdict line is returned at the bottom:
 ```
 
 
-### 4.2 Wire protocol
+### 4.3 Receiving while computing: a USART with no receive FIFO
 
-- Laptop → board, binary, little-endian:
-  - Frame header, 14 bytes: magic `b"OPF1"`, `uint32` frame_id, `uint16` V, C, S. Board answers nothing on success; on a dimension mismatch it prints `ERR cfg <V> <C> <S>` (the dims it received) and returns to `RDY`.
-  - Then V·C rows in v-major order (channel 0 chirps 0..C−1, then channel 1, ...): 512 payload bytes (S=128 `int16` I/Q pairs, i.e. the `(S, 2)` int16 row) followed by a 2-byte checksum = sum of the 512 payload bytes mod 65536, `uint16` LE.
-- Board → laptop, text lines (`\n`-terminated):
-  - Idle/banner block, repeated every ~2 s while waiting and once at startup:
-    ```
-    # onepass-frontend 1
-    # clk 180000000
-    # fpu 1
-    # flash_ws 5
-    # flash_acr 0x00000705
-    # dims 12 32 128
-    # cfar 2 4 4 8 <alpha %.17g> 6
-    # doa 181 1
-    # maxdet 64
-    RDY
-    ```
-  - Per-frame result block:
-    ```
-    DET <n> <overflow>
-    D <range_bin> <doppler_bin> <az_idx> <x %.9e> <y %.9e> <v %.9e> <snr %.9e> <power %.17g> <thresh %.17g>
-    ... (n lines)
-    TIME row_cyc <unsigned> finish_cyc <unsigned>
-    MEM heap <unsigned> stack_peak <unsigned> free_start <unsigned>
-    SAT <ld>
-    END <frame_id>
-    RDY
-    ```
-  - Errors: `ERR cfg ...`, `ERR row <v> <c>` (checksum), `ERR timeout <v> <c>` — each followed by a return to the idle/banner block. The bridge logs them and moves on; no retry.
+**The hardware constraint.** The STM32F446's USART has no receive FIFO:
+one data register plus the shift register, two bytes of slack. A third
+byte arriving with none read overwrites an unread one and raises the
+overrun flag. At 921600 baud in 8N1 framing — 1 start + 8 data + 1 stop,
+10 bits per byte, 10.85 µs each — those two bytes are a **21.7 µs
+deadline on every byte**, not a throughput allowance.
 
-### 4.3 Ping-pong buffer
-  USART2 interrupt
+**Why blocking reception with a single buffer cannot work.** With a
+blocking `HAL_UART_Receive`, the call returns when a row's last byte
+lands, and nothing is listening again until the checksum walk and
+`onepass_q15_row` have finished. The host transmits rows back-to-back,
+so the next row's bytes start arriving immediately:
+
+```
+per-byte arrival        10.85 us
+hardware slack           21.7 us   (2 bytes)
+deaf window per row     ~365 us    (measured: 25.6 Mcyc / 384 rows)
+                        ───────
+bytes arriving in the deaf window   ~34
+bytes the hardware can hold            2      ->  ~32 lost, every row
+```
+
+The margin is not thin, it is absent: the deaf window exceeds the
+hardware's tolerance by a factor of ~17. Even against a pre-measurement
+estimate of 190 µs per row — derivable from the FFT harness's measured
+76.3 cycles per Q15 butterfly — the ratio is 17 : 2. Nothing in this
+calculation required hardware: the baud rate, the frame format, the
+absence of a FIFO (RM0390) and a cycle estimate were all available in
+advance.
+
+The trap is arithmetic at the wrong granularity. Per row, 365 µs of
+compute against 5.58 ms of transfer is a 6.5 % duty cycle, which looks
+like ample headroom — but a two-byte buffer does not impose a throughput
+requirement, it imposes a deadline, and no amount of average headroom
+satisfies a deadline. Worst-case response time against the peripheral's
+buffer depth is the quantity that decides whether a receiver works.
+
+**Confirmed on hardware, by the protocol.** Blocking single-buffer
+reception was tried first, and the first full-speed run failed as
+`ERR row 0 4` — a row whose 2-byte additive checksum did not match its
+payload. This is the wire protocol earning its keep: corrupt samples were
+refused at the door instead of silently becoming wrong detections, and
+the failure surfaced as a named error with coordinates rather than an
+inexplicable mismatch. The index is informative too — the error struck
+row 4, not row 1, because buffering upstream in the ST-LINK's USB-CDC
+bridge absorbed the first few deaf windows, and bytes were dropped at the
+chip only once that buffering saturated.
+
+**The controlled experiment.** Analysis names a cause; it does not
+exclude rivals — wire noise, a host-side timing bug or a row-indexing
+error would also produce checksum failures. So the feeder was paced
+rather than the board changed: `--row-pace 0.009` sleeps after each row,
+leaving the wire silent exactly while the board computes. The *same
+binary* then processed all 384 rows to a MATCH (31 detections, latency
+8.53 s). One run, one variable, and the only surviving explanation is
+that the board cannot listen while it computes.
+
+**The fix.** Reception became interrupt-driven ping-pong. Two 516-byte
+buffers; `HAL_UART_Receive_IT` arms the *next* row before the current one
+is checksummed, so the interrupt machinery lands bytes while the kernel
+works; `plan.rowbuf` is re-pointed at the full buffer each row (the
+kernel clobbers it in place, which is safe until that buffer is
+re-armed); two `volatile` flags, written in `HAL_UART_RxCpltCallback` /
+`HAL_UART_ErrorCallback` and polled in the main loop, synchronize the two
+sides — single writer, single reader, no further locking required. Error
+paths call `HAL_UART_AbortReceive` before draining, since blocking reads
+and an in-flight interrupt transfer cannot both own the peripheral. The
+vector-table entry is a hand-written `USART2_IRQHandler` in
+`stm32f4xx_it.c`'s user fences delegating to `HAL_UART_IRQHandler`; the
+startup file's weak default is an infinite loop, so the name must match
+exactly.
+
+**Cost and result.** +528 B of `bss` — the second buffer, the two flags
+and alignment padding — leaving a 6 116 B margin. Full speed then MATCHed
+on the first attempt, and the row phase's 25.6 Mcyc (142 ms per frame)
+now does hide inside the ~2.1 s transfer.
 
 ## 5. Results
 
-
-One certified session (2026-09-06): publisher at 20 fps, 110 frames processed end to end against the live reference diff. Reproduction commands(two terminals):
+One certified session (2026-09-06): publisher at 20 fps, 110 frames
+processed end to end against the live reference diff. Reproduction
+commands (two terminals):
 
 ```bash
 python -m simulator.streaming_publisher \
@@ -341,14 +491,86 @@ python -m simulator.streaming_subscriber_nucleo \
     --port /dev/ttyACM0 --baud 921600 --max-frames 110 --summary-every 10
 ```
 
-Verdicts: 110/110 MATCH, 0 mismatches, 0 tie flips. Every count, cell, azimuth (grid-exact), coordinate and SNR agreed with the laptop's frozen chain on the identical quantized input; SAT 0 throughout.
-Cadence ~0.18 frames/s (~5.5 s per processed frame): 11 959 publisher frames dropped ≈ 109 per processed, by design — the subscriber always takes the newest frame. Latency publish→verdict 4.6–7.2 s, scaling with detection count.
-Compute: row phase 25.6 Mcyc/frame (142 ms at 180 MHz), hidden entirely inside the ~2.1 s transfer by ping-pong interrupt reception. Finish phase 0.86–1.24 s summary means (~2.3 s at 31 detections): one 181-point Bartlett scan per detection in double precision, which this FPU (single-precision) emulates in software.
-Memory: static data+bss 124 956 of 131 072 B (margin 6 116 B) — planes 98 304, the power/snapshot/spectrum overlay 16 384, cell list 1 536, rx ping-pong pair 2×516. Heap high-water 1 328 of the 2 048 reserved; stack peak 1 328 of 4 096 — both constant across all 110 frames (board-measured, heap<=/ stack_peak<= watermarks in the subscriber summaries).
+The three subsections below answer the three success criteria of
+section 0, in order.
 
-The memory model confirmed, not assumed. The linker map shows peak static ≈ 116 KiB with ≥ 4 KiB margin against the budget, and the measured stack watermark stays under 2 KiB of the 4 KiB budget.
-<!-- 110/110 MATCH session numbers, timing, memory, saturation;
-     see embedded/nucleo_f446re_frontend/README.md "Measured results" -->
+### 5.1 Correctness
+
+**110/110 MATCH, 0 mismatches, 0 tie flips.** For every processed frame,
+every detection agreed with the laptop's frozen batch Q15 chain on the
+identical quantized input: count, range bin, Doppler bin, azimuth
+(grid-exact, no tolerance), x, y, radial velocity and SNR. Not one
+azimuth even landed one grid step away, though the comparison would have
+tolerated that as a tie flip.
+
+`SAT 0` throughout: the Q15 arithmetic never saturated on real frame
+data, so the fixed-point headroom budgeted for the row FFTs and the
+non-coherent integration was sufficient in practice, not only on the
+exported test vectors.
+
+The verdict is therefore stronger than "the port works": since the
+reference is the *batch* chain while the board runs the *one-pass*
+composition, each MATCH simultaneously confirms that the restructure
+preserves detections and that cross-compilation to the Cortex-M4 changed
+nothing.
+
+### 5.2 Memory fit
+
+Flash and SRAM both fit, with the SRAM figure the binding one:
+
+| region | used | available | margin |
+|---|---:|---:|---:|
+| flash (`text` + `data`) | 51 652 B | 524 288 B | 90 % free |
+| SRAM (`data` + `bss`) | 124 956 B | 131 072 B | 6 116 B |
+
+The SRAM total decomposes as `planes` 98 304, the power/snapshot/spectrum
+overlay 16 384, the cell list 1 536, the receive ping-pong pair 1 032,
+`stdout` buffer 512, the plan struct 104, and the 6 144 B heap + stack
+reservation. Because every one of those is a `static` object inside a
+linker-visible section, the fit is not an estimate: an object that grew
+past the budget would fail the link.
+
+Runtime watermarks, measured on the board and reported per frame:
+
+- **heap 1 328 B of the 2 048 reserved** — the FFT tables and windows
+  only; `printf` never allocates, because `stdout` is bound to the static
+  buffer.
+- **stack peak 1 328 B of the 4 096 reserved** — by canary painting, so
+  this is the deepest the stack ever actually went.
+
+Both were *constant across all 110 frames*, which is the evidence that
+matters: no growth with detection count, no slow leak, no path that
+allocates more on a busier frame.
+
+One correction against the feasibility estimate of section 1: static use
+came out at 122.0 KiB rather than the predicted ≈ 116 KiB. The margin
+criterion still held comfortably (6 116 B against the 4 KiB required),
+but the prediction was ~6 KiB optimistic — and the ping-pong pair, which
+the model had not anticipated, accounts for only 0.5 KiB of that gap.
+
+### 5.3 Cadence — recorded, not claimed
+
+**~0.18 frames/s, about 5.5 s per processed frame.** Of 12 069 published
+frames, 110 were processed and 11 959 dropped — roughly 109 per processed
+frame. The drops are by design: the subscriber always discards the queue
+backlog and takes the newest frame, so it stays current instead of
+falling ever further behind. End-to-end latency from publish to verdict
+was 4.6–7.2 s, scaling with detection count.
+
+Where the time goes:
+
+| phase | cost | note |
+|---|---:|---|
+| row phase | 25.6 Mcyc = 142 ms/frame | hidden inside the ~2.1 s transfer |
+| UART transfer | ~2.1 s | 197 KB at 921600 baud |
+| finish phase | 0.86–1.24 s typical, ~2.3 s at 31 detections | dominant |
+
+The Q15 row pipeline performs exactly as designed: 142 ms of compute,
+entirely concealed within the transfer it overlaps. The unbudgeted cost
+is the finish phase, which runs one 181-point Bartlett scan per detection
+in **double** precision — and this FPU is single-precision, so those
+scans are emulated in software. Cadence is therefore UART-and-finish
+bound, and no real-time claim is made.
 
 ## 6. Limitations
 

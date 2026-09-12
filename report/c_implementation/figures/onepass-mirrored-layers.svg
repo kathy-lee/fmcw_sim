@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 400" role="img" aria-label="Three mirrored layers: the CFrontend class mirrors CFrontendOnepass, fmcw_api.c mirrors fmcw_onepass_api.c, and the frozen four-stage kernels mirror the one-pass composition; each pair shares its conventions, and the one deliberate difference at every layer is the call granularity — whole-frame versus row-fed">
+  <rect x="0" y="0" width="740" height="400" fill="#FFFFFF"/>
+
+  <!-- column headers -->
+  <text x="215" y="34" text-anchor="middle" font-family="monospace" font-size="13" fill="#24292F" font-weight="bold">frozen family</text>
+  <text x="525" y="34" text-anchor="middle" font-family="monospace" font-size="13" fill="#24292F" font-weight="bold">one-pass family</text>
+
+  <!-- row: python -->
+  <text x="16" y="86" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">Python</text>
+  <rect x="70" y="56" width="290" height="52" rx="4" fill="#F4F2EC" stroke="#24292F"/>
+  <text x="215" y="79" text-anchor="middle" font-family="monospace" font-size="12" fill="#24292F">class CFrontend</text>
+  <text x="215" y="96" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">whole frame in, per-stage methods</text>
+  <rect x="380" y="56" width="290" height="52" rx="4" fill="#F4F2EC" stroke="#24292F"/>
+  <text x="525" y="79" text-anchor="middle" font-family="monospace" font-size="12" fill="#24292F">class CFrontendOnepass</text>
+  <text x="525" y="96" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">quantize(), then process() row-fed</text>
+  <text x="370" y="76" text-anchor="middle" font-family="monospace" font-size="11" fill="#0E7490">&#8596;</text>
+  <text x="370" y="122" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#0E7490">same wrapper idioms: _load once, _ptr, handle + context manager, -1 &#8594; raise</text>
+
+  <!-- row: flat api -->
+  <text x="16" y="176" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">flat FFI</text>
+  <rect x="70" y="146" width="290" height="52" rx="4" fill="#F4F2EC" stroke="#24292F"/>
+  <text x="215" y="169" text-anchor="middle" font-family="monospace" font-size="12" fill="#24292F">fmcw_api.c</text>
+  <text x="215" y="186" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">quantizer inside the handle</text>
+  <rect x="380" y="146" width="290" height="52" rx="4" fill="#F4F2EC" stroke="#24292F"/>
+  <text x="525" y="169" text-anchor="middle" font-family="monospace" font-size="12" fill="#24292F">fmcw_onepass_api.c</text>
+  <text x="525" y="186" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">quantizer standalone: the wire needs bytes</text>
+  <text x="370" y="166" text-anchor="middle" font-family="monospace" font-size="11" fill="#0E7490">&#8596;</text>
+  <text x="370" y="212" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#0E7490">same boundary rules: opaque handle, caller buffers, no structs, count or -1</text>
+
+  <!-- row: kernels -->
+  <text x="16" y="266" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">C kernels</text>
+  <rect x="70" y="236" width="290" height="52" rx="4" fill="#F4F2EC" stroke="#24292F"/>
+  <text x="215" y="259" text-anchor="middle" font-family="monospace" font-size="12" fill="#24292F">frozen four-stage chain</text>
+  <text x="215" y="276" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">rd &#8594; nci &#8594; cfar &#8594; pointcloud</text>
+  <rect x="380" y="236" width="290" height="52" rx="4" fill="#F4F2EC" stroke="#24292F"/>
+  <text x="525" y="259" text-anchor="middle" font-family="monospace" font-size="12" fill="#24292F">one-pass composition</text>
+  <text x="525" y="276" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">row &#215; 384, then finish + emit</text>
+  <text x="370" y="256" text-anchor="middle" font-family="monospace" font-size="11" fill="#0E7490">&#8596;</text>
+  <text x="370" y="302" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#0E7490">same arithmetic, operation for operation &#8212; proven bit-exact</text>
+
+  <!-- punchline -->
+  <rect x="110" y="330" width="520" height="52" rx="4" fill="#EFEDE7" stroke="#24292F"/>
+  <text x="370" y="352" text-anchor="middle" font-family="monospace" font-size="12" fill="#24292F">every layer mirrors its sibling's conventions and changes ONE thing:</text>
+  <text x="370" y="370" text-anchor="middle" font-family="monospace" font-size="12" fill="#24292F">the call granularity &#8212; whole-frame &#8594; row-fed</text>
+</svg>

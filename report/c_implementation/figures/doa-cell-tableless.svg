@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 420" role="img" aria-label="The tableless single-snapshot Bartlett DoA: the frozen path precomputes a 17 KiB steering table at init and reads it per use; the tableless path evaluates the identical expression at the point of use and stores nothing; because the expression is the same, the spectra are bit-identical">
+  <rect x="0" y="0" width="740" height="420" fill="#FFFFFF"/>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#24292F"/>
+    </marker>
+  </defs>
+
+  <!-- column headers -->
+  <text x="190" y="30" text-anchor="middle" font-family="monospace" font-size="13" fill="#24292F" font-weight="bold">frozen: doa_plan_init + doa_bartlett</text>
+  <text x="560" y="30" text-anchor="middle" font-family="monospace" font-size="13" fill="#24292F" font-weight="bold">tableless: doa_bartlett_cell</text>
+
+  <!-- frozen: init-time table build -->
+  <rect x="40" y="48" width="300" height="70" rx="4" fill="#F4F2EC" stroke="#24292F"/>
+  <text x="190" y="70" text-anchor="middle" font-family="monospace" font-size="11.5" fill="#24292F">at init, for all 181 x V pairs (g, e):</text>
+  <text x="190" y="88" text-anchor="middle" font-family="monospace" font-size="11.5" fill="#24292F">steer[g*V+e] =</text>
+  <text x="190" y="104" text-anchor="middle" font-family="monospace" font-size="11.5" fill="#24292F">((float)cos(ph), (float)sin(ph))</text>
+
+  <path d="M 190 118 L 190 144" stroke="#24292F" fill="none" marker-end="url(#arr)"/>
+
+  <!-- frozen: the table -->
+  <rect x="90" y="146" width="200" height="56" rx="4" fill="#CDEAF2" stroke="#0E7490" stroke-width="1.5"/>
+  <text x="190" y="169" text-anchor="middle" font-family="monospace" font-size="12" fill="#24292F">steer table on heap</text>
+  <text x="190" y="187" text-anchor="middle" font-family="monospace" font-size="12" fill="#24292F">181 x 12 x 8 = 17 376 B</text>
+
+  <path d="M 190 202 L 190 228" stroke="#24292F" fill="none" marker-end="url(#arr)"/>
+  <text x="200" y="219" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">read a_g[e] per use</text>
+
+  <!-- tableless: point of use -->
+  <rect x="410" y="48" width="300" height="70" rx="4" fill="#F4F2EC" stroke="#24292F"/>
+  <text x="560" y="70" text-anchor="middle" font-family="monospace" font-size="11.5" fill="#24292F">per use, for the (g, e) at hand:</text>
+  <text x="560" y="88" text-anchor="middle" font-family="monospace" font-size="11.5" fill="#24292F">cplx a =</text>
+  <text x="560" y="104" text-anchor="middle" font-family="monospace" font-size="11.5" fill="#24292F">((float)cos(ph), (float)sin(ph))</text>
+
+  <!-- tableless: the absent table -->
+  <rect x="460" y="146" width="200" height="56" rx="4" fill="none" stroke="#24292F" stroke-dasharray="3 4" stroke-opacity="0.5"/>
+  <text x="560" y="169" text-anchor="middle" font-family="monospace" font-size="12" fill="#24292F">no table &#8212; 0 B stored</text>
+  <text x="560" y="187" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">the value is used and dropped</text>
+
+  <path d="M 560 118 L 560 228" stroke="#24292F" fill="none" marker-end="url(#arr)"/>
+
+  <!-- shared accumulation -->
+  <rect x="60" y="230" width="620" height="76" rx="4" fill="#F4F2EC" stroke="#24292F"/>
+  <text x="370" y="252" text-anchor="middle" font-family="monospace" font-size="12" fill="#24292F">identical from here on &#8212; per grid angle, accumulate conj(a)&#183;x in doubles:</text>
+  <text x="370" y="272" text-anchor="middle" font-family="monospace" font-size="11.5" fill="#24292F">re += a.re&#183;x.re + a.im&#183;x.im;   im += a.re&#183;x.im &#8722; a.im&#183;x.re;</text>
+  <text x="370" y="292" text-anchor="middle" font-family="monospace" font-size="11.5" fill="#24292F">spectrum[g] = re&#178; + im&#178;;   then spectral-maxima selection over the 181 angles</text>
+
+  <path d="M 370 306 L 370 332" stroke="#24292F" fill="none" marker-end="url(#arr)"/>
+
+  <!-- the punchline -->
+  <rect x="110" y="334" width="520" height="66" rx="4" fill="#EFEDE7" stroke="#24292F"/>
+  <text x="370" y="357" text-anchor="middle" font-family="monospace" font-size="12" fill="#24292F">same expression, same doubles, same libm, same float cast</text>
+  <text x="370" y="375" text-anchor="middle" font-family="monospace" font-size="12" fill="#24292F">&#8594; every steering element bit-identical &#8594; spectra memcmp-equal</text>
+  <text x="370" y="392" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">the table was only ever a cache of values this expression regenerates</text>
+</svg>

@@ -116,7 +116,18 @@ class CFrontendOnepass:
         return out
 
     def process(self, rows_q: np.ndarray) -> np.ndarray:
-        """(V, C, S, 2) int16, fed v-major row by row -> (N, 7) float64."""
+        """(V, C, S, 2) int16, fed v-major row by row -> (N, 7) float64.
+
+        The host-side runner for the streaming composition, and the only
+        way to exercise it without a board. The Nucleo bridge deliberately
+        does not call it: there the rows go over the wire and the board
+        runs these same kernels, so running them here too would compare
+        the restructure against itself. Its consumer is the equivalence
+        test against the frozen batch chain — identical C arithmetic on
+        identical quantized input, so the detection lists must agree
+        exactly — which is what keeps a fault in the restructure
+        distinguishable from a fault in the cross-compiled port.
+        """
         V, C, S = self.dims
         rows_q = np.ascontiguousarray(rows_q)
         if rows_q.dtype != np.int16 or rows_q.shape != (V, C, S, 2):

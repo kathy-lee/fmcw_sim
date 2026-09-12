@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Build report/target_realism_test_report.pdf from the Markdown source.
+# Build a PDF from a Markdown report: build_report_pdf.sh [report.md]
+# The PDF lands next to the source. With no argument, builds
+# report/target_realism_test_report.md.
 #
 # Engine: pandoc + xelatex, DejaVu fonts (broad Unicode coverage for the Greek
 # letters, math symbols, and box-drawing used in the report).
@@ -16,8 +18,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-SRC=report/target_realism_test_report.md
-OUT=report/target_realism_test_report.pdf
+SRC=${1:-report/target_realism_test_report.md}
+OUT="${SRC%.md}.pdf"
 PP="$(mktemp /tmp/tr_report_XXXXXX.md)"
 HDR="$(mktemp /tmp/tr_header_XXXXXX.tex)"
 trap 'rm -f "$PP" "$HDR"' EXIT

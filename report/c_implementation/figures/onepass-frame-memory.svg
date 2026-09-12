@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 430" role="img" aria-label="Frame storage and lifetimes across one one-pass frame: the planes live the whole frame, the row buffer only while rows arrive, the cell list from the CFAR walk onward; the power map is live only from integration to the CFAR walk, after which the snapshots and the spectrum reuse its storage">
+  <rect x="0" y="0" width="740" height="430" fill="#FFFFFF"/>
+
+  <!-- timeline header -->
+  <text x="160" y="26" font-family="monospace" font-size="12" fill="#24292F">one frame &#8594;</text>
+  <line x1="160" y1="38" x2="720" y2="38" stroke="#24292F"/>
+  <line x1="160" y1="34" x2="160" y2="42" stroke="#24292F"/>
+  <line x1="430" y1="34" x2="430" y2="42" stroke="#24292F"/>
+  <line x1="490" y1="34" x2="490" y2="42" stroke="#24292F"/>
+  <line x1="555" y1="34" x2="555" y2="42" stroke="#24292F"/>
+  <line x1="610" y1="34" x2="610" y2="42" stroke="#24292F"/>
+  <line x1="720" y1="34" x2="720" y2="42" stroke="#24292F"/>
+  <text x="295" y="56" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F">384 rows arrive</text>
+  <text x="295" y="70" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">range work per row</text>
+  <text x="460" y="56" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F">NCI</text>
+  <text x="522" y="56" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F">CFAR</text>
+  <text x="582" y="56" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F">gather</text>
+  <text x="665" y="56" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F">DoA + emit</text>
+  <text x="575" y="70" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">finish, per frame</text>
+
+  <!-- planes -->
+  <text x="16" y="106" font-family="monospace" font-size="11.5" fill="#24292F">planes</text>
+  <text x="16" y="120" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">98 304 B</text>
+  <rect x="160" y="92" width="560" height="34" fill="#EFEDE7" stroke="#24292F"/>
+  <text x="440" y="113" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F">written row by row &#183; read by NCI &#183; read last by the snapshot gather</text>
+
+  <!-- rowbuf -->
+  <text x="16" y="152" font-family="monospace" font-size="11.5" fill="#24292F">rowbuf</text>
+  <text x="16" y="166" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">512 B</text>
+  <rect x="160" y="138" width="560" height="26" fill="none" stroke="#24292F" stroke-dasharray="3 4" stroke-opacity="0.4"/>
+  <rect x="160" y="138" width="270" height="26" fill="#EFEDE7" stroke="#24292F"/>
+  <text x="295" y="155" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F">arriving row &#183; FFT workspace &#183; Doppler column</text>
+
+  <!-- cells -->
+  <text x="16" y="192" font-family="monospace" font-size="11.5" fill="#24292F">cells</text>
+  <text x="16" y="206" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">1 536 B</text>
+  <rect x="160" y="178" width="560" height="26" fill="none" stroke="#24292F" stroke-dasharray="3 4" stroke-opacity="0.4"/>
+  <rect x="490" y="178" width="230" height="26" fill="#EFEDE7" stroke="#24292F"/>
+  <text x="605" y="195" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F">written by the walk &#183; read to the end</text>
+
+  <!-- power + overlay -->
+  <text x="16" y="236" font-family="monospace" font-size="11.5" fill="#24292F">power</text>
+  <text x="16" y="250" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">16 384 B</text>
+  <rect x="160" y="218" width="560" height="76" fill="none" stroke="#24292F" stroke-dasharray="3 4" stroke-opacity="0.4"/>
+  <rect x="430" y="218" width="125" height="76" fill="#EFEDE7" stroke="#24292F"/>
+  <text x="492" y="252" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F">int64 power</text>
+  <text x="492" y="266" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F">map</text>
+  <!-- overlays after CFAR -->
+  <rect x="555" y="222" width="165" height="30" fill="#CDEAF2" stroke="#0E7490" stroke-width="1.5"/>
+  <text x="637" y="241" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F">snapshots 3 072 B</text>
+  <rect x="610" y="258" width="110" height="30" fill="#CDEAF2" stroke="#0E7490" stroke-width="1.5"/>
+  <text x="665" y="277" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F">spectrum 1 448 B</text>
+  <text x="358" y="311" font-family="monospace" font-size="10.5" fill="#0E7490">power is dead after the CFAR walk &#8212; snapshots and spectrum reuse its storage</text>
+  <line x1="555" y1="294" x2="555" y2="304" stroke="#0E7490"/>
+  <line x1="350" y1="304" x2="555" y2="304" stroke="#0E7490"/>
+
+  <!-- totals -->
+  <rect x="110" y="336" width="520" height="70" rx="4" fill="#F4F2EC" stroke="#24292F"/>
+  <text x="370" y="360" text-anchor="middle" font-family="monospace" font-size="12" fill="#24292F">static frame storage: 98 304 + 512 + 1 536 + 16 384 = 116 736 B &#8776; 114 KiB</text>
+  <text x="370" y="380" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">of the board's 128 KiB &#8212; without the overlay, snapshots + spectrum would not fit;</text>
+  <text x="370" y="396" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#24292F" opacity="0.7">the plan itself holds only FFT tables and windows (&#8776;1.4 KiB, heap, built once)</text>
+</svg>

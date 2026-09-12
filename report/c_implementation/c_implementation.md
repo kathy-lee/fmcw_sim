@@ -47,7 +47,7 @@ compute kernels: in `$(SRC)`, do no I/O, no config, no timing:
    (args, frame loop, timers)                 (opaque handle, flat types)
         │                                            │
         ▼                                            ▼
-   ./fmcw_frontend  (static)                   libfmcw.so  (-fPIC -shared)
+   ./fmcw_frontend  (executable)                   libfmcw.so  (-fPIC -shared)
    (memory summary, timing table,                    │
     detection count)                                 ▼
                                          processing/c_frontend.py

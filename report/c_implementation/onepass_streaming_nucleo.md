@@ -22,18 +22,150 @@ Success criteria:
 
 ## 1. Theoretical Feasibility
 
-1. restructure the code to One-pass architecture 
-- Row-streaming range-Doppler
-- Zero-scratch capped CA-CFAR cell walk
-- Tableless per-snapshot Bartlett DoA
+Before any code, one question decides everything: what must be resident
+in 128 KiB of SRAM while a frame is processed, and at what scenario size
+does that fit?
 
+### 1.1 Why the pipeline has to be one-pass
 
-2. lifetime/overlay memory model(V=12 fixed, varying C and S)
-`USART2.BaudRate=921600`
-`STM32F446xx_FLASH.ld`: `_Min_Heap_Size = 0x800;` and `_Min_Stack_Size = 0x1000;`.
+An ADC frame is V·C·S complex samples, 4 bytes each as int16 I/Q:
 
+| scenario | V | C | S | frame |
+|---|---:|---:|---:|---:|
+| `scenario_mimo.json` | 12 | 64 | 256 | 786 432 B |
+| shrunk (`..._stream_128`) | 12 | 32 | 128 | 196 608 B |
+
+Both exceed the 131 072 B of SRAM — the shrunk frame by 50 %, the full
+one by a factor of six. No amount of parameter shrinking rescues a batch
+pipeline, because a batch pipeline needs the cube resident before it can
+start. The board must therefore consume the frame *as it arrives* and
+keep only what genuinely outlives a row. That is the whole argument for
+the one-pass restructure: **the raw frame never exists on the board.**
+
+### 1.2 What must persist
+
+With R = S/2 range bins kept from a real-input FFT, the terms are:
+
+| term | formula | at V=12, C=32, S=128 |
+|---|---|---:|
+| range-Doppler planes | V·C·R·4 = 2·V·C·S | 98 304 B |
+| integrated power map | C·R·8 | 16 384 B |
+| CFAR cell list | 64 · 24 | 1 536 B |
+| DoA snapshots | 64·V·4 | 3 072 B |
+| DoA spectrum | 181·8 | 1 448 B |
+| one row buffer | S·4 + 2 | 514 B |
+
+The planes dominate and scale as 2·V·C·S, which is what makes the
+scenario choice in 1.4 a memory decision rather than a signal-processing
+one.
+
+### 1.3 Three restructures that delete terms
+
+The one-pass form is not merely the batch chain fed differently; three
+stages were rebuilt so that their working storage disappears.
+
+- **Row-streaming range-Doppler.** The range FFT runs on each row as it
+  lands and writes into the persistent planes; the Doppler FFT runs down
+  the columns once a channel is complete. No cube, and no separate
+  range-only buffer.
+- **Zero-scratch capped CA-CFAR cell walk.** Instead of producing a
+  boolean mask over all C·R cells (2 048 B here) and then scanning it,
+  the walk recomputes each window directly and emits passing cells into a
+  fixed list of 64. When more cells pass than fit, the kept set is the top
+  64 by margin and an overflow flag is raised — so the cost is bounded by
+  the cap, not by the scene.
+- **Tableless per-snapshot Bartlett DoA.** The frozen path reads steering
+  vectors from a 181 × V table; the one-pass version computes
+  `(cos ph, sin ph)` at the point of use with the identical expression,
+  which keeps the spectra bit-identical while removing 181·V·8 =
+  **17 376 B** of RAM. The table was only ever a cache, and this is the
+  right trade where detections are few and RAM is the wall.
+
+### 1.4 The overlay: lifetimes, not just sizes
+
+The remaining terms do not all live at once. The power map is never read
+after the CFAR walk has produced its cell list, and every snapshot is
+gathered before the DoA spectrum is first written. Those two facts make a
+lifetime contract the caller may exploit: snapshots and spectrum can
+occupy the power map's storage, snapshots first, in disjoint ranges.
+
+Since a union costs its largest member, the post-CFAR stage is housed for
+nothing:
+
+```
+separate:  power 16 384 + snapshots 3 072 + spectrum 1 448 = 20 904 B
+overlaid:  max(16 384, 3 072 + 1 448)                      = 16 384 B
+                                                    saved     4 520 B
+```
+
+### 1.5 Choosing V, C, S
+
+V = 12 is fixed: the 3 TX × 4 RX virtual array is the point of the
+experiment, and shrinking it would remove the MIMO content rather than
+the memory pressure. That leaves C and S, and the planes term 2·V·C·S
+decides:
+
+| C | S | planes | verdict |
+|---:|---:|---:|---|
+| 64 | 256 | 393 216 B | 3× the whole SRAM |
+| 32 | 256 | 196 608 B | over budget |
+| 64 | 128 | 196 608 B | over budget |
+| **32** | **128** | **98 304 B** | fits, 75 % of SRAM |
+| 16 | 128 | 49 152 B | fits, but halves Doppler resolution |
+
+C = 32, S = 128 is the largest pair that still leaves room for the
+overlay, the cell list, the buffers and the heap/stack reservations. The
+shrink costs resolution — 32 Doppler bins instead of 64, 64 range bins
+instead of 128 — but preserves the full virtual array, so the detection
+chain under test is the real one.
+
+### 1.6 The predicted budget
+
+Summing 1.2 at the chosen point, with the overlay applied and one row
+buffer:
+
+```
+planes                                98 304
+overlay (power / snapshots+spectrum)  16 384
+cell list                              1 536
+row buffer                                516
+stdout buffer                             512
+plan struct                               104
+                                     ───────
+data footprint                       117 356 B  (114.6 KiB)
+heap + stack reservation               6 144 B  (0x800 + 0x1000)
+                                     ───────
+total against 131 072 B              123 500 B  (120.6 KiB)
+```
+
+The reservation belongs in this total because the linker places
+`._user_heap_stack` inside `bss`: an object that outgrows the budget
+therefore fails the link rather than corrupting the run. Flash is never
+the constraint — the code plus the `const` parameter tables (8 288 B,
+velocity axis and element positions) occupy a small fraction of 512 KiB.
+
+The prediction is thus "it fits, with roughly 7 KiB spare", and section
+5.2 reports what the linker actually produced.
 
 ## 2. Architecture Design
+
+This experiment joins two earlier ones: the FFT harness put a kernel on
+this board but fed it no live data, and the hybrid subscriber ran the
+whole front end on live frames but inside the laptop's own process. Here
+the full pipeline runs on the board, on the live stream:
+
+| | FFT harness (`nucleo_f446re_fft`) | hybrid subscriber (`streaming_subscriber_mimo_hybrid.py`) | this experiment |
+|---|---|---|---|
+| what runs | one FFT kernel, benchmarked | the full front end | the full Q15 detection front end |
+| where | Nucleo | laptop, in the subscriber's process (ctypes) | Nucleo |
+| input | no stream | live ZMQ frames | live ZMQ frames, forwarded over UART |
+| arithmetic | Q15 and float, compared | float, per stage | Q15 |
+| pipeline form | a single kernel | batch: whole cube in memory | one-pass: rows consumed on arrival |
+| storage | static | `malloc`'d by `io.c` | static, caller-provided, overlaid |
+| scenario | one FFT size, N = 256 test vectors | any exported scenario | shrunk to 12·32·128 by the memory model |
+| subscriber's role | none | front end, then clustering, CTRV-EKF tracking, live view | quantizer, feeder and referee; stops at detections |
+| verification | cycle counts beside the host; Q15 bit-exact | live A/B against the Python chain | per-frame diff against the laptop's batch Q15 chain |
+
 
 ### 2.1 The processes and the links between 
 As previous experiments, the publisher and the subscriber are
@@ -72,7 +204,195 @@ chain, and diffs the two detection lists live.
                               └───────────────────────────┘
 ```
 
-### 2.2 One source, two compilations
+### 2.2 The board program: layers and run cycle
+
+**Three layers, dependencies pointing down only.** Each box names its
+files and the functions they define; each arrow names who calls down
+into the next layer.
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│ generated by CubeMX                                                │
+├────────────────────────────────────────────────────────────────────┤
+│ main.c        defines main(): hardware init, frontend_init(),      │
+│               then frontend_run() on every pass of while (1)       │
+│ stm32f4xx_it.c · stm32f4xx_hal_msp.c · system_stm32f4xx.c ·        │
+│ syscalls.c · sysmem.c · Drivers/ (HAL)                             │
+├────────────────────────────────────────────────────────────────────┤
+│ does: clock, GPIO and USART2 setup; interrupt handlers; libc stubs │
+└──────────────────────────────────┬─────────────────────────────────┘
+                                   │ main() calls
+┌──────────────────────────────────▼─────────────────────────────────┐
+│ apparatus, hand-written                                            │
+├────────────────────────────────────────────────────────────────────┤
+│ frontend.c    defines frontend_init(), frontend_run()              │
+│ retarget.c    defines _write(): printf goes to the UART            │
+├────────────────────────────────────────────────────────────────────┤
+│ does: static storage, UART conversation, reporting, instruments    │
+└──────────────────────────────────┬─────────────────────────────────┘
+                                   │ frontend_init() and frontend_run() call
+┌──────────────────────────────────▼─────────────────────────────────┐
+│ kernels, synced from c_frontend and compiled unmodified            │
+├────────────────────────────────────────────────────────────────────┤
+│ onepass_q15.c defines onepass_q15_init(), _row(), _finish()        │
+│ plus the kernels it builds on:                                     │
+│ rd_stream_q15 · cfar_cells_q15 · doa_cell · fft_q15 ·              │
+│ rd_q15 · convert_q15 · doa · pointcloud                            │
+├────────────────────────────────────────────────────────────────────┤
+│ does: range-Doppler, NCI, CFAR, DoA, detections                    │
+│ rule: portable C, no HAL, no I/O, no board knowledge               │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+The bottom layer is the one under test, and the rule protecting it is
+strict: no kernel includes `main.h` or any HAL header. That is what lets
+the identical files compile for x86-64 as well (section 2.4), and it is
+why a detection printed by the board is a detection the host-tested code
+computed.
+
+The middle layer is everything board-specific that was written by hand.
+`frontend.c` owns the static storage (section 4.1), receives and checks
+frames, drives the kernels, and prints results; `retarget.c` routes
+`printf` to the UART by overriding newlib's weak `_write`, so every
+result line leaves the board through `HAL_UART_Transmit`.
+
+The top layer is regenerable, and hand-written code enters it only
+through CubeMX's `USER CODE` fences, which survive regeneration: the two
+calls into the apparatus in `main.c`, and the `USART2_IRQHandler` in
+`stm32f4xx_it.c` that reception needs (section 4.3).
+
+**Startup.** The board has no operating system. Reset jumps through the
+vector table into the startup code, which calls `main()`:
+
+```
+HAL_Init  ->  SystemClock_Config (180 MHz)  ->  MX_GPIO_Init
+          ->  MX_USART2_UART_Init (921600 baud, 8N1)
+          ->  frontend_init (stdout buffer, cycle counter, USART2
+                             interrupt, stack paint, plan init)
+          ->  while (1) frontend_run();
+```
+
+`main()` never returns, because there is nothing to return to: the loop
+is the program's steady state from power-on to power-off.
+
+**One call to `frontend_run()` is one idle window or one frame.**
+
+```
+            ┌──────────────────────────────┐
+            │ banner: # config lines, RDY  │
+            └──────────────┬───────────────┘
+                ┌──────────▼──────────┐
+                │ onepass_q15_init()  │──no──▶ wait 2 s and return; each banner
+                │ succeeded at        │        says # ERROR plan init failed
+                │ start-up?           │
+                └──────────┬──────────┘
+                           │ yes
+            ┌──────────────▼───────────────┐
+            │ read the 14-byte header,     │──nothing in 2 s──▶ return (idle)
+            │ blocking, 2 s timeout        │
+            └──────────────┬───────────────┘
+                   ┌───────▼───────┐
+                   │ OPF1 and dims │──no──▶ ERR cfg, drain, return
+                   │ match?        │
+                   └───────┬───────┘
+                           │ yes
+            ┌──────────────▼───────────────┐
+            │ 384 rows, received by        │──bad checksum───▶ ERR row, drain, return
+            │ interrupt: checksum each,    │──no row in 1 s──▶ ERR timeout, drain, return
+            │ onepass_q15_row()              │
+            └──────────────┬───────────────┘
+            ┌──────────────▼───────────────┐
+            │ onepass_q15_finish(); one      │
+            │ line per detection, printed  │
+            │ as each is computed          │
+            └──────────────┬───────────────┘
+            ┌──────────────▼───────────────┐
+            │ TIME, MEM, SAT, END, RDY     │
+            └──────────────┬───────────────┘
+                           ▼
+                        return
+```
+
+Two properties follow from this shape. First, results leave the board
+*during* the call, not at its end: there is one line per detection, each
+transmitted as soon as that detection is finished, so by the time `frontend_run()` returns, the
+subscriber already holds the whole result block. Second, every exit —
+idle, error or success — leads to the same next event: the loop calls
+`frontend_run()` again, which prints the banner again. An idle board
+therefore banners every two seconds whether or not anyone is listening,
+which is the fact behind the subscriber's rule of trusting only a freshly
+arrived `RDY` (section 4.2).
+
+### 2.3 The pipeline: row phase and finish phase
+
+The kernel's interface is a single pair of calls, and `frontend_run()`
+makes them in a fixed pattern: 384 row calls as the rows arrive, then one
+finish call.
+
+```
+frontend_run()
+│
+├─ 384 × onepass_q15_row(v, c)            as each row arrives, channel by channel
+│    chirp c of channel v:
+│      DC removal → range Hann → range FFT → keep S/2 bins
+│      → written into row c of plane v
+│    if c is the channel's last chirp, plane v is now complete:
+│      slow-time mean removal → Doppler Hann → Doppler FFT → fftshift
+│      (in place, inside plane v)
+│
+└─ 1 × onepass_q15_finish(emit)           after the last row
+     NCI: sum of |plane|² over the 12 planes → power map
+     CA-CFAR cell walk → up to 64 cells
+     gather each cell's 12-element snapshot from the planes
+     for each cell:
+       TDM compensation → Bartlett DoA on the 181-point grid
+       → range, azimuth, x, y, radial velocity, SNR
+       → emit(): one line per detection, sent to the UART at once
+```
+
+Every stage of the front end appears exactly once. The row phase is the
+batch `rd_q15` chain reordered for rows that arrive one at a time, in the
+same stage order and bit-exact against it.
+
+What each step reads and writes, which is where the memory model of
+section 1 comes from:
+
+| step | reads | writes |
+|---|---|---|
+| row phase | the row just received | its row of one plane |
+| NCI | all 12 planes | the power map |
+| CFAR | the power map | the cell list |
+| snapshots | planes, cell list | snapshots, in the power map's storage |
+| DoA | snapshots | spectrum (also in that storage), detections |
+
+Four consequences follow from this split.
+
+**It is what makes streaming possible.** A row call needs only the row it
+was handed and the plane that row belongs to. Nothing in it waits for a
+later row, so each row can be processed while the next one is still on
+the wire (section 4.3).
+
+**It fixes the shape of memory.** The planes must survive until the very
+end, because DoA reads its snapshots out of them. The power map, in
+contrast, is dead as soon as CFAR has produced its cell list, which is
+exactly the window the overlay of section 1.4 exploits.
+
+**It is the measurement boundary.** The `TIME` line reports `row_cyc`, the
+cycle count summed over the 384 row calls, and `finish_cyc`, the cycle
+count of the finish call with the time spent printing subtracted. Row
+calls are not uniform: every 32nd one also runs the Doppler step for the
+plane it completes, so the per-row average hides a longer call at the end
+of each channel.
+
+**It located the bottleneck.** The whole row phase costs 142 ms per frame.
+The finish phase costs 0.86–2.3 s, and it grows with the number of
+detections, because each detection gets its own 181-point Bartlett scan
+in double precision — which this single-precision FPU emulates in
+software. That is why latency in section 5.3 scales with detection count,
+and why the row phase, not the finish phase, is the part that hides
+inside the transfer.
+
+### 2.4 One source, two compilations
 
 The kernels under `c_frontend/src/` are the single source of truth, and
 they are compiled twice — once for each processor that has to run them.
@@ -113,7 +433,7 @@ referee silently compares two different versions of the same code. The
 banner handshake catches mismatched parameters, but nothing detects
 mismatched code.
 
-### 2.3 Wire protocol
+### 2.5 Wire protocol
 
 - Laptop → board, binary, little-endian:
   - Frame header, 14 bytes: magic `b"OPF1"`, `uint32` frame_id, `uint16` V, C, S. Board answers nothing on success; on a dimension mismatch it prints `ERR cfg <V> <C> <S>` (the dims it received) and returns to `RDY`.

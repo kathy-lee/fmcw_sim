@@ -53,10 +53,10 @@ With R = S/2 range bins kept from a real-input FFT, the terms are:
 | CFAR cell list | 64 · 24 | 1 536 B |
 | DoA snapshots | 64·V·4 | 3 072 B |
 | DoA spectrum | 181·8 | 1 448 B |
-| one row buffer | S·4 + 2 | 514 B |
+| one row buffer | S·4 + 2 = 514, padded to a multiple of 4 | 516 B |
 
 The planes dominate and scale as 2·V·C·S, which is what makes the
-scenario choice in 1.4 a memory decision rather than a signal-processing
+scenario choice in 1.5 a memory decision rather than a signal-processing
 one.
 
 ### 1.3 Three restructures that delete terms
@@ -147,6 +147,15 @@ velocity axis and element positions) occupy a small fraction of 512 KiB.
 The prediction is thus "it fits, with roughly 7 KiB spare", and section
 5.2 reports what the linker actually produced.
 
+### 1.7 The link
+
+At the chosen size a frame is 14 + V·C·(4S + 2) = 197 390 bytes on the
+wire: a 14-byte header, then 384 rows of 512 bytes each plus a 2-byte
+checksum. With 8N1 framing every byte costs 10 bits. At CubeMX's default
+of 115200 baud one frame would take about 17 s to send; at 921600 baud it
+takes about 2.14 s. The link was therefore set to 921600 baud, eight
+times the default and the highest of the usual standard rates.
+
 ## 2. Architecture Design
 
 This experiment joins two earlier ones: the FFT harness put a kernel on
@@ -167,7 +176,7 @@ the full pipeline runs on the board, on the live stream:
 | verification | cycle counts beside the host; Q15 bit-exact | live A/B against the Python chain | per-frame diff against the laptop's batch Q15 chain |
 
 
-### 2.1 The processes and the links between 
+### 2.1 System overview: processes, board and links
 As previous experiments, the publisher and the subscriber are
 two Python processes on the same laptop, joined by ZMQ over TCP
 loopback. The subscriber subscribes
@@ -203,6 +212,27 @@ chain, and diffs the two detection lists live.
                               │ synced c_frontend kernels)│
                               └───────────────────────────┘
 ```
+
+**Two links, opposite rules for dropping frames.** The two links in the
+diagram treat frames in opposite ways, on purpose:
+
+| link | may a frame be dropped? | who sets the pace |
+|---|---|---|
+| ZMQ, publisher → subscriber | yes — the subscriber keeps only the newest frame | the publisher, 20 frames/s |
+| UART, subscriber → board | not silently — every row is checksummed, and a corrupt frame is refused with `ERR` and skipped | the board, with `RDY` |
+
+The board cannot keep up with the publisher, and that is known before
+any board is run: section 1.7 shows a frame takes about 2.14 s just to
+send, so even with no computing at all the board could accept fewer
+than 0.5 frames per second, while the publisher sends 20 — at least 40
+times more. A queue that kept every frame would grow without limit, and each
+verdict would concern an ever older frame. So whenever the subscriber is
+ready for the next frame, it empties its queue, keeps only the newest
+one, and counts the rest as dropped. Section 5.3 reports the rate and the
+number of dropped frames actually measured. On the serial link the opposite holds: once a frame is under way,
+it has to arrive intact, because a lost byte corrupts a row the board is
+already computing on. The board therefore sets the pace — the subscriber
+transmits only after a fresh `RDY` — and the checksums catch the corruption an overrun causes. The one place frames are thrown away on purpose is inside the subscriber, where discarding a whole frame is cheap and harmless.
 
 ### 2.2 The board program: layers and run cycle
 
@@ -259,75 +289,21 @@ result line leaves the board through `HAL_UART_Transmit`.
 The top layer is regenerable, and hand-written code enters it only
 through CubeMX's `USER CODE` fences, which survive regeneration: the two
 calls into the apparatus in `main.c`, and the `USART2_IRQHandler` in
-`stm32f4xx_it.c` that reception needs (section 4.3).
+`stm32f4xx_it.c` that reception needs (section 4.4).
 
-**Startup.** The board has no operating system. Reset jumps through the
-vector table into the startup code, which calls `main()`:
-
-```
-HAL_Init  ->  SystemClock_Config (180 MHz)  ->  MX_GPIO_Init
-          ->  MX_USART2_UART_Init (921600 baud, 8N1)
-          ->  frontend_init (stdout buffer, cycle counter, USART2
-                             interrupt, stack paint, plan init)
-          ->  while (1) frontend_run();
-```
-
-`main()` never returns, because there is nothing to return to: the loop
-is the program's steady state from power-on to power-off.
-
-**One call to `frontend_run()` is one idle window or one frame.**
-
-```
-            ┌──────────────────────────────┐
-            │ banner: # config lines, RDY  │
-            └──────────────┬───────────────┘
-                ┌──────────▼──────────┐
-                │ onepass_q15_init()  │──no──▶ wait 2 s and return; each banner
-                │ succeeded at        │        says # ERROR plan init failed
-                │ start-up?           │
-                └──────────┬──────────┘
-                           │ yes
-            ┌──────────────▼───────────────┐
-            │ read the 14-byte header,     │──nothing in 2 s──▶ return (idle)
-            │ blocking, 2 s timeout        │
-            └──────────────┬───────────────┘
-                   ┌───────▼───────┐
-                   │ OPF1 and dims │──no──▶ ERR cfg, drain, return
-                   │ match?        │
-                   └───────┬───────┘
-                           │ yes
-            ┌──────────────▼───────────────┐
-            │ 384 rows, received by        │──bad checksum───▶ ERR row, drain, return
-            │ interrupt: checksum each,    │──no row in 1 s──▶ ERR timeout, drain, return
-            │ onepass_q15_row()              │
-            └──────────────┬───────────────┘
-            ┌──────────────▼───────────────┐
-            │ onepass_q15_finish(); one      │
-            │ line per detection, printed  │
-            │ as each is computed          │
-            └──────────────┬───────────────┘
-            ┌──────────────▼───────────────┐
-            │ TIME, MEM, SAT, END, RDY     │
-            └──────────────┬───────────────┘
-                           ▼
-                        return
-```
-
-Two properties follow from this shape. First, results leave the board
-*during* the call, not at its end: there is one line per detection, each
-transmitted as soon as that detection is finished, so by the time `frontend_run()` returns, the
-subscriber already holds the whole result block. Second, every exit —
-idle, error or success — leads to the same next event: the loop calls
-`frontend_run()` again, which prints the banner again. An idle board
-therefore banners every two seconds whether or not anyone is listening,
-which is the fact behind the subscriber's rule of trusting only a freshly
-arrived `RDY` (section 4.2).
+**The run cycle.** `main()` calls `frontend_run()` over and over, and each
+call is either an idle window or one frame: print the banner and `RDY`,
+wait up to two seconds for a frame header, and if one arrives, receive the
+rows, run the pipeline and print the result. Every call begins with a new
+banner, and its `RDY` is what paces the subscriber. Section 4.3 draws the
+cycle in full.
 
 ### 2.3 The pipeline: row phase and finish phase
 
-The kernel's interface is a single pair of calls, and `frontend_run()`
-makes them in a fixed pattern: 384 row calls as the rows arrive, then one
-finish call.
+The kernel is set up once, by `onepass_q15_init()`, which
+`frontend_init()` calls at start-up. After that, every frame drives it
+with two calls in a fixed pattern: 384 calls to `onepass_q15_row()` as
+the rows arrive, then one call to `onepass_q15_finish()`.
 
 ```
 frontend_run()
@@ -370,7 +346,7 @@ Four consequences follow from this split.
 **It is what makes streaming possible.** A row call needs only the row it
 was handed and the plane that row belongs to. Nothing in it waits for a
 later row, so each row can be processed while the next one is still on
-the wire (section 4.3).
+the wire (section 4.4).
 
 **It fixes the shape of memory.** The planes must survive until the very
 end, because DoA reads its snapshots out of them. The power map, in
@@ -384,13 +360,15 @@ calls are not uniform: every 32nd one also runs the Doppler step for the
 plane it completes, so the per-row average hides a longer call at the end
 of each channel.
 
-**It located the bottleneck.** The whole row phase costs 142 ms per frame.
-The finish phase costs 0.86–2.3 s, and it grows with the number of
-detections, because each detection gets its own 181-point Bartlett scan
-in double precision — which this single-precision FPU emulates in
-software. That is why latency in section 5.3 scales with detection count,
-and why the row phase, not the finish phase, is the part that hides
-inside the transfer.
+**It separates a fixed cost from a growing one.** The row phase does
+the same work for every frame, whatever the scene: 384 range FFTs and one
+Doppler step per channel. The finish phase has a fixed part too — NCI and
+the CFAR walk over every cell — but also a part that grows with the
+number of detections: each detection gets its own 181-point Bartlett
+scan, computed in double precision, which this single-precision FPU can
+only do in software. The row phase is therefore the part that can hide
+inside the transfer, and the finish phase is where a busy scene costs
+time. Section 5.3 reports the measured cost of both.
 
 ### 2.4 One source, two compilations
 
@@ -422,24 +400,91 @@ the same C source, cross-compiled:
 
 Two compilers, two machine codes, two processors, one set of sources.
 That is what gives the live diff its meaning: when the board's detections
-match the library's, the only variables that differed were the compiler
-and the CPU, so agreement is evidence that the arithmetic survived the
-port intact.
+match the library's, the only things that differed were the compiler, the CPU and
+the code path — the one-pass pipeline on the board against the batch
+chain on the laptop — so agreement is evidence that both the
+restructure and the port preserved the detections.
 
-It also fixes a maintenance rule. Editing a kernel means redoing *both*
-compilations — `make -C c_frontend lib` for the laptop and
-`make -C embedded/nucleo_f446re_frontend flash` for the board — or the
-referee silently compares two different versions of the same code. The
-banner handshake catches mismatched parameters, but nothing detects
-mismatched code.
+**Keeping the two builds in step.** One set of sources does not mean both
+machines run the same version of it. Each build is a snapshot of
+`c_frontend/src` taken at the moment its command runs, and the two
+commands run independently of each other:
+
+```
+make -C embedded/nucleo_f446re_frontend flash   → the board, as of that moment
+make -C c_frontend lib                          → the laptop, as of that moment
+```
+
+If a kernel is edited between the two, the board and the laptop run
+different versions, even though only one copy of the sources ever
+existed.
+
+The build commands guard against stale copies, but not against a build
+that was never run:
+
+- `make flash` copies the kernels in fresh before every build, so
+  flashing always uses the current sources.
+- `make lib` recompiles every time it runs, and `pytest` runs it
+  automatically before the one-pass tests.
+- Nothing reflashes the board when a kernel changes, and the Python
+  wrapper loads whatever `libfmcw.so` it finds without checking its age.
+
+After editing a kernel, both builds therefore have to be redone by hand.
+Because the tests rebuild the library on their own, the laptop side
+tends to stay current while the board quietly keeps its old code. That
+mismatch would appear either as MISMATCH verdicts that look like a
+porting bug, or — if the change does not affect detections on these
+frames — not at all.
+
+**One parameter file, two bindings.** The parameters reach the two
+machines by different routes, and at different times:
+
+```
+scripts/export_for_c.py ──▶ data/c_export_stream128/params.cfg
+                                   │                       │
+                                   ▼                       ▼
+                 laptop: read at run time      board: read at compile time
+                 CFrontend / CFrontendOnepass  make sync runs
+                 pass the path to the library, gen_frontend_params.py
+                 which parses it when the      → frontend_params.h
+                 object is created             → FRONTEND_V, _C, _S macros
+                                               → FRONTEND_PARAMS, a const
+                                                 struct stored in flash
+                                   │                       │
+                                   └──── banner check ─────┘
+                       at start-up the subscriber compares the
+                       board's reported dims and CFAR alpha with
+                       params.cfg, and refuses to run if they differ
+```
+
+On the laptop, the file is parsed each time a front-end object is
+created, so a re-export takes effect on the next run. On the board, the
+same file is turned into a header and compiled in. For the board this is
+not a choice but a requirement: V, C and S set the sizes of the static
+arrays of section 4.1, and C needs an array's size when it compiles it.
+There is also no file system on the board to read a configuration from.
+The 8 288 B of parameter tables therefore sit in flash as `const` data,
+costing no SRAM.
+
+**Parameter drift is caught; code drift is not.** Parameters can drift
+apart the same way: re-export them and the laptop follows on its next
+run, while the board keeps the values it was last flashed with. Here,
+though, there is a guard. At start-up the subscriber reads the same
+`params.cfg` itself, compares it with the board's banner, and refuses to
+start unless the dimensions (V, C, S) match exactly and CFAR alpha
+matches to within 1e-9 relative. The banner also shows the CFAR guard
+and training sizes and the minimum range bin, but those are displayed,
+not checked. There is no equivalent check for code: the banner reports
+the board's parameters, not which version of the sources it was built
+from.
 
 ### 2.5 Wire protocol
 
 - Laptop → board, binary, little-endian:
-  - Frame header, 14 bytes: magic `b"OPF1"`, `uint32` frame_id, `uint16` V, C, S. Board answers nothing on success; on a dimension mismatch it prints `ERR cfg <V> <C> <S>` (the dims it received) and returns to `RDY`.
+  - Frame header, 14 bytes: magic `b"OPF1"`, `uint32` frame_id, `uint16` V, C, S. Board answers nothing on success. If the magic is not `OPF1` or the dimensions do not match, it prints `ERR cfg <V> <C> <S>` (the dimension fields as received), discards the rest of the incoming frame, and starts its next cycle with a banner.
   - Then V·C rows in v-major order (channel 0 chirps 0..C−1, then channel 1, ...): 512 payload bytes (S=128 `int16` I/Q pairs, i.e. the `(S, 2)` int16 row) followed by a 2-byte checksum = sum of the 512 payload bytes mod 65536, `uint16` LE.
 - Board → laptop, text lines (`\n`-terminated):
-  - Idle/banner block, repeated every ~2 s while waiting and once at startup:
+  - Banner block, printed at the start of every cycle: once after power-on, every ~2 s while idle, and again after every result block or error:
     ```
     # onepass-frontend 1
     # clk 180000000
@@ -452,6 +497,9 @@ mismatched code.
     # maxdet 64
     RDY
     ```
+
+    If `onepass_q15_init()` failed at start-up, the banner carries one extra line, `# ERROR plan init failed`, just before `RDY`, and the board accepts no frames.
+
   - Per-frame result block:
     ```
     DET <n> <overflow>
@@ -463,33 +511,195 @@ mismatched code.
     END <frame_id>
     RDY
     ```
-  - Errors: `ERR cfg ...`, `ERR row <v> <c>` (checksum), `ERR timeout <v> <c>` — each followed by a return to the idle/banner block. The bridge logs them and moves on; no retry.
+  - Errors: `ERR cfg ...`, `ERR row <v> <c>` (checksum), `ERR timeout <v> <c>` — each followed by a return to the idle/banner block. The subscriber logs them and moves on; no retry.
 
 ## 3. Experiment Design
 
+### 3.1 Implementation and test of the memory-lean kernels
 
-1. Implementation and test on memory-lean kernals
-2. Implementation and test on one-pass pipeline
-3. Differential test of pipeline through ctypes wrapper
-4. Implementation the subscriber and dry-run verification
-5. Flash and monitor: Banner-only first, then full fun
-6. One-shot run without publisher
+The three restructures of section 1.3 were each built as a
+separate kernel. Each kernel's test runs the new kernel and the frozen kernel on the same input, and requires them to agree exactly:
 
-     In `--one-shot` mode the left half of the laptop box is absent — no
-     publisher, no ZMQ; the subscriber generates frame 0 of the scenario
-     itself. The serial half is identical in both modes.
+- `test_cfar_cells_q15` — the CFAR cell walk against the frozen
+  reference mask `cfar_q15_ca_mask_ref`, on a 16 × 16 noise map with
+  two strong cells added. The list must contain exactly the cells the
+  mask marks, in the same scan order, with the same power, and with a
+  stored threshold that reproduces the mask's decision. Exactly two
+  cells must pass, none below the minimum range, with no overflow. A
+  second case sets alpha to 0, so all 224 cells beyond the minimum range
+  pass, and caps the list at 8: the walk must keep exactly 8, raise the
+  overflow flag, keep them in scan order, and keep the strongest — the
+  weakest kept cell is at least as strong as the 9th-strongest
+  candidate.
+- `test_rd_stream_q15` — row-streaming range-Doppler against the batch
+  `rd_q15` chain, on 3 random channels of 32 chirps × 128 samples,
+  bounded like the quantizer's output. Rows are fed in one at a time and
+  the plane is then finished; the result must be bit-identical to the
+  batch plane, with the same saturation count.
+- `test_doa_cell` — the tableless Bartlett DoA against the table-based
+  frozen `doa_bartlett`, on 50 random 12-element snapshots. The azimuth
+  index must match, and the whole 181-point spectrum must be
+  bit-identical.
 
-7. Streamed run with publisher
+### 3.2 Implementation and test of the one-pass pipeline
 
+The three kernels were then composed into the one-pass pipeline,
+`onepass_q15_init/_row/_finish` (section 2.3). Its test runs the whole
+pipeline and the frozen stage-wise chain — batch range-Doppler per
+channel, NCI, the reference CFAR mask, point cloud — on the same input,
+and requires them to agree exactly:
 
-<!-- why one pass: the 196 608 B frame never exists on the board;
-     planes / power / overlay memory structure; caller-provided storage;
-     the row/finish split -->
+- `test_onepass_q15` — 3 synthetic frames of 12 channels × 32 chirps ×
+  128 samples, each noise plus one strong target. The target is needed:
+  integrating 12 channels concentrates the noise so tightly that noise
+  alone never crosses the threshold, and a test with no detections would
+  compare nothing. The pipeline receives the rows one at a time, channel
+  by channel, then finishes. Its planes must be bit-identical to the
+  frozen chain's range-Doppler cube, with the same saturation count and
+  no overflow. It must report the same number of detections, at least
+  one, and each detection must match exactly: range bin, Doppler bin,
+  azimuth, x, y, radial velocity, SNR, and a power equal to the frozen
+  power map at that cell. On the host every buffer is a separate
+  allocation, so the overlay of section 1.4 is not used here.
+
+### 3.3 Differential test of the pipeline through the ctypes wrapper
+
+The one-pass pipeline was exposed to Python through a flat C API,
+`fmcw_onepass_*`, built into `libfmcw.so`, and the wrapper class
+`CFrontendOnepass` — the same path the subscriber later uses to quantize
+frames. This step also introduces the reduced scenario,
+`scenario_mimo_stream_128.json`: V = 12, C = 32, S = 128, with the ramp,
+the chirp period and the bandwidth halved together with the chirp and
+sample counts, so the range window stays about 9.6 m and both of its
+targets, near 3 m and 7 m, stay in view. The test exports 5 frames of
+that scenario and rebuilds the library, then checks:
+
+- `test_onepass_matches_frozen_chain` — each frame is quantized, with no
+  sample clipped, and processed twice: by the one-pass pipeline, and by
+  the frozen batch Q15 chain through `CFrontend`. Both must find at least
+  one detection, and the two detection arrays must be exactly equal.
+- `test_detections_land_near_ground_truth` — a loose physical check, so
+  that the exact comparison cannot pass on a broken scenario: detections
+  must appear within 0.5 m of both targets, and the far target's
+  azimuth must lie within 3° of its true 25°.
+- `test_dims` — the library reads the dimensions 12 × 32 × 128 from the
+  exported parameters.
+
+Unlike section 3.2, the input here is real simulator frames rather than
+synthetic data. Like section 3.2, the library allocates every buffer
+separately, so the overlay is not used.
+
+### 3.4 Implementation of the subscriber and dry-run verification
+
+`streaming_subscriber_nucleo.py` implements the laptop side of the wire
+protocol (section 2.5), the banner check, the result parser and the
+detection comparison. All of it was tested before any board program
+existed — a dry run, with no serial port, no board and no publisher.
+Its 10 tests fall into three groups:
+
+- **Wire format.** The frame header must be exactly 14 bytes: `OPF1`,
+  the frame id as a 32-bit little-endian integer, then V, C and S as
+  16-bit integers. A row must be 514 bytes: the int16 row itself, then
+  a checksum equal to the sum of those 512 bytes modulo 65536.
+- **Parsing and the comparison rules.** A sample banner must yield the
+  dimensions 12 × 32 × 128, `maxdet` 64, and CFAR alpha to full
+  precision. A software loopback renders two reference detections as a
+  board result block, parses it back, and compares it with the original:
+  it must MATCH with no tie flips, while a copy with one x coordinate
+  moved by 1e-3 — far beyond the 1e-6 tolerance — must fail. An azimuth
+  one grid step off must still MATCH but count as one tie flip, two
+  steps off must fail, and a missing detection must fail.
+- **The serial conversation, against a fake board.** A fake serial port
+  stands in for the board: it holds stale banners in its buffer and then
+  plays scripted board output. Opening the link must clear the stale
+  ones; a frame must be sent only after a live `RDY`, which then yields a
+  MATCH with both detections and exactly 14 + 384 × 514 bytes written; a
+  banner arriving just before the result must be skipped rather than read
+  as an empty result; and a silent board must raise an error instead of
+  waiting forever.
+
+A dry run checks the logic of encoding, parsing and comparing. It
+cannot check timing on a real wire: the receive overrun of section 4.4
+was invisible here and appeared only on the board.
+
+### 3.5 Flash and monitor: banner-only first, then the full program
+
+The board program was brought up in two stages, so that each stage adds
+only a few new things that can go wrong.
+
+- **Banner-only program.** The board project was cloned from the FFT
+  harness, set to 921600 baud with the heap and stack reservations of
+  section 1.6, and given a wrapper Makefile whose `make sync` copies the
+  kernel sources in and generates the parameter header from
+  `params.cfg`. This first program does nothing but print the banner and
+  `RDY` every two seconds. Flashing it and reading the serial port checks
+  the toolchain, the flashing, the clock, the baud rate and the parameter
+  header before any pipeline code runs: the banner must show the 180 MHz
+  clock, the FPU switched on, 5 flash wait states, the dimensions
+  12 × 32 × 128, and CFAR alpha with all 17 digits equal to `params.cfg`.
+- **Full program.** `frontend.c` then gained the static storage and the
+  complete run cycle of section 4.3, and is checked twice. Before
+  flashing, the build must link: because all large buffers are static and
+  the heap and stack reservations sit inside `bss`, a program that does
+  not fit fails right here with `region RAM overflowed`, and
+  `arm-none-eabi-size` and `make map` show the static regions against the
+  131 072 B of SRAM. After flashing, the banner must appear without
+  `# ERROR plan init failed`, which shows that `onepass_q15_init()` could
+  set up its FFT tables within the board's heap.
+
+### 3.6 One-shot run without the publisher
+
+The first run through the whole system uses a single frame and no
+stream. With `--one-shot`, the left half of the laptop box in section
+2.1 is absent — no publisher, no ZMQ: the subscriber generates frame 0
+of the scenario itself. The serial half is identical to the streamed
+run: the frame is quantized, sent after a live `RDY`, processed on the
+board, and compared with the laptop's batch Q15 chain, exactly as every
+streamed frame will be.
+
+One fixed frame makes a failure easy to interpret. Sections 3.1–3.4 have
+already shown that the laptop side is correct, so a disagreement here
+can only come from the wire or the board build, and the result block
+shows which:
+
+- a non-zero `SAT`, where the laptop saw none, means the board computed
+  on different samples than the laptop sent;
+- an azimuth that differs points at the math library, since the
+  board's and the laptop's C libraries may round `sin` and `cos`
+  differently;
+- a different number of detections means the CFAR input differs; the
+  power and threshold printed with each detection show where, because
+  they are printed to full precision and either equal the laptop's
+  values at those cells or not.
+
+**Passes when** the banner is accepted, the verdict is MATCH, `SAT` is
+0, the stack peak stays under 2 048 B, and the heap is about
+1.2–1.5 KiB. A one-shot MATCH is a gate to the streamed run, not a
+result.
+
+### 3.7 Streamed run with the publisher
+
+The acceptance run puts the whole system of section 2.1 to work: the
+publisher streams the scenario at 20 frames per second, and the
+subscriber, keeping only the newest frame, feeds the board one frame at
+a time and compares every result with the laptop's batch Q15 chain. The
+commands are listed in section 5.
+
+Compared with the one-shot run, this adds what a single frame cannot
+show: many different frames, since the targets move from frame to
+frame; the stream's own behavior — dropped frames and end-to-end
+latency; and the board's memory use over time. Every processed frame
+prints its verdict, and every 10 processed frames the subscriber prints
+a summary: frames processed and dropped, mismatches and tie flips so
+far, mean latency, the cost of the row and finish phases, and the
+highest heap and stack use the board has reported so far.
+
+**Passes when** at least 100 frames are processed with zero mismatches,
+and the stack peak stays under 2 048 B throughout. Tie flips do not fail
+a frame, but each one is listed rather than hidden. The run stops after
+110 processed frames; its results are reported in section 5.
 
 ## 4. Implementation
-
-<!-- export, CubeMX generation, make flash, one-shot, streaming session;
-     the deaf-window discovery and the --row-pace experiment -->
 
 ### 4.1 Static storage and the overlay
 
@@ -499,8 +709,8 @@ Section 1 argued the budget; this is how the budget became declarations.
 `static` at file scope in `frontend.c` — no `malloc`, no large locals.
 The consequence is the one that matters for a memory claim: the linker
 map becomes the proof, and an object that no longer fits does not crash
-at 3 a.m., it fails the build. Measured with `arm-none-eabi-nm` on the
-certified binary:
+at 3 a.m., it fails the build. Sizes from `arm-none-eabi-nm` on the certified binary, except the last
+row, which the linker script sets:
 
 | object | bytes | what it holds |
 |---|---:|---|
@@ -514,10 +724,10 @@ certified binary:
 
 Two things are deliberately *not* in SRAM: `FRONTEND_PARAMS` (8 288 B,
 including the velocity axis and the element positions) is `const` and so
-lives in flash, and the FFT twiddle tables are the plan's only heap
+lives in flash, and the FFT tables and Hann windows are the plan's only heap
 allocation, built once at init.
 
-**The kernels allocate nothing.** `onepass_q15_init` takes every buffer
+**The kernels allocate no frame storage.** `onepass_q15_init` takes every buffer
 as a pointer:
 
 ```c
@@ -552,8 +762,7 @@ exactly what `power` alone would have cost. The post-CFAR stage is
 therefore housed for free, and the alternative (separate arrays) would
 have added 4 520 B, cutting the final margin from 6 116 B to under
 1 600 B. At the shrunk scenario the overlay is what makes the fit
-comfortable; at the full scenario it is the difference between fitting
-and not.
+comfortable.
 
 **The instruments.** Two small routines produce the runtime numbers in
 section 5. `paint_stack` fills the gap between the heap end and the
@@ -565,7 +774,10 @@ have allocated — which it never does, because `stdout` is bound to the
 static `stdout_buf` above.
 
 ### 4.2 Flow in the subscriber
-The steps marked ▸ are the two call sites of
+
+The first chart is the control flow of the subscriber's `main()`: the
+shared setup, then the fork into its two modes. The steps marked ▸ are
+the two call sites of
 `_process_one`, the per-frame path both modes share; the streaming loop
 and `_process_one` are each expanded in their own chart below.
 
@@ -668,7 +880,10 @@ leaves the loop only by Ctrl-C); and Ctrl-C itself can fire anywhere in
 the loop — it is drawn as no arrow because no single box owns it — and
 lands in the shutdown box of the `main()` chart. Note the board-ERR
 back-edge bypasses `processed++`: an error frame does not count toward
-`--max-frames`.
+`--max-frames`. The chart also leaves out one skip: after draining the
+queue, a frame whose header does not describe a 3-D array is ignored,
+and the loop starts over before the frame is counted. This publisher
+sends only 3-D frames, so the skip never fires here.
 
 `_process_one`, called at the two ▸ marked steps above — one frame
 through the board and the referee. A board error returns early (the
@@ -718,7 +933,62 @@ that); otherwise the verdict line is returned at the bottom:
 ```
 
 
-### 4.3 Receiving while computing: a USART with no receive FIFO
+### 4.3 Flow on the board
+
+One call to `frontend_run()` is one idle window or one frame. The chart
+follows a single call through every way it can end:
+
+```
+            ┌──────────────────────────────┐
+            │ banner: # config lines, RDY  │
+            └──────────────┬───────────────┘
+                ┌──────────▼──────────┐
+                │ onepass_q15_init()  │──no──▶ wait 2 s and return; each banner
+                │ succeeded at        │        says # ERROR plan init failed
+                │ start-up?           │
+                └──────────┬──────────┘
+                           │ yes
+            ┌──────────────▼───────────────┐
+            │ read the 14-byte header,     │──nothing in 2 s──▶ return (idle)
+            │ blocking, 2 s timeout        │
+            └──────────────┬───────────────┘
+                   ┌───────▼───────┐
+                   │ OPF1 and dims │──no──▶ ERR cfg, drain, return
+                   │ match?        │
+                   └───────┬───────┘
+                           │ yes
+            ┌──────────────▼───────────────┐
+            │ 384 rows, received by        │──bad checksum───▶ ERR row, drain, return
+            │ interrupt: checksum each,    │──no row in 1 s──▶ ERR timeout, drain, return
+            │ onepass_q15_row()            │
+            └──────────────┬───────────────┘
+            ┌──────────────▼───────────────┐
+            │ onepass_q15_finish(): a DET  │
+            │ count line, then one line    │
+            │ per detection, printed as    │
+            │ each is computed             │
+            └──────────────┬───────────────┘
+            ┌──────────────▼───────────────┐
+            │ TIME, MEM, SAT, END, RDY     │
+            └──────────────┬───────────────┘
+                           ▼
+                        return
+```
+
+Two properties follow from this shape. First, results leave the board
+*during* the call, not at its end: there is one line per detection, each
+transmitted as soon as that detection is finished, so by the time `frontend_run()` returns, the
+subscriber already holds the whole result block. Second, every exit —
+idle, error or success — leads to the same next event: the loop calls
+`frontend_run()` again, which prints the banner again. An idle board
+therefore banners every two seconds whether or not anyone is listening,
+which is the fact behind the subscriber's rule of trusting only a freshly
+arrived `RDY` (section 4.2).
+
+The row-reception box is the one step where the board must receive and
+compute at the same time; section 4.4 explains how that is done.
+
+### 4.4 Receiving while computing: a USART with no receive FIFO
 
 **The hardware constraint.** The STM32F446's USART has no receive FIFO:
 one data register plus the shift register, two bytes of slack. A third
@@ -736,22 +1006,23 @@ so the next row's bytes start arriving immediately:
 ```
 per-byte arrival        10.85 us
 hardware slack           21.7 us   (2 bytes)
-deaf window per row     ~365 us    (measured: 25.6 Mcyc / 384 rows)
+average deaf window     ~365 us    (25.6 Mcyc / 384 rows)
                         ───────
 bytes arriving in the deaf window   ~34
-bytes the hardware can hold            2      ->  ~32 lost, every row
+bytes the hardware can hold            2      ->  ~32 lost per row on average
 ```
 
 The margin is not thin, it is absent: the deaf window exceeds the
-hardware's tolerance by a factor of ~17. Even against a pre-measurement
+hardware's tolerance by a factor of ~17 — and that is only the average: the last row of
+each channel also runs the Doppler step for its plane, so its deaf
+window is longer still. Even against a pre-measurement
 estimate of 190 µs per row — derivable from the FFT harness's measured
 76.3 cycles per Q15 butterfly — the ratio is 17 : 2. Nothing in this
 calculation required hardware: the baud rate, the frame format, the
 absence of a FIFO (RM0390) and a cycle estimate were all available in
 advance.
 
-The trap is arithmetic at the wrong granularity. Per row, 365 µs of
-compute against 5.58 ms of transfer is a 6.5 % duty cycle, which looks
+The trap is arithmetic at the wrong granularity. On average, 365 µs of compute per row against 5.58 ms of transfer is a 6.5 % duty cycle, which looks
 like ample headroom — but a two-byte buffer does not impose a throughput
 requirement, it imposes a deadline, and no amount of average headroom
 satisfies a deadline. Worst-case response time against the peripheral's
@@ -763,34 +1034,55 @@ reception was tried first, and the first full-speed run failed as
 payload. This is the wire protocol earning its keep: corrupt samples were
 refused at the door instead of silently becoming wrong detections, and
 the failure surfaced as a named error with coordinates rather than an
-inexplicable mismatch. The index is informative too — the error struck
-row 4, not row 1, because buffering upstream in the ST-LINK's USB-CDC
-bridge absorbed the first few deaf windows, and bytes were dropped at the
-chip only once that buffering saturated.
+inexplicable mismatch. The index is informative too: with a continuous byte stream the first
+deaf window would already have corrupted row 1, so the stream reaching
+the board must have had gaps at first that happened to fall on those
+windows — most likely while buffering in the ST-LINK's USB bridge was
+still filling — and bytes were lost only once it ran continuously.
 
 **The controlled experiment.** Analysis names a cause; it does not
 exclude rivals — wire noise, a host-side timing bug or a row-indexing
-error would also produce checksum failures. So the feeder was paced
-rather than the board changed: `--row-pace 0.009` sleeps after each row,
+error would also produce checksum failures. So instead of changing the board, the subscriber was slowed down:
+`--row-pace 0.009` makes it sleep after each row,
 leaving the wire silent exactly while the board computes. The *same
 binary* then processed all 384 rows to a MATCH (31 detections, latency
 8.53 s). One run, one variable, and the only surviving explanation is
 that the board cannot listen while it computes.
 
-**The fix.** Reception became interrupt-driven ping-pong. Two 516-byte
-buffers; `HAL_UART_Receive_IT` arms the *next* row before the current one
-is checksummed, so the interrupt machinery lands bytes while the kernel
-works; `plan.rowbuf` is re-pointed at the full buffer each row (the
-kernel clobbers it in place, which is safe until that buffer is
-re-armed); two `volatile` flags, written in `HAL_UART_RxCpltCallback` /
-`HAL_UART_ErrorCallback` and polled in the main loop, synchronize the two
-sides — single writer, single reader, no further locking required. Error
-paths call `HAL_UART_AbortReceive` before draining, since blocking reads
-and an in-flight interrupt transfer cannot both own the peripheral. The
-vector-table entry is a hand-written `USART2_IRQHandler` in
-`stm32f4xx_it.c`'s user fences delegating to `HAL_UART_IRQHandler`; the
-startup file's weak default is an infinite loop, so the name must match
-exactly.
+**The fix: ping-pong reception.** The board now receives by interrupt into
+two 516-byte buffers, A and B, which take turns. For each row:
+
+1. Row *n* has finished arriving in buffer A.
+2. The board immediately starts receiving row *n + 1* into buffer B. From
+   then on the UART interrupt stores each arriving byte in B by itself,
+   without the main loop's help.
+3. Meanwhile the main loop checks row *n*'s checksum and runs
+   `onepass_q15_row` on buffer A.
+4. When B is full, the roles swap: B is processed while A receives.
+
+Reception therefore never pauses while the board computes. Three details
+make this work:
+
+- **The row pointer follows the full buffer.** The kernel reads its row
+  through `plan.rowbuf`, so that pointer is moved to whichever buffer just
+  filled. The kernel overwrites the buffer while processing it, which is
+  harmless: the buffer is not used for reception again until that
+  processing has finished.
+- **Two flags carry the news.** HAL's receive callbacks set `rx_done` when
+  a row is complete and `rx_err` on a receive error, and the main loop
+  waits on them. The main loop clears `rx_done` just before starting each
+  reception and `rx_err` at the start of each frame, both at moments when
+  the interrupt cannot be writing them. They are `volatile`, so the
+  compiler reads them from memory every time.
+- **Errors cancel reception first.** Before draining the wire after an
+  `ERR`, the board stops the reception in progress with
+  `HAL_UART_AbortReceive`; otherwise the interrupt and the blocking drain
+  would both try to take the same bytes.
+
+The interrupt reaches HAL through a hand-written `USART2_IRQHandler` in
+`stm32f4xx_it.c`, inside CubeMX's `USER CODE` fences, which calls
+`HAL_UART_IRQHandler`. The name must match exactly: otherwise the startup
+file's default handler, an endless loop, runs instead.
 
 **Cost and result.** +528 B of `bss` — the second buffer, the two flags
 and alignment padding — leaving a 6 116 B margin. Full speed then MATCHed
@@ -822,6 +1114,10 @@ identical quantized input: count, range bin, Doppler bin, azimuth
 (grid-exact, no tolerance), x, y, radial velocity and SNR. Not one
 azimuth even landed one grid step away, though the comparison would have
 tolerated that as a tie flip.
+
+Both builds came from the same kernel sources: the kernels last changed
+on 2026-09-04, and every board build, as well as the session itself,
+took place on 2026-09-06.
 
 `SAT 0` throughout: the Q15 arithmetic never saturated on real frame
 data, so the fixed-point headroom budgeted for the row FFTs and the
@@ -862,11 +1158,12 @@ Both were *constant across all 110 frames*, which is the evidence that
 matters: no growth with detection count, no slow leak, no path that
 allocates more on a busier frame.
 
-One correction against the feasibility estimate of section 1: static use
-came out at 122.0 KiB rather than the predicted ≈ 116 KiB. The margin
-criterion still held comfortably (6 116 B against the 4 KiB required),
-but the prediction was ~6 KiB optimistic — and the ping-pong pair, which
-the model had not anticipated, accounts for only 0.5 KiB of that gap.
+Against the prediction of section 1.6, the linker's total of 124 956 B
+came out 1 456 B higher than the predicted 123 500 B. Most of the
+difference is items the prediction did not list: the second receive
+buffer that ping-pong reception added, with its two flags (528 B), the
+initialized data section (476 B), and about 450 B of HAL and C-library
+variables. The margin of 6 116 B left the fit comfortable.
 
 ### 5.3 Cadence — recorded, not claimed
 

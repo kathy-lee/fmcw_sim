@@ -55,31 +55,214 @@ With R = S/2 range bins kept from a real-input FFT, the terms are:
 | DoA spectrum | 181·8 | 1 448 B |
 | one row buffer | S·4 + 2 = 514, padded to a multiple of 4 | 516 B |
 
-The planes dominate and scale as 2·V·C·S, which is what makes the
-scenario choice in 1.5 a memory decision rather than a signal-processing
-one.
+The range-Doppler planes dominate, at 2·V·C·S bytes, which makes the scenario choice in section 1.5 a memory decision rather than a signal-processing one.
 
-### 1.3 Three restructures that delete terms
+### 1.3 Restructures that remove batch-pipeline buffers
 
-The one-pass form is not merely the batch chain fed differently; three
-stages were rebuilt so that their working storage disappears.
+The one-pass form is not merely the batch chain fed differently: three
+stages were rebuilt so that the buffers the batch pipeline needed — the
+raw frame, the CFAR scratch arrays and the DoA steering table — are
+never allocated. That is why none of them appears in the memory table of
+1.2, which lists only what remains. What each restructure removes:
 
-- **Row-streaming range-Doppler.** The range FFT runs on each row as it
-  lands and writes into the persistent planes; the Doppler FFT runs down
-  the columns once a channel is complete. No cube, and no separate
-  range-only buffer.
-- **Zero-scratch capped CA-CFAR cell walk.** Instead of producing a
-  boolean mask over all C·R cells (2 048 B here) and then scanning it,
-  the walk recomputes each window directly and emits passing cells into a
-  fixed list of 64. When more cells pass than fit, the kept set is the top
-  64 by margin and an overflow flag is raised — so the cost is bounded by
-  the cap, not by the scene.
-- **Tableless per-snapshot Bartlett DoA.** The frozen path reads steering
-  vectors from a 181 × V table; the one-pass version computes
-  `(cos ph, sin ph)` at the point of use with the identical expression,
-  which keeps the spectra bit-identical while removing 181·V·8 =
-  **17 376 B** of RAM. The table was only ever a cache, and this is the
-  right trade where detections are few and RAM is the wall.
+| restructure | what it removes | at V=12, C=32, S=128 |
+|---|---|---:|
+| row-streaming range-Doppler | the raw frame, and the FFT's private scratch copy | 196 608 B |
+| zero-scratch CA-CFAR cell walk | four map-sized sliding-sum arrays and the full mask | 88 320 B |
+| tableless Bartlett DoA | the 181 × V steering table | 17 376 B |
+
+Each one keeps the frozen arithmetic exactly — same operations, same
+order, same casts — so its output is bit-identical to the frozen stage
+it replaces (tested in 3.1). What changes is only *where values live and
+for how long*.
+
+#### 1.3.1 Row-streaming range-Doppler
+
+```c
+int  rd_stream_q15_plan_init(RdStreamPlanQ15 *p, int n_chirps, int n_samples);
+void rd_stream_q15_row(RdStreamPlanQ15 *p, cplx_q15 *row, int c,
+                       cplx_q15 *plane, long long *sat);
+void rd_stream_q15_plane_finish(RdStreamPlanQ15 *p, cplx_q15 *plane,
+                                cplx_q15 *col, long long *sat);
+```
+
+This stage streams its *input*: rows are consumed the moment they arrive
+off the wire, so the raw frame — 196 608 B, one and a half times the
+board's entire RAM — never exists anywhere. It is the frozen
+`rd_q15_process_channel` re-cut at the row boundary: the same operations
+in the same order, split into "what can happen per row" and "what needs
+the whole channel".
+
+![Each arriving row is processed in place — DC removal, Hann, range FFT —
+and its kept half lands in one row of the resident plane; when a channel's
+last row arrives, the plane finish runs the slow-time work; the raw frame
+never exists](figures/rd-stream-row-path.svg)
+
+The split follows the data dependencies exactly:
+
+- **Per row (fast time)** — DC removal, range Hann, range FFT, keep the
+  S/2 positive-beat bins. Each of these reads only the one row, so it can
+  run the moment the row lands. The arriving row buffer doubles as the FFT
+  workspace; the frozen stage used a private scratch copy, and in-place
+  produces the same values in the same order, so the outputs stay
+  bit-identical.
+- **Per plane (slow time)** — the clutter (slow-time mean) removal and the
+  Doppler pass each read a whole *column* of chirps, so they cannot run
+  until the channel's last row has arrived. `rd_stream_q15_row` at
+  `c == C−1` is the trigger; the plane finish then walks the range bins,
+  reusing the row buffer as its column workspace (C·4 = 128 B of its
+  512 B).
+
+`RdStreamPlanQ15` holds only what is frame-independent — two FFT plans
+and two Hann windows, built once on the heap at start-up (~1.4 KiB).
+Every byte of frame storage (the planes, the row buffer) belongs to the
+caller: static arrays on the board, ordinary allocations in host tests.
+One plan serves all 12 channels, because nothing per-channel lives in it.
+
+#### 1.3.2 Zero-scratch capped CA-CFAR cell walk
+
+```c
+int cfar_cells_q15(const int64_t *power, const FrontendParams *p,
+                   CfarCellQ15 *cells, int max_cells, int *overflow);
+```
+
+Where the range stage streams its input, the cell walk streams its
+*output*. The frozen CFAR answers "is this cell a detection?" with a full
+0/1 mask the size of the map. The cell walk asks the same question with
+the same arithmetic, but writes only the answers that matter — a short
+list of passing cells — so it needs no scratch memory at all.
+
+![Frozen mask CFAR vs the cell walk: same power map in, identical threshold
+decisions; ~84 KiB of sliding-sum scratch and a full mask versus zero scratch
+and a 1.5 KiB ranked list](figures/cfar-frozen-vs-walk.svg)
+
+Both sides implement the identical CA-CFAR decision — geometry, edge
+clamping, Q16 threshold — on the same power map. The frozen path buys
+O(1)-per-cell speed with four map-scale int64 scratch arrays and emits a
+full mask. At this geometry (C=32, R=64, guard (2, 4), training (4, 8),
+so window half-extents 6 × 12) they cost:
+
+```
+padded copy                 44 × 88 × 8     30 976
+row sums                    44 × 64 × 8     22 528
+full- and guard-window sums 2 × 32 × 64 × 8 32 768
+mask                        32 × 64         2 048
+                                           ───────
+frozen working memory                      88 320 B  (86.3 KiB)
+cell list (the walk's only storage)  64 × 24  1 536 B
+```
+
+The walk instead recomputes each window directly, which is O(window) per
+cell — slower in theory, irrelevant here — and stores nothing between
+cells. That ≈86 KiB is, together with the raw frame, one of the two
+things that could never fit on the board.
+
+![Decision flow of the cell walk: min-range gate, direct window sums, the
+threshold test, append or ranked replacement into the capped list, final sort
+by scan order](figures/cfar-cell-walk-flow.svg)
+
+Most cells exit at the threshold and cost nothing. A passing cell is
+appended while there is room; once the list is full, a newcomer must beat
+the weakest kept cell's margin — `margin = (power << 16) − thresh_q16` —
+to enter, and the spill is reported through `overflow`. A plain "stop at
+64" cap would keep whichever detections came first in scan order; the
+margin ranking keeps the strongest, so the cost is bounded by the cap,
+not by the scene. A final sort restores the scan order a mask walk would
+have produced, so downstream comparisons are element-by-element whenever
+nothing overflowed.
+
+Each kept cell also stores its `power` and `thresh_q16` at decision time.
+That is what lets the power map die the moment the walk returns, which
+the overlay of 1.4 depends on.
+
+#### 1.3.3 Tableless per-snapshot Bartlett DoA
+
+```c
+int doa_bartlett_cell(const cplx *snap, const double *pos_wl, int n_elem,
+                      double *spectrum);
+```
+
+```
+one detected (doppler, range) cell
+        │  read the cell from all V channel planes
+        ▼
+snapshot[V]
+        │  Bartlett over 181 angles
+        ▼
+spectrum[181]
+        │  spectral-maxima selection, strongest wins
+        ▼
+one azimuth
+```
+
+One detection gives a snapshot `x[e]`. The angular grid is
+θ_g = (g − 90)° for g = 0…180, and the array element positions `p_e` are
+in wavelengths. The **steering vector** is the phase pattern a plane wave
+from θ_g imprints on the array:
+
+```
+a_g[e] = exp( j · 2π · p_e · sin θ_g ),      e = 0 … V−1
+```
+
+and the **Bartlett spectrum** correlates the snapshot with each candidate
+angle's steering vector:
+
+```
+              | V−1                     |²
+P(θ_g)  =     | Σ   conj(a_g[e]) · x[e] |
+              | e=0                     |
+```
+
+If the wave truly comes from θ_g, then x[e] ≈ s·a_g[e]: the conjugate
+cancels every phase, all V terms add in phase, and P(θ_g) ≈ V²·|s|² — a
+peak. At wrong angles the terms partially cancel. The estimate is the
+strongest strict local maximum of P (one-sided rule at the edges,
+whole-grid argmax as fallback on a flat spectrum, ties to the lower
+index); the azimuth is the winning index minus 90°.
+
+The frozen DoA precomputes every steering vector at init — a 181 × V
+table of complex floats, 181·V·8 = 17 376 B on the heap — and reads it
+back on every use. The tableless form evaluates the *identical
+expression* at the point of use, so the table never exists.
+
+![Frozen DoA vs the tableless cell: the frozen path fills a 17 KiB steering
+table at init and reads it per use; the tableless path computes the identical
+expression at the point of use and stores nothing; both feed the same
+accumulation, so the spectra are bit-identical](figures/doa-cell-tableless.svg)
+
+The equivalence rests on one line. The frozen init writes
+
+```c
+p->steer[(size_t)g * n_elem + e] = (cplx){(float)cos(ph), (float)sin(ph)};
+```
+
+and the tableless form computes, at the moment of use,
+
+```c
+cplx a = { (float)cos(ph), (float)sin(ph) };
+```
+
+with `ph` built from the same doubles. Same libm calls, same float casts,
+same order — every steering element is bit-identical, so the table only
+ever cached values this line can regenerate. The cost moves from RAM to
+compute: 181 × V sin/cos pairs per detection, the right trade where
+detections are few and RAM is the wall.
+
+Two further choices keep the function small. There is no plan and no
+init/free pair, because nothing frame-independent is worth keeping; the
+caller passes positions and scratch. And since the streaming pipeline
+runs with `doa_n_sources = 1`, the cell form bakes in top-1 and returns
+the grid index directly. The 1 448 B spectrum is caller scratch, so on
+the board it can occupy storage the power map no longer needs (1.4).
+
+#### 1.3.4 Smaller removals in the composition
+
+The composition that joins the three (2.3) removes two smaller buffers
+on top: the result array, because detections leave through a callback
+one at a time, so the caller holds one detection rather than 64; and any
+separate FFT or column scratch, because one row buffer serves as the
+arriving row, the range FFT's workspace and the Doppler pass's column in
+turn.
 
 ### 1.4 The overlay: lifetimes, not just sizes
 
@@ -176,7 +359,7 @@ the full pipeline runs on the board, on the live stream:
 | verification | cycle counts beside the host; Q15 bit-exact | live A/B against the Python chain | per-frame diff against the laptop's batch Q15 chain |
 
 
-### 2.1 System overview: processes, board and links
+### 2.1 System overview
 As previous experiments, the publisher and the subscriber are
 two Python processes on the same laptop, joined by ZMQ over TCP
 loopback. The subscriber subscribes
@@ -593,8 +776,7 @@ separately, so the overlay is not used.
 
 `streaming_subscriber_nucleo.py` implements the laptop side of the wire
 protocol (section 2.5), the banner check, the result parser and the
-detection comparison. All of it was tested before any board program
-existed — a dry run, with no serial port, no board and no publisher.
+detection comparison. All of it is tested without a board — a dry run, with no serial port, no board and no publisher.
 Its 10 tests fall into three groups:
 
 - **Wire format.** The frame header must be exactly 14 bytes: `OPF1`,
@@ -825,7 +1007,7 @@ and `_process_one` are each expanded in their own chart below.
               ┌───────▼─────────┐       │ Ctrl-C, or
               │ print verdict + │       │ --max-frames done
               │ TIME/MEM/SAT    │    ┌──▼───────────────────┐
-              │ close link      │    │ "bridge stopped."    │
+              │ close link      │    │ print stop message   │
               │ exit 0 if MATCH │    │ (Ctrl-C); finally:   │
               │ else exit 1     │    │ close link + socket  │
               └─────────────────┘    └──────────────────────┘
@@ -1139,10 +1321,11 @@ Flash and SRAM both fit, with the SRAM figure the binding one:
 | flash (`text` + `data`) | 51 652 B | 524 288 B | 90 % free |
 | SRAM (`data` + `bss`) | 124 956 B | 131 072 B | 6 116 B |
 
-The SRAM total decomposes as `planes` 98 304, the power/snapshot/spectrum
+The SRAM total consists mainly of `planes` 98 304, the power/snapshot/spectrum
 overlay 16 384, the cell list 1 536, the receive ping-pong pair 1 032,
 `stdout` buffer 512, the plan struct 104, and the 6 144 B heap + stack
-reservation. Because every one of those is a `static` object inside a
+reservation — 124 016 B together; the remaining 940 B are the initialized
+data section and HAL and C-library variables. Because every one of those is a `static` object inside a
 linker-visible section, the fit is not an estimate: an object that grew
 past the budget would fail the link.
 
@@ -1191,4 +1374,59 @@ bound, and no real-time claim is made.
 
 ## 6. Limitations
 
-<!-- software-double DoA bottleneck, DMA reception, no real-time claim -->
+**Speed.** The board processes about one frame every 5.5 s, while the
+publisher sends 20 frames per second, so this experiment makes no
+real-time claim. Two costs set that pace, and neither is the Q15 row
+pipeline itself:
+
+- **The serial link.** Moving one frame's samples takes about 2.14 s
+  (section 1.7). A real radar would not pay this cost, because its samples
+  come from an ADC on the same board; here the UART stands in for that
+  connection.
+- **Double-precision DoA.** Each detection's 181-point Bartlett scan runs
+  in double precision, which this single-precision FPU can only compute in
+  software. Moving the scan to single precision should shorten the finish
+  phase, but it was not tried, and its results could then differ slightly
+  from the double-precision laptop chain, so the comparison rules would
+  need revisiting.
+
+**The reduced scenario.** The experiment runs at V = 12, C = 32, S = 128,
+not the full 12 × 64 × 256 scenario, which halves the number of Doppler
+bins (32 instead of 64) and coarsens the range bins from 0.075 m to
+0.15 m. The one-pass design cannot reach the full size on this board: the
+range-Doppler planes alone would need 393 216 B, three times all of its
+SRAM (section 1.5). The full scenario needs a different design, which is
+outside this experiment.
+
+**The detection cap.** The CFAR cell list holds at most 64 cells. When
+more cells pass, the weakest are dropped and the overflow flag is set
+(section 1.3). In this session every frame matched the uncapped laptop
+chain, so the cap never removed a detection, but a crowded scene would
+lose its weakest ones.
+
+**What the verification covers.**
+
+- The board is compared with the laptop's chain, not with the scene. A
+  MATCH shows that the board computes the same detections; it does not
+  show that those detections are good. Detection quality — how reliably
+  targets are found, how many false alarms appear — is outside this
+  experiment, and the only check against the actual targets is the loose
+  one in section 3.3.
+- The evidence is one session: 110 frames of one scenario, with two
+  targets moving at constant speed.
+- The overlay is used only on the board (sections 3.2 and 3.3), so the
+  board's MATCH results are the only evidence that its lifetime rule
+  holds.
+- Nothing detects a board built from older kernel sources than the
+  library (section 2.4).
+
+**Reception and reproducibility.**
+
+- Row reception takes one interrupt per received byte. Receiving by DMA,
+  which moves bytes into memory without the CPU, was not tried.
+- The enlarged heap and stack reservations were edited directly in the
+  linker script and are not recorded in the CubeMX project file.
+  Regenerating the project would silently restore CubeMX's defaults,
+  0x200 for the heap and 0x400 for the stack — a stack reservation below
+  the measured peak of 1 328 B — and the link would no longer catch a
+  stack that outgrows its reservation.

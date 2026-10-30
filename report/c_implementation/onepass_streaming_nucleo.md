@@ -257,8 +257,10 @@ the board it can occupy storage the power map no longer needs (1.4).
 
 ### 1.4 Lifetimes and the overlay
 
-The composition that joins the three restructures (2.3) adds no signal
-processing; its design content is what lives where, and for how long.
+The composition that joins the three restructures adds no signal
+processing. Its design content is scheduling — what runs when (2.3) —
+and storage — what lives where, and for how long, which is the subject
+of this section.
 The terms of 1.2 do not all live at once:
 
 ![Frame storage across one one-pass frame: planes live throughout, the row
@@ -287,7 +289,7 @@ of the contract, not an accident:
   time, in the order a mask walk would emit them, so the caller holds
   one detection rather than 64.
 
-### 1.5 Choosing V, C, S
+### 1.5 Choosing the scenario size
 
 V = 12 is fixed: the 3 TX × 4 RX virtual array is the point of the
 experiment, and shrinking it would remove the MIMO content rather than
@@ -302,16 +304,9 @@ decides:
 | **32** | **128** | **98 304 B** | fits, 75 % of SRAM |
 | 16 | 128 | 49 152 B | fits, but halves Doppler resolution |
 
-C = 32, S = 128 is the largest pair that still leaves room for the
-overlay, the cell list, the buffers and the heap/stack reservations. The
-shrink costs resolution — 32 Doppler bins instead of 64, 64 range bins
-instead of 128 — but preserves the full virtual array, so the detection
-chain under test is the real one.
-
-### 1.6 The predicted budget
-
-Summing 1.2 at the chosen point, with the overlay applied and one row
-buffer:
+C = 32, S = 128 is the largest pair whose planes leave room for
+everything else. Summing the main terms of 1.2 at that point, with the
+overlay applied and one row buffer, gives an estimate that confirms it:
 
 ```
 planes                                98 304
@@ -319,12 +314,11 @@ overlay (power / snapshots+spectrum)  16 384
 cell list                              1 536
 row buffer                                516
 stdout buffer                             512
-plan struct                               104
                                      ───────
-data footprint                       117 356 B  (114.6 KiB)
+data footprint                       117 252 B  (114.5 KiB)
 heap + stack reservation               6 144 B  (0x800 + 0x1000)
                                      ───────
-total against 131 072 B              123 500 B  (120.6 KiB)
+total against 131 072 B              123 396 B  (120.5 KiB)
 ```
 
 The reservation belongs in this total because the linker places
@@ -336,14 +330,20 @@ velocity axis and element positions) occupy a small fraction of 512 KiB.
 The prediction is thus "it fits, with roughly 7 KiB spare", and section
 5.2 reports what the linker actually produced.
 
-### 1.7 The link
+The shrink costs resolution — 32 Doppler bins instead of 64, 64 range
+bins instead of 128 — but preserves the full virtual array, so the
+detection chain under test is the real one.
 
-At the chosen size a frame is 14 + V·C·(4S + 2) = 197 390 bytes on the
-wire: a 14-byte header, then 384 rows of 512 bytes each plus a 2-byte
-checksum. With 8N1 framing every byte costs 10 bits. At CubeMX's default
-of 115200 baud one frame would take about 17 s to send; at 921600 baud it
-takes about 2.14 s. The link was therefore set to 921600 baud, eight
-times the default and the highest of the usual standard rates.
+### 1.6 Choosing the UART baud rate
+
+How many bytes is a frame on the wire? A 14-byte header of our own
+protocol (section 2.5), then 384 rows of 512 bytes each plus a 2-byte
+checksum: 14 + V·C·(4S + 2) = 197 390 bytes. With 8N1 framing (1 start
+bit, 8 data bits, 1 stop bit) every byte costs 10 bits. At CubeMX's
+default of 115200 baud one frame would take about 17 s to send; at
+921600 baud it takes about 2.14 s. The link was therefore set to
+921600 baud, eight times the default and the highest of the usual
+standard rates.
 
 ## 2. Architecture Design
 
@@ -411,7 +411,7 @@ diagram treat frames in opposite ways, on purpose:
 | UART, subscriber → board | not silently — every row is checksummed, and a corrupt frame is refused with `ERR` and skipped | the board, with `RDY` |
 
 The board cannot keep up with the publisher, and that is known before
-any board is run: section 1.7 shows a frame takes about 2.14 s just to
+any board is run: section 1.6 shows a frame takes about 2.14 s just to
 send, so even with no computing at all the board could accept fewer
 than 0.5 frames per second, while the publisher sends 20 — at least 40
 times more. A queue that kept every frame would grow without limit, and each
@@ -817,7 +817,7 @@ only a few new things that can go wrong.
 
 - **Banner-only program.** The board project was cloned from the FFT
   harness, set to 921600 baud with the heap and stack reservations of
-  section 1.6, and given a wrapper Makefile whose `make sync` copies the
+  section 1.5, and given a wrapper Makefile whose `make sync` copies the
   kernel sources in and generates the parameter header from
   `params.cfg`. This first program does nothing but print the banner and
   `RDY` every two seconds. Flashing it and reading the serial port checks
@@ -1347,12 +1347,12 @@ Both were *constant across all 110 frames*, which is the evidence that
 matters: no growth with detection count, no slow leak, no path that
 allocates more on a busier frame.
 
-Against the prediction of section 1.6, the linker's total of 124 956 B
-came out 1 456 B higher than the predicted 123 500 B. Most of the
-difference is items the prediction did not list: the second receive
-buffer that ping-pong reception added, with its two flags (528 B), the
-initialized data section (476 B), and about 450 B of HAL and C-library
-variables. The margin of 6 116 B left the fit comfortable.
+Against the prediction of section 1.5, the linker's total of 124 956 B
+came out 1 560 B higher than the predicted 123 396 B. The difference is
+items the estimate did not list: the second receive buffer that
+ping-pong reception added, with its two flags (528 B), the initialized
+data section (476 B), about 450 B of HAL and C-library variables, and
+the kernel's 104 B of state (pointers and counters). The margin of 6 116 B left the fit comfortable.
 
 ### 5.3 Cadence — recorded, not claimed
 
@@ -1386,7 +1386,7 @@ real-time claim. Two costs set that pace, and neither is the Q15 row
 pipeline itself:
 
 - **The serial link.** Moving one frame's samples takes about 2.14 s
-  (section 1.7). A real radar would not pay this cost, because its samples
+  (section 1.6). A real radar would not pay this cost, because its samples
   come from an ADC on the same board; here the UART stands in for that
   connection.
 - **Double-precision DoA.** Each detection's 181-point Bartlett scan runs

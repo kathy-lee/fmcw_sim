@@ -255,31 +255,37 @@ runs with `doa_n_sources = 1`, the cell form bakes in top-1 and returns
 the grid index directly. The 1 448 B spectrum is caller scratch, so on
 the board it can occupy storage the power map no longer needs (1.4).
 
-#### 1.3.4 Smaller removals in the composition
+### 1.4 Lifetimes and the overlay
 
-The composition that joins the three (2.3) removes two smaller buffers
-on top: the result array, because detections leave through a callback
-one at a time, so the caller holds one detection rather than 64; and any
-separate FFT or column scratch, because one row buffer serves as the
-arriving row, the range FFT's workspace and the Doppler pass's column in
-turn.
+The composition that joins the three restructures (2.3) adds no signal
+processing; its design content is what lives where, and for how long.
+The terms of 1.2 do not all live at once:
 
-### 1.4 The overlay: lifetimes, not just sizes
+![Frame storage across one one-pass frame: planes live throughout, the row
+buffer only while rows arrive, the cell list from the CFAR walk on; the
+power map is live only from NCI to the CFAR walk, and the snapshots and
+spectrum reuse its storage after](figures/onepass-frame-memory.svg)
 
-The remaining terms do not all live at once. The power map is never read
-after the CFAR walk has produced its cell list, and every snapshot is
-gathered before the DoA spectrum is first written. Those two facts make a
-lifetime contract the caller may exploit: snapshots and spectrum can
-occupy the power map's storage, snapshots first, in disjoint ranges.
+Every byte of frame storage is caller-provided; the plans own only FFT
+tables and windows (~1.4 KiB, heap, built once). The lifetimes are part
+of the contract, not an accident:
 
-Since a union costs its largest member, the post-CFAR stage is housed for
-nothing:
-
-```
-separate:  power 16 384 + snapshots 3 072 + spectrum 1 448 = 20 904 B
-overlaid:  max(16 384, 3 072 + 1 448)                      = 16 384 B
-                                                    saved     4 520 B
-```
+- **`planes` (98 304 B)** — the irreducible core: resident all frame,
+  because the DoA snapshots must read any (doppler, range) cell across
+  all 12 channels after detection.
+- **`rowbuf` (512 B)** — one buffer, three jobs in sequence: the
+  arriving row, the range FFT's in-place workspace, and the Doppler
+  pass's column scratch. No separate FFT or column buffer exists.
+- **`power` (16 384 B)** — born at NCI, dead the moment the CFAR walk
+  returns; each kept cell carries its own `power` and `thresh_q16`
+  copies precisely so nothing needs the map afterwards.
+- **`snapshots` (3 072 B) and `spectrum` (1 448 B)** — needed only after
+  `power` dies. Every snapshot is gathered before the spectrum is first
+  written, so both may occupy the power map's storage, snapshots first,
+  in disjoint ranges, and their 4 520 B cost nothing extra.
+- **No result array** — detections leave through a callback, one at a
+  time, in the order a mask walk would emit them, so the caller holds
+  one detection rather than 64.
 
 ### 1.5 Choosing V, C, S
 

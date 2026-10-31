@@ -323,9 +323,9 @@ total against 131 072 B              123 396 B  (120.5 KiB)
 
 The reservation belongs in this total because the linker places
 `._user_heap_stack` inside `bss`: an object that outgrows the budget
-therefore fails the link rather than corrupting the run. Flash is never
-the constraint — the code plus the `const` parameter tables (8 288 B,
-velocity axis and element positions) occupy a small fraction of 512 KiB.
+therefore fails at link time rather than corrupting the run. Flash is never
+the constraint: the code and the `const` parameters (section 2.5) occupy
+a small fraction of 512 KiB.
 
 The prediction is thus "it fits, with roughly 7 KiB spare", and section
 5.2 reports what the linker actually produced.
@@ -337,11 +337,11 @@ detection chain under test is the real one.
 ### 1.6 Choosing the UART baud rate
 
 How many bytes is a frame on the wire? A 14-byte header of our own
-protocol (section 2.5), then 384 rows of 512 bytes each plus a 2-byte
+protocol (section 2.6), then 384 rows of 512 bytes each plus a 2-byte
 checksum: 14 + V·C·(4S + 2) = 197 390 bytes. With 8N1 framing (1 start
 bit, 8 data bits, 1 stop bit) every byte costs 10 bits. At CubeMX's
 default of 115200 baud one frame would take about 17 s to send; at
-921600 baud it takes about 2.14 s. The link was therefore set to
+921600 baud it takes about 2.14 s. The UART link was therefore set to
 921600 baud, eight times the default and the highest of the usual
 standard rates.
 
@@ -402,8 +402,7 @@ chain, and diffs the two detection lists live.
                               └───────────────────────────┘
 ```
 
-**Two links, opposite rules for dropping frames.** The two links in the
-diagram treat frames in opposite ways, on purpose:
+**Two links, opposite rules for dropping frames.** The ZMQ link and the UART link treat frames in opposite ways, on purpose:
 
 | link | may a frame be dropped? | who sets the pace |
 |---|---|---|
@@ -487,9 +486,9 @@ rows, run the pipeline and print the result. Every call begins with a new
 banner, and its `RDY` is what paces the subscriber. Section 4.3 draws the
 cycle in full.
 
-### 2.3 The pipeline: row phase and finish phase
+### 2.3 The one-pass pipeline: row phase and finish phase
 
-The kernel is set up once, by `onepass_q15_init()`, which
+The one-pass pipeline is set up once, by `onepass_q15_init()`, which
 `frontend_init()` calls at start-up. After that, every frame drives it
 with two calls in a fixed pattern: 384 calls to `onepass_q15_row()` as
 the rows arrive, then one call to `onepass_q15_finish()`.
@@ -530,144 +529,163 @@ section 1 comes from:
 | snapshots | planes, cell list | snapshots, in the power map's storage |
 | DoA | snapshots | spectrum (also in that storage), detections |
 
-Four consequences follow from this split.
+Splitting into a row phase and a finish phase has the following benefits.
 
-**It is what makes streaming possible.** A row call needs only the row it
+**Makes streaming possible.** A row call needs only the row it
 was handed and the plane that row belongs to. Nothing in it waits for a
 later row, so each row can be processed while the next one is still on
 the wire (section 4.4).
 
-**It fixes the shape of memory.** The planes must survive until the very
-end, because DoA reads its snapshots out of them. The power map, in
+**Shapes the memory layout.** The planes must survive until the very
+end, because the DoA snapshots are gathered from them after detection. The power map, in
 contrast, is dead as soon as CFAR has produced its cell list, which is
 exactly the window the overlay of section 1.4 exploits.
 
-**It is the measurement boundary.** The `TIME` line reports `row_cyc`, the
-cycle count summed over the 384 row calls, and `finish_cyc`, the cycle
-count of the finish call with the time spent printing subtracted. Row
-calls are not uniform: every 32nd one also runs the Doppler step for the
-plane it completes, so the per-row average hides a longer call at the end
-of each channel.
+**Keeps the scene-dependent cost out of the streaming path.** The row
+phase does the same work for every frame, whatever the scene. The finish
+phase has a fixed part too: NCI and the CFAR walk over every cell. But it
+also has a part that grows with the number of detections: each detection
+gets its own 181-point Bartlett scan, computed in double precision, which
+the board's single-precision FPU cannot execute, so it runs in software.
+Since the row phase overlaps the transfer, as described above, it adds no
+time to the frame; the finish phase is where a busy scene costs time.
+Section 5.3 reports the measured cost of both.
 
-**It separates a fixed cost from a growing one.** The row phase does
-the same work for every frame, whatever the scene: 384 range FFTs and one
-Doppler step per channel. The finish phase has a fixed part too — NCI and
-the CFAR walk over every cell — but also a part that grows with the
-number of detections: each detection gets its own 181-point Bartlett
-scan, computed in double precision, which this single-precision FPU can
-only do in software. The row phase is therefore the part that can hide
-inside the transfer, and the finish phase is where a busy scene costs
-time. Section 5.3 reports the measured cost of both.
 
 ### 2.4 One source, two compilations
 
-The kernels under `c_frontend/src/` are the single source of truth, and
-they are compiled twice — once for each processor that has to run them.
+The kernels under `c_frontend/src/` are the single source of truth for
+both pipelines, and they are compiled twice — once for each processor
+that has to run them.
 The board never receives `libfmcw.so`: that file holds x86-64 machine
 code, and it is a *shared* library, which would need a dynamic loader and
 an operating system. Bare metal has neither. What reaches the board is
 the same C source, cross-compiled:
 
 ```
-                        c_frontend/src/*.c
-                     (the kernels, one copy)
-                          │           │
-      make sync           │           │      make -C c_frontend lib
-      + arm-none-eabi-gcc │           │      gcc -fPIC -shared
-      (Cortex-M4)         │           │      (x86-64)
-                          ▼           ▼
-                Core/Src/*.c      libfmcw.so
-                      │                 │
-                      ▼                 ▼
-            build/q15/*.elf       ctypes wrappers
+                            c_frontend/src/
+                        (the kernels, single source)
+                      ┌────────────┴────────────┐
+             one-pass pipeline          all of src/: batch Q15 chain,
+              + shared kernels          one-pass pipeline, shared kernels
+                      │                         │
+            make sync │                         │ make -C c_frontend lib
+  + arm-none-eabi-gcc │                         │ gcc -fPIC -shared
+          (Cortex-M4) │                         │ (x86-64)
+                      ▼                         ▼
+                Core/Src/*.c               libfmcw.so
+                      │                         │
+                      ▼                         ▼
+               build/q15/*.elf           ctypes wrappers
                       │           (CFrontend, CFrontendOnepass)
-              openocd │                 │
-                      ▼                 ▼
-              NUCLEO-F446RE      streaming_subscriber_nucleo.py
-              (runs one-pass)    (runs the batch reference)
+              openocd │                         │
+                      ▼                         ▼
+                NUCLEO-F446RE     streaming_subscriber_nucleo.py
+               (runs one-pass)     (runs the batch chain as reference)
 ```
 
-Two compilers, two machine codes, two processors, one set of sources.
-That is what gives the live diff its meaning: when the board's detections
-match the library's, the only things that differed were the compiler, the CPU and
-the code path — the one-pass pipeline on the board against the batch
-chain on the laptop — so agreement is evidence that both the
-restructure and the port preserved the detections.
+Two compilers, two processors, one source tree, but two different
+pipelines from it: the board runs the one-pass pipeline, the laptop the
+batch Q15 chain, and both share the lower-level kernels such as the Q15
+FFT. That is what gives the live diff its meaning: when the board's
+detections match the library's, both the restructure (batch → one-pass)
+and the port (x86-64 → Cortex-M4) preserved the detections.
 
-**Keeping the two builds in step.** One set of sources does not mean both
+**Keeping the two builds in step.** One source tree does not mean both
 machines run the same version of it. Each build is a snapshot of
-`c_frontend/src` taken at the moment its command runs, and the two
-commands run independently of each other:
+`c_frontend/src` taken when its command runs, and the two commands run
+independently:
 
 ```
 make -C embedded/nucleo_f446re_frontend flash   → the board, as of that moment
 make -C c_frontend lib                          → the laptop, as of that moment
 ```
 
-If a kernel is edited between the two, the board and the laptop run
-different versions, even though only one copy of the sources ever
-existed.
+If a kernel is edited between the two builds, the two machines run
+different code. In practice it is the board that falls behind, because
+the tests rebuild the library automatically, while nothing reflashes the
+board when a kernel changes. After editing a kernel, the board must
+therefore be reflashed by hand; otherwise the stale board shows up as
+MISMATCH verdicts that look like a porting bug, or, if the change does
+not affect detections on these frames, does not show up at all: every
+frame still MATCHes, against code the board is not running.
 
-The build commands guard against stale copies, but not against a build
-that was never run:
+### 2.5 One parameter file, two bindings
 
-- `make flash` copies the kernels in fresh before every build, so
-  flashing always uses the current sources.
-- `make lib` recompiles every time it runs, and `pytest` runs it
-  automatically before the one-pass tests.
-- Nothing reflashes the board when a kernel changes, and the Python
-  wrapper loads whatever `libfmcw.so` it finds without checking its age.
+The C front end needs the
+settings the Python simulator processes with: the frame dimensions, the
+CFAR settings, the virtual antenna positions and the scales that turn
+bins into metres and m/s. C cannot import them from Python, so
+`scripts/export_for_c.py` writes them to a flat `key=value` file,
+`params.cfg`, alongside a few exported test frames. It holds 17 keys:
 
-After editing a kernel, both builds therefore have to be redone by hand.
-Because the tests rebuild the library on their own, the laptop side
-tends to stay current while the board quietly keeps its old code. That
-mismatch would appear either as MISMATCH verdicts that look like a
-porting bug, or — if the change does not affect detections on these
-frames — not at all.
+| group | keys |
+|---|---|
+| frame and array dimensions | `n_tx`, `n_rx`, `n_virtual`, `n_chirps`, `n_samples` |
+| CFAR | `cfar_alpha`, `cfar_guard_r`, `cfar_guard_d`, `cfar_training_r`, `cfar_training_d`, `pfa`, `min_range_bins` |
+| DoA | `pos_wl` (virtual antenna positions in wavelengths), `doa_n_sources` |
+| bins to physical units | `range_per_bin`, `velocity_axis` |
+| quantization | `adc_full_scale` |
 
-**One parameter file, two bindings.** The parameters reach the two
-machines by different routes, and at different times:
+That file reaches the two machines by different routes, and at different
+times:
 
 ```
-scripts/export_for_c.py ──▶ data/c_export_stream128/params.cfg
-                                   │                       │
-                                   ▼                       ▼
-                 laptop: read at run time      board: read at compile time
-                 CFrontend / CFrontendOnepass  make sync runs
-                 pass the path to the library, gen_frontend_params.py
-                 which parses it when the      → frontend_params.h
-                 object is created             → FRONTEND_V, _C, _S macros
-                                               → FRONTEND_PARAMS, a const
-                                                 struct stored in flash
-                                   │                       │
-                                   └──── banner check ─────┘
-                       at start-up the subscriber compares the
-                       board's reported dims and CFAR alpha with
-                       params.cfg, and refuses to run if they differ
+                       scripts/export_for_c.py
+                                  │
+                                  ▼
+                              params.cfg
+                                  │
+                  ┌───────────────┴───────────────┐
+         laptop: at run time           board: at compile time
+                  │                               │ make sync runs
+                  │                               │ gen_frontend_params.py
+                  ▼                               ▼
+    CFrontend / CFrontendOnepass          frontend_params.h
+    pass the path to the library,                 │ compiled in
+     which parses the file when                   ▼
+        the object is created         FRONTEND_V, _C, _S macros
+                  │                  + FRONTEND_PARAMS, a const
+                  │                    struct stored in flash
+                  │                               │
+                  └─────── banner check ──────────┘
+               at start-up the subscriber compares the
+              board's reported dims and CFAR alpha with
+            params.cfg, and refuses to run if they differ
 ```
 
 On the laptop, the file is parsed each time a front-end object is
 created, so a re-export takes effect on the next run. On the board, the
-same file is turned into a header and compiled in. For the board this is
+same file is turned into a header file 'frontend_params.h', and compiled in. For the board this is
 not a choice but a requirement: V, C and S set the sizes of the static
 arrays of section 4.1, and C needs an array's size when it compiles it.
 There is also no file system on the board to read a configuration from.
-The 8 288 B of parameter tables therefore sit in flash as `const` data,
-costing no SRAM.
+`FRONTEND_PARAMS`, 8 288 B, therefore sits in flash as `const` data,
+costing no SRAM. The parameters never travel over the UART: the board
+has them in flash from the moment it is flashed, and the frame header
+carries only V, C and S, which the board checks against its own and
+refuses on a mismatch.
 
 **Parameter drift is caught; code drift is not.** Parameters can drift
-apart the same way: re-export them and the laptop follows on its next
-run, while the board keeps the values it was last flashed with. Here,
-though, there is a guard. At start-up the subscriber reads the same
-`params.cfg` itself, compares it with the board's banner, and refuses to
-start unless the dimensions (V, C, S) match exactly and CFAR alpha
-matches to within 1e-9 relative. The banner also shows the CFAR guard
-and training sizes and the minimum range bin, but those are displayed,
-not checked. There is no equivalent check for code: the banner reports
-the board's parameters, not which version of the sources it was built
-from.
+apart the same way as the code (section 2.4): re-export them and the
+laptop follows on its next run, while the board keeps the values it was
+last flashed with. Here, though, there is a guard. At start-up the
+subscriber reads the same `params.cfg` itself, compares it with the
+board's banner, and refuses to start unless the dimensions (V, C, S)
+match exactly and CFAR alpha matches to within 1e-9 relative. The banner
+also shows the CFAR guard and training sizes and the minimum range bin,
+but those are displayed, not checked. There is no equivalent check for
+code: the banner reports the board's parameters, not which version of
+the sources it was built from.
 
-### 2.5 Wire protocol
+### 2.6 Wire protocol
+
+The laptop and the board talk over the UART link, in a
+different format each way. Frames go to the board in binary, because the
+same samples written out as text would take several times longer to
+send. Results come back as text lines, which the subscriber parses and a
+person can read in any serial monitor. The board sets the pace: the
+subscriber sends a frame only after the board has printed `RDY`.
 
 - Laptop → board, binary, little-endian:
   - Frame header, 14 bytes: magic `b"OPF1"`, `uint32` frame_id, `uint16` V, C, S. Board answers nothing on success. If the magic is not `OPF1` or the dimensions do not match, it prints `ERR cfg <V> <C> <S>` (the dimension fields as received), discards the rest of the incoming frame, and starts its next cycle with a banner.
@@ -781,7 +799,7 @@ separately, so the overlay is not used.
 ### 3.4 Implementation of the subscriber and dry-run verification
 
 `streaming_subscriber_nucleo.py` implements the laptop side of the wire
-protocol (section 2.5), the banner check, the result parser and the
+protocol (section 2.6), the banner check, the result parser and the
 detection comparison. All of it is tested without a board — a dry run, with no serial port, no board and no publisher.
 Its 10 tests fall into three groups:
 

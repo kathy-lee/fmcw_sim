@@ -275,8 +275,8 @@ of the contract, not an accident:
 - **`planes` (98 304 B)** — the irreducible core: resident all frame,
   because the DoA snapshots must read any (doppler, range) cell across
   all 12 channels after detection.
-- **`rowbuf` (512 B)** — one buffer, three jobs in sequence: the
-  arriving row, the range FFT's in-place workspace, and the Doppler
+- **`rowbuf` (512 B of payload; 516 B on the board with the checksum
+  and padding)** — one buffer, three jobs in sequence: the arriving row, the range FFT's in-place workspace, and the Doppler
   pass's column scratch. No separate FFT or column buffer exists.
 - **`power` (16 384 B)** — born at NCI, dead the moment the CFAR walk
   returns; each kept cell carries its own `power` and `thresh_q16`
@@ -287,7 +287,9 @@ of the contract, not an accident:
   in disjoint ranges, and their 4 520 B cost nothing extra.
 - **No result array** — detections leave through a callback, one at a
   time, in the order a mask walk would emit them, so the caller holds
-  one detection rather than 64.
+  one detection rather than 64. The count is known before the first
+  detection leaves, which is what lets the result block of section 2.6
+  start with `DET <n>`.
 
 ### 1.5 Choosing the scenario size
 
@@ -631,6 +633,9 @@ That file reaches the two machines by different routes, and at different
 times:
 
 ```
+               scenarios/scenario_mimo_stream_128.json
+                                  │
+                                  ▼
                        scripts/export_for_c.py
                                   │
                                   ▼
@@ -707,6 +712,23 @@ subscriber sends a frame only after the board has printed `RDY`.
 
     If `onepass_q15_init()` failed at start-up, the banner carries one extra line, `# ERROR plan init failed`, just before `RDY`, and the board accepts no frames.
 
+    Each line reports one fact about the board that the laptop cannot
+    see from outside:
+    - `# onepass-frontend 1`: the program and its protocol version.
+    - `# clk`, `# fpu`, `# flash_ws`, `# flash_acr`: the core clock, the
+      FPU being switched on, and the flash configuration (5 wait states,
+      with prefetch, instruction and data caches on, `0x705`). A flash
+      latency too low for 180 MHz does not fail cleanly; it causes
+      subtle, random faults.
+    - `# dims`, `# cfar`, `# doa`, `# maxdet`: the compiled parameters
+      (section 2.5) and the detection cap. The subscriber checks the
+      dimensions and CFAR alpha against `params.cfg`; the rest are
+      displayed only.
+    - CFAR alpha printed with `%.17g`: float formatting is linked into
+      `printf` (`-u _printf_float`). newlib-nano leaves it out by default,
+      and every `D` result line depends on it.
+    - `RDY`: the board is ready for a frame, which paces the subscriber.
+
   - Per-frame result block:
     ```
     DET <n> <overflow>
@@ -720,7 +742,60 @@ subscriber sends a frame only after the board has printed `RDY`.
     ```
   - Errors: `ERR cfg ...`, `ERR row <v> <c>` (checksum), `ERR timeout <v> <c>` — each followed by a return to the idle/banner block. The subscriber logs them and moves on; no retry.
 
-## 3. Experiment Design
+### 2.7 The referee
+
+To verify the board's detections, the subscriber compares each frame's
+result with the output of the frozen batch Q15 chain, which it runs on
+the same frame, and the comparison is built so that any difference can
+only be the board's fault. Three decisions shape this referee.
+
+**Cast once, feed both.** The simulator's complex128 frame is cast to
+complex64 a single time, and that one array feeds both sides: the
+stateless `fmcw_q15_quantize`, whose int16 output is the payload the wire
+carries, and the batch chain's `q15_process_frame`, whose output is the
+reference. Both inputs are therefore identical by construction, and any
+difference in the outputs belongs to the board. This is also why the
+quantizer is exported as a standalone function, not hidden inside the
+batch chain's frame call: there, quantization is only the first stage, but the subscriber needs the
+quantized bytes *as data*.
+
+**Compare against the batch chain, not the one-pass host path.** The
+live reference is the batch chain, the oldest and most-tested artifact.
+On the laptop, both pipelines are compiled into one shared library,
+`libfmcw.so` (section 2.4), and Python calls each through its own ctypes
+wrapper class: `CFrontend` for the batch chain, `CFrontendOnepass` for
+the one-pass pipeline. The one-pass host path earned its trust once,
+offline: it was proven bit-identical to the batch chain (sections
+3.1–3.3). Because that link is already proven, a live MISMATCH — a
+difference beyond what the board's different libm explains (see below)
+— can only come from the port, that is cross-compilation or the
+hardware, never from the restructure, and a MATCH confirms both at
+once.
+
+**Grade each field by its provenance.** Every comparison before the board
+could be bit-exact, because both sides called the same glibc
+`sin`/`cos`/`log10`. On the board that assumption ends: the firmware links
+newlib's libm, a different implementation whose results may differ
+in the last bit, and everything downstream of a libm call inherits the
+difference. Both lists are compared in one layout: the subscriber parses the board's
+`D` lines into the same 7 columns the batch chain returns (range bin,
+Doppler bin, azimuth, x, y, v_radial, snr_db), so the two are compared
+row by row and column by column. `compare_detections` grades each field
+by where it comes from:
+
+| field | rule | reason |
+|---|---|---|
+| count, `range_bin`, `doppler_bin` | exact | integer arithmetic only (Q15 FFTs, int64 CFAR); no libm involved, so any difference is a bug |
+| azimuth | same grid point; one step off is a *tie flip*, tallied, not failed | a last-bit difference in the spectrum can flip which of two nearly equal grid points wins |
+| x, y, snr_db | relative tolerance 1e-6; x and y skipped after a tie flip, since they move with the angle | floats through `cos`/`sin`/`log10`; agreement to single-precision depth is the honest expectation |
+| v_radial | relative tolerance 1e-6, though exact in practice | a lookup by Doppler bin in `velocity_axis`, no libm; the code compares all float fields the same way |
+
+Apart from v_radial, which only shares the float comparison, a tolerance
+appears exactly where a shared-implementation assumption ends, and
+nowhere else. Section 3.4 tests these rules without a board;
+section 5.1 reports the verdict.
+
+## 3. Staged Implementation and Verification
 
 ### 3.1 Implementation and test of the memory-lean kernels
 
@@ -800,32 +875,31 @@ separately, so the overlay is not used.
 
 `streaming_subscriber_nucleo.py` implements the laptop side of the wire
 protocol (section 2.6), the banner check, the result parser and the
-detection comparison. All of it is tested without a board — a dry run, with no serial port, no board and no publisher.
-Its 10 tests fall into three groups:
+detection comparison. A dry run (without a board, a serial port
+or a publisher) checks the logic of encoding, parsing and comparing. The 10 tests in
+`tests/test_streaming_subscriber_nucleo.py` are about:
 
-- **Wire format.** The frame header must be exactly 14 bytes: `OPF1`,
-  the frame id as a 32-bit little-endian integer, then V, C and S as
-  16-bit integers. A row must be 514 bytes: the int16 row itself, then
-  a checksum equal to the sum of those 512 bytes modulo 65536.
-- **Parsing and the comparison rules.** A sample banner must yield the
-  dimensions 12 × 32 × 128, `maxdet` 64, and CFAR alpha to full
-  precision. A software loopback renders two reference detections as a
-  board result block, parses it back, and compares it with the original:
-  it must MATCH with no tie flips, while a copy with one x coordinate
-  moved by 1e-3 — far beyond the 1e-6 tolerance — must fail. An azimuth
-  one grid step off must still MATCH but count as one tie flip, two
-  steps off must fail, and a missing detection must fail.
+- **Wire format and comparison.** Frame headers and rows must encode to
+  exactly the bytes of section 2.6, and a sample banner must parse to the
+  expected dimensions and CFAR alpha. A software loopback renders
+  reference detections as a board result block and parses it back: it
+  must MATCH, while copies perturbed beyond the rules of section 2.7 — an
+  x coordinate moved by 1e-3, an azimuth two grid steps off, a missing
+  detection — must fail, and one grid step off must count as a tie flip.
 - **The serial conversation, against a fake board.** A fake serial port
   stands in for the board: it holds stale banners in its buffer and then
   plays scripted board output. Opening the link must clear the stale
-  ones; a frame must be sent only after a live `RDY`, which then yields a
-  MATCH with both detections and exactly 14 + 384 × 514 bytes written; a
-  banner arriving just before the result must be skipped rather than read
-  as an empty result; and a silent board must raise an error instead of
-  waiting forever.
+  ones; a frame must be sent only after a live `RDY`; a banner arriving
+  just before the result must be skipped rather than read as an empty
+  result; and a silent board must raise an error instead of waiting
+  forever.
 
-A dry run checks the logic of encoding, parsing and comparing. It
-cannot check timing on a real wire: the receive overrun of section 4.4
+| group | test functions |
+|---|---|
+| wire format and comparison | `test_header_layout`, `test_row_bytes_and_checksum`, `test_banner_gate`, `test_loopback_match_and_tamper`, `test_tie_flip_tolerated_once`, `test_count_mismatch_fails` |
+| serial conversation, against a fake board (class `FakeBoard`) | `test_open_discards_stale_backlog`, `test_frame_sent_only_after_live_ready`, `test_read_result_skips_interleaved_banner`, `test_silent_board_raises_instead_of_spinning` |
+
+But a dry run cannot check timing on a real wire: the receive overrun of section 4.4
 was invisible here and appeared only on the board.
 
 ### 3.5 Flash and monitor: banner-only first, then the full program
@@ -833,16 +907,15 @@ was invisible here and appeared only on the board.
 The board program was brought up in two stages, so that each stage adds
 only a few new things that can go wrong.
 
-- **Banner-only program.** The board project was cloned from the FFT
-  harness, set to 921600 baud with the heap and stack reservations of
-  section 1.5, and given a wrapper Makefile whose `make sync` copies the
-  kernel sources in and generates the parameter header from
-  `params.cfg`. This first program does nothing but print the banner and
+- **Banner-only program.** This first program does nothing but print the banner and
   `RDY` every two seconds. Flashing it and reading the serial port checks
   the toolchain, the flashing, the clock, the baud rate and the parameter
-  header before any pipeline code runs: the banner must show the 180 MHz
-  clock, the FPU switched on, 5 flash wait states, the dimensions
-  12 × 32 × 128, and CFAR alpha with all 17 digits equal to `params.cfg`.
+  header before any pipeline code runs. The banner must show the values
+  of section 2.6: 180 MHz, the FPU on, 5 flash wait states, and
+  dimensions and CFAR settings matching `params.cfg`. That it arrives
+  readable at all proves that the ST-LINK virtual COM port and the
+  laptop's serial driver sustain 921600 baud, a rate the FFT harness
+  never used.
 - **Full program.** `frontend.c` then gained the static storage and the
   complete run cycle of section 4.3, and is checked twice. Before
   flashing, the build must link: because all large buffers are static and

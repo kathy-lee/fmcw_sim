@@ -471,7 +471,7 @@ why a detection printed by the board is a detection the host-tested code
 computed.
 
 The middle layer is everything board-specific that was written by hand.
-`frontend.c` owns the static storage (section 4.1), receives and checks
+`frontend.c` owns the static storage (section 1.4), receives and checks
 frames, drives the kernels, and prints results; `retarget.c` routes
 `printf` to the UART by overriding newlib's weak `_write`, so every
 result line leaves the board through `HAL_UART_Transmit`.
@@ -479,13 +479,13 @@ result line leaves the board through `HAL_UART_Transmit`.
 The top layer is regenerable, and hand-written code enters it only
 through CubeMX's `USER CODE` fences, which survive regeneration: the two
 calls into the apparatus in `main.c`, and the `USART2_IRQHandler` in
-`stm32f4xx_it.c` that reception needs (section 4.4).
+`stm32f4xx_it.c` that reception needs (section 4.3).
 
 **The run cycle.** `main()` calls `frontend_run()` over and over, and each
 call is either an idle window or one frame: print the banner and `RDY`,
 wait up to two seconds for a frame header, and if one arrives, receive the
 rows, run the pipeline and print the result. Every call begins with a new
-banner, and its `RDY` is what paces the subscriber. Section 4.3 draws the
+banner, and its `RDY` is what paces the subscriber. Section 4.2 draws the
 cycle in full.
 
 ### 2.3 The one-pass pipeline: row phase and finish phase
@@ -536,7 +536,7 @@ Splitting into a row phase and a finish phase has the following benefits.
 **Makes streaming possible.** A row call needs only the row it
 was handed and the plane that row belongs to. Nothing in it waits for a
 later row, so each row can be processed while the next one is still on
-the wire (section 4.4).
+the wire (section 4.3).
 
 **Shapes the memory layout.** The planes must survive until the very
 end, because the DoA snapshots are gathered from them after detection. The power map, in
@@ -612,7 +612,7 @@ MISMATCH verdicts that look like a porting bug, or, if the change does
 not affect detections on these frames, does not show up at all: every
 frame still MATCHes, against code the board is not running.
 
-### 2.5 One parameter file, two bindings
+### 2.5 One parameter file, two binding times
 
 The C front end needs the
 settings the Python simulator processes with: the frame dimensions, the
@@ -630,7 +630,8 @@ bins into metres and m/s. C cannot import them from Python, so
 | quantization | `adc_full_scale` |
 
 That file reaches the two machines by different routes, and at different
-times:
+times. These are its two binding times: the values are attached to the code
+at run time on the laptop and at compile time on the board.
 
 ```
                scenarios/scenario_mimo_stream_128.json
@@ -663,7 +664,7 @@ On the laptop, the file is parsed each time a front-end object is
 created, so a re-export takes effect on the next run. On the board, the
 same file is turned into a header file 'frontend_params.h', and compiled in. For the board this is
 not a choice but a requirement: V, C and S set the sizes of the static
-arrays of section 4.1, and C needs an array's size when it compiles it.
+arrays listed in section 5.2, and C needs an array's size when it compiles it.
 There is also no file system on the board to read a configuration from.
 `FRONTEND_PARAMS`, 8 288 B, therefore sits in flash as `const` data,
 costing no SRAM. The parameters never travel over the UART: the board
@@ -899,7 +900,7 @@ or a publisher) checks the logic of encoding, parsing and comparing. The 10 test
 | wire format and comparison | `test_header_layout`, `test_row_bytes_and_checksum`, `test_banner_gate`, `test_loopback_match_and_tamper`, `test_tie_flip_tolerated_once`, `test_count_mismatch_fails` |
 | serial conversation, against a fake board (class `FakeBoard`) | `test_open_discards_stale_backlog`, `test_frame_sent_only_after_live_ready`, `test_read_result_skips_interleaved_banner`, `test_silent_board_raises_instead_of_spinning` |
 
-But a dry run cannot check timing on a real wire: the receive overrun of section 4.4
+But a dry run cannot check timing on a real wire: the receive overrun of section 4.3
 was invisible here and appeared only on the board.
 
 ### 3.5 Flash and monitor: banner-only first, then the full program
@@ -917,7 +918,7 @@ only a few new things that can go wrong.
   laptop's serial driver sustain 921600 baud, a rate the FFT harness
   never used.
 - **Full program.** `frontend.c` then gained the static storage and the
-  complete run cycle of section 4.3, and is checked twice. Before
+  complete run cycle of section 4.2, and is checked twice. Before
   flashing, the build must link: because all large buffers are static and
   the heap and stack reservations sit inside `bss`, a program that does
   not fit fails right here with `region RAM overflowed`, and
@@ -980,79 +981,7 @@ a frame, but each one is listed rather than hidden. The run stops after
 
 ## 4. Implementation
 
-### 4.1 Static storage and the overlay
-
-Section 1 argued the budget; this is how the budget became declarations.
-
-**Every lifetime is visible to the linker.** All the large buffers are
-`static` at file scope in `frontend.c` — no `malloc`, no large locals.
-The consequence is the one that matters for a memory claim: the linker
-map becomes the proof, and an object that no longer fits does not crash
-at 3 a.m., it fails the build. Sizes from `arm-none-eabi-nm` on the certified binary, except the last
-row, which the linker script sets:
-
-| object | bytes | what it holds |
-|---|---:|---|
-| `planes` | 98 304 | V·C·(S/2) range-Doppler bins, Q15 complex |
-| `shared` | 16 384 | the overlay union (below) |
-| `cells_list` | 1 536 | up to `ONEPASS_MAX_DET` = 64 CFAR cells |
-| `rx_buf` | 1 032 | the receive ping-pong pair, 2 × 516 |
-| `stdout_buf` | 512 | so `printf` never reaches the heap |
-| `plan` | 104 | the kernel's plan struct |
-| heap + stack reservation | 6 144 | `_Min_Heap_Size` 0x800, `_Min_Stack_Size` 0x1000 |
-
-Two things are deliberately *not* in SRAM: `FRONTEND_PARAMS` (8 288 B,
-including the velocity axis and the element positions) is `const` and so
-lives in flash, and the FFT tables and Hann windows are the plan's only heap
-allocation, built once at init.
-
-**The kernels allocate no frame storage.** `onepass_q15_init` takes every buffer
-as a pointer:
-
-```c
-int onepass_q15_init(OnepassPlanQ15 *p, const FrontendParams *prm,
-                     cplx_q15 *planes, int64_t *power, CfarCellQ15 *cells,
-                     cplx_q15 *snapshots, double *spectrum, cplx_q15 *rowbuf);
-```
-
-That is what lets the same kernels serve a laptop (where the wrapper
-mallocs) and a 128 KiB part (where the board decides placement), and it
-is what makes the overlay possible at all — the kernel cannot object to
-two of its arguments pointing into the same memory.
-
-**The overlay.** The header states the lifetime contract the caller may
-exploit: *power is never read after the CFAR walk, and all snapshots are
-gathered before spectrum is first written — so snapshots and spectrum may
-overlay power's storage (snapshots first, disjoint ranges).* In
-`frontend.c` that becomes a union:
-
-```c
-static union {
-    int64_t power[FRONTEND_C * R_BINS];          /* 16 384 B */
-    struct {
-        cplx_q15 snapshots[ONEPASS_MAX_DET * FRONTEND_V];   /*  3 072 B */
-        double spectrum[181];                               /*  1 448 B */
-    } post;
-} shared;
-```
-
-A union is sized by its largest member, so `shared` costs 16 384 B —
-exactly what `power` alone would have cost. The post-CFAR stage is
-therefore housed for free, and the alternative (separate arrays) would
-have added 4 520 B, cutting the final margin from 6 116 B to under
-1 600 B. At the shrunk scenario the overlay is what makes the fit
-comfortable.
-
-**The instruments.** Two small routines produce the runtime numbers in
-section 5. `paint_stack` fills the gap between the heap end and the
-current stack pointer with a known byte at startup, and `stack_peak`
-later counts how far the untouched pattern was eaten into — the stack's
-high-water mark, which no static analysis can give. The heap figure is a
-simple `sbrk(0)` probe taken right after init, before any `printf` could
-have allocated — which it never does, because `stdout` is bound to the
-static `stdout_buf` above.
-
-### 4.2 Flow in the subscriber
+### 4.1 Flow in the subscriber
 
 The first chart is the control flow of the subscriber's `main()`: the
 shared setup, then the fork into its two modes. The steps marked ▸ are
@@ -1212,7 +1141,7 @@ that); otherwise the verdict line is returned at the bottom:
 ```
 
 
-### 4.3 Flow on the board
+### 4.2 Flow on the board
 
 One call to `frontend_run()` is one idle window or one frame. The chart
 follows a single call through every way it can end:
@@ -1262,12 +1191,12 @@ idle, error or success — leads to the same next event: the loop calls
 `frontend_run()` again, which prints the banner again. An idle board
 therefore banners every two seconds whether or not anyone is listening,
 which is the fact behind the subscriber's rule of trusting only a freshly
-arrived `RDY` (section 4.2).
+arrived `RDY` (section 4.1).
 
 The row-reception box is the one step where the board must receive and
-compute at the same time; section 4.4 explains how that is done.
+compute at the same time; section 4.3 explains how that is done.
 
-### 4.4 Receiving while computing: a USART with no receive FIFO
+### 4.3 Receiving while computing: a USART with no receive FIFO
 
 **The hardware constraint.** The STM32F446's USART has no receive FIFO:
 one data register plus the shift register, two bytes of slack. A third
@@ -1428,11 +1357,14 @@ past the budget would fail the link.
 
 Runtime watermarks, measured on the board and reported per frame:
 
-- **heap 1 328 B of the 2 048 reserved** — the FFT tables and windows
-  only; `printf` never allocates, because `stdout` is bound to the static
-  buffer.
-- **stack peak 1 328 B of the 4 096 reserved** — by canary painting, so
-  this is the deepest the stack ever actually went.
+- **heap 1 328 B of the 2 048 reserved** — an `sbrk(0)` probe taken
+  right after init, so the FFT tables and windows only; `printf` never
+  allocates, because `stdout` is bound to a static 512 B buffer.
+- **stack peak 1 328 B of the 4 096 reserved** — at start-up
+  `paint_stack` fills the gap between the heap end and the stack pointer
+  with a known byte, and `stack_peak` later counts how far that pattern
+  was overwritten: the deepest the stack actually went, which no static
+  analysis can give.
 
 Both were *constant across all 110 frames*, which is the evidence that
 matters: no growth with detection count, no slow leak, no path that

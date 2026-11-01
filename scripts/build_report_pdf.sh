@@ -40,7 +40,7 @@ pandoc "$PP" -o "$OUT" \
   -V mainfont="DejaVu Serif" \
   -V monofont="DejaVu Sans Mono" \
   -V colorlinks=true \
-  --resource-path=report \
+  --resource-path="$(dirname "$SRC"):report" \
   -H "$HDR"
 
 echo "wrote $OUT"

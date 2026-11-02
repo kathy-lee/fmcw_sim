@@ -16,7 +16,7 @@ Having implemented the FMCW MIMO frontend pipeline in C with fixed-point(Q15), c
 Goal. The Q15 detection front end — range FFT, clutter removal, Doppler FFT, NCI, CA-CFAR, TDM compensation, Bartlett DoA — runs on the NUCLEO-F446RE(512 Kbytes flash memory, 128 Kbytes SRAM, 180 MHz CPU), fed live from streaming_publisher.py through a laptop subscriber over UART, emitting a detection list per processed frame.
 
 Success criteria:
-1. Correctness. For every frame, the board should produce the same detections as the straightforward pipeline in laptop.
+1. Correctness. For every frame, the board should produce the same detections as the batch pipeline on the laptop, the straightforward version that processes the whole frame at once.
 2. Memory Fit on the board. Can consider shrink the scenario `scenarios/scenario_mimo.json`(V = n_tx*n_rx = 12, C = n_chirps = 64, S = n_range = 256).
 3. No real-time claim.
 
@@ -587,7 +587,7 @@ the same C source, cross-compiled:
 ```
 
 Two compilers, two processors, one source tree, but two different
-pipelines from it: the board runs the one-pass pipeline, the laptop the
+pipelines from it: the board runs the one-pass pipeline, the laptop runs the
 batch Q15 chain, and both share the lower-level kernels such as the Q15
 FFT. That is what gives the live diff its meaning: when the board's
 detections match the library's, both the restructure (batch → one-pass)
@@ -674,8 +674,8 @@ refuses on a mismatch.
 
 **Parameter drift is caught; code drift is not.** Parameters can drift
 apart the same way as the code (section 2.4): re-export them and the
-laptop follows on its next run, while the board keeps the values it was
-last flashed with. Here, though, there is a guard. At start-up the
+laptop's front-end objects pick up the new values on their next run,
+while the board keeps the values it was last flashed with. Here, though, there is a guard. At start-up the
 subscriber reads the same `params.cfg` itself, compares it with the
 board's banner, and refuses to start unless the dimensions (V, C, S)
 match exactly and CFAR alpha matches to within 1e-9 relative. The banner
@@ -1126,7 +1126,7 @@ that); otherwise the verdict line is returned at the bottom:
                 └──────┬──────┘         │ wait_ready: re-sync on    │
                        │ no             │ the recovery RDY; return  │
         ┌──────────────▼──────────────┐ │ "[frame N] BOARD ERR ..." │
-        │ run laptop reference:       │ └───────────────────────────┘
+        │ run laptop reference chain: │ └───────────────────────────┘
         │ q15_process_frame           │
         └──────────────┬──────────────┘
         ┌──────────────▼──────────────┐
@@ -1198,104 +1198,67 @@ compute at the same time; section 4.3 explains how that is done.
 
 ### 4.3 Receiving while computing: a USART with no receive FIFO
 
-**The hardware constraint.** The STM32F446's USART has no receive FIFO:
-one data register plus the shift register, two bytes of slack. A third
-byte arriving with none read overwrites an unread one and raises the
-overrun flag. At 921600 baud in 8N1 framing — 1 start + 8 data + 1 stop,
-10 bits per byte, 10.85 µs each — those two bytes are a **21.7 µs
-deadline on every byte**, not a throughput allowance.
+**The constraint is a deadline.** The STM32F446's USART has no receive
+FIFO: one data register plus the shift register, two bytes of slack. A
+third byte arriving with none read overwrites an unread one and raises
+the overrun flag. At 921600 baud in 8N1 framing (10 bits per byte,
+10.85 µs each), those two bytes are a **21.7 µs deadline on every
+byte**, not a throughput allowance.
 
-**Why blocking reception with a single buffer cannot work.** With a
-blocking `HAL_UART_Receive`, the call returns when a row's last byte
-lands, and nothing is listening again until the checksum walk and
-`onepass_q15_row` have finished. The host transmits rows back-to-back,
-so the next row's bytes start arriving immediately:
+**The trap: average headroom.** On average a row's compute takes
+~365 µs (25.6 Mcyc / 384 rows) against 5.58 ms for the row to cross the
+wire, a 6.5 % duty cycle that looks like ample headroom. That is why
+blocking reception with a single buffer was tried first. But while the
+checksum walk and `onepass_q15_row` run, no receive call is active, and
+the host keeps sending: about 34 bytes arrive in a window where the
+hardware can hold 2. No amount of average headroom satisfies a per-byte
+deadline; what decides whether a receiver works is the worst-case
+response time against the peripheral's buffer depth. Nothing here
+needed hardware to see: the baud rate, the frame format, the missing
+FIFO and a cycle estimate were all known in advance.
 
-```
-per-byte arrival        10.85 us
-hardware slack           21.7 us   (2 bytes)
-average deaf window     ~365 us    (25.6 Mcyc / 384 rows)
-                        ───────
-bytes arriving in the deaf window   ~34
-bytes the hardware can hold            2      ->  ~32 lost per row on average
-```
+**What happened, and how the cause was pinned.** The first full-speed
+run failed as `ERR row 0 4`, a row whose checksum did not match its
+payload. The wire protocol did its job: corrupt samples were refused
+instead of silently becoming wrong detections, and the failure came
+with coordinates. But a checksum failure alone does not exclude rival
+causes: wire noise, a host-side timing bug or a row-indexing error would
+look the same. So the board was left unchanged and the subscriber was
+slowed down instead: `--row-pace 0.009` sleeps after each row, keeping
+the wire silent while the board computes. The *same binary* then
+processed all 384 rows to a MATCH (31 detections, latency 8.53 s). With
+one variable changed, the only surviving explanation is that the board
+cannot listen while it computes.
 
-The margin is not thin, it is absent: the deaf window exceeds the
-hardware's tolerance by a factor of ~17 — and that is only the average: the last row of
-each channel also runs the Doppler step for its plane, so its deaf
-window is longer still. Even against a pre-measurement
-estimate of 190 µs per row — derivable from the FFT harness's measured
-76.3 cycles per Q15 butterfly — the ratio is 17 : 2. Nothing in this
-calculation required hardware: the baud rate, the frame format, the
-absence of a FIFO (RM0390) and a cycle estimate were all available in
-advance.
-
-The trap is arithmetic at the wrong granularity. On average, 365 µs of compute per row against 5.58 ms of transfer is a 6.5 % duty cycle, which looks
-like ample headroom — but a two-byte buffer does not impose a throughput
-requirement, it imposes a deadline, and no amount of average headroom
-satisfies a deadline. Worst-case response time against the peripheral's
-buffer depth is the quantity that decides whether a receiver works.
-
-**Confirmed on hardware, by the protocol.** Blocking single-buffer
-reception was tried first, and the first full-speed run failed as
-`ERR row 0 4` — a row whose 2-byte additive checksum did not match its
-payload. This is the wire protocol earning its keep: corrupt samples were
-refused at the door instead of silently becoming wrong detections, and
-the failure surfaced as a named error with coordinates rather than an
-inexplicable mismatch. The index is informative too: with a continuous byte stream the first
-deaf window would already have corrupted row 1, so the stream reaching
-the board must have had gaps at first that happened to fall on those
-windows — most likely while buffering in the ST-LINK's USB bridge was
-still filling — and bytes were lost only once it ran continuously.
-
-**The controlled experiment.** Analysis names a cause; it does not
-exclude rivals — wire noise, a host-side timing bug or a row-indexing
-error would also produce checksum failures. So instead of changing the board, the subscriber was slowed down:
-`--row-pace 0.009` makes it sleep after each row,
-leaving the wire silent exactly while the board computes. The *same
-binary* then processed all 384 rows to a MATCH (31 detections, latency
-8.53 s). One run, one variable, and the only surviving explanation is
-that the board cannot listen while it computes.
-
-**The fix: ping-pong reception.** The board now receives by interrupt into
-two 516-byte buffers, A and B, which take turns. For each row:
-
-1. Row *n* has finished arriving in buffer A.
-2. The board immediately starts receiving row *n + 1* into buffer B. From
-   then on the UART interrupt stores each arriving byte in B by itself,
-   without the main loop's help.
-3. Meanwhile the main loop checks row *n*'s checksum and runs
-   `onepass_q15_row` on buffer A.
-4. When B is full, the roles swap: B is processed while A receives.
-
-Reception therefore never pauses while the board computes. Three details
-make this work:
+**The fix: ping-pong reception.** The board now receives by interrupt
+into two 516-byte buffers that take turns: while the UART interrupt
+fills one with row *n + 1*, the main loop checks and processes row *n*
+in the other, and the roles swap when the next row is complete.
+Reception never pauses. Four details make it work:
 
 - **The row pointer follows the full buffer.** The kernel reads its row
-  through `plan.rowbuf`, so that pointer is moved to whichever buffer just
-  filled. The kernel overwrites the buffer while processing it, which is
-  harmless: the buffer is not used for reception again until that
+  through `plan.rowbuf`, so that pointer is moved to whichever buffer
+  just filled. The kernel overwrites the buffer while processing it,
+  which is harmless: it is not used for reception again until that
   processing has finished.
-- **Two flags carry the news.** HAL's receive callbacks set `rx_done` when
-  a row is complete and `rx_err` on a receive error, and the main loop
-  waits on them. The main loop clears `rx_done` just before starting each
-  reception and `rx_err` at the start of each frame, both at moments when
-  the interrupt cannot be writing them. They are `volatile`, so the
-  compiler reads them from memory every time.
+- **Two flags carry the news.** HAL's receive callbacks set `rx_done`
+  when a row is complete and `rx_err` on a receive error. Both are
+  `volatile`, and the main loop clears them only at moments when the
+  interrupt cannot be writing them: `rx_done` just before starting each
+  reception, `rx_err` at the start of each frame.
 - **Errors cancel reception first.** Before draining the wire after an
   `ERR`, the board stops the reception in progress with
-  `HAL_UART_AbortReceive`; otherwise the interrupt and the blocking drain
-  would both try to take the same bytes.
+  `HAL_UART_AbortReceive`; otherwise the interrupt and the blocking
+  drain would both take the same bytes.
+- **The interrupt handler's name must match exactly.** A hand-written
+  `USART2_IRQHandler` in `stm32f4xx_it.c`, inside CubeMX's `USER CODE`
+  fences, calls `HAL_UART_IRQHandler`. With any other name, the startup
+  file's default handler, an endless loop, runs instead.
 
-The interrupt reaches HAL through a hand-written `USART2_IRQHandler` in
-`stm32f4xx_it.c`, inside CubeMX's `USER CODE` fences, which calls
-`HAL_UART_IRQHandler`. The name must match exactly: otherwise the startup
-file's default handler, an endless loop, runs instead.
-
-**Cost and result.** +528 B of `bss` — the second buffer, the two flags
-and alignment padding — leaving a 6 116 B margin. Full speed then MATCHed
-on the first attempt, and the row phase's 25.6 Mcyc (142 ms per frame)
-now does hide inside the ~2.1 s transfer.
+**Cost and result.** +528 B of `bss` (the second buffer, the two flags
+and alignment padding), leaving a 6 116 B margin. Full speed then
+MATCHed on the first attempt, and the row phase's 25.6 Mcyc (142 ms per
+frame) now hides inside the ~2.1 s transfer.
 
 ## 5. Results
 
@@ -1344,8 +1307,8 @@ Flash and SRAM both fit, with the SRAM figure the binding one:
 
 | region | used | available | margin |
 |---|---:|---:|---:|
-| flash (`text` + `data`) | 51 652 B | 524 288 B | 90 % free |
-| SRAM (`data` + `bss`) | 124 956 B | 131 072 B | 6 116 B |
+| flash (`text` + `data` initial values) | 51 652 B | 524 288 B | 90 % free |
+| SRAM (`data` working copy + `bss`) | 124 956 B | 131 072 B | 6 116 B |
 
 The SRAM total consists mainly of `planes` 98 304, the power/snapshot/spectrum
 overlay 16 384, the cell list 1 536, the receive ping-pong pair 1 032,
@@ -1354,6 +1317,14 @@ reservation — 124 016 B together; the remaining 940 B are the initialized
 data section and HAL and C-library variables. Because every one of those is a `static` object inside a
 linker-visible section, the fit is not an estimate: an object that grew
 past the budget would fail the link.
+
+Flash holds the code (`.text`), the read-only data (`.rodata`) and the
+stored image of the initialized data section (`.data`). The largest data item is `FRONTEND_PARAMS`
+(8 288 B, section 2.5). The `FRONTEND_V`, `_C`, `_S` macros occupy no memory
+at all: the compiler substitutes their values, and they only fix the
+sizes of the static arrays. The 476 B initialized data section is counted in both rows,
+because it is stored in flash and copied to SRAM at start-up. The remaining roughly 43 KB is code: the front end itself, the
+HAL and the C library.
 
 Runtime watermarks, measured on the board and reported per frame:
 
@@ -1397,8 +1368,9 @@ Where the time goes:
 The Q15 row pipeline performs exactly as designed: 142 ms of compute,
 entirely concealed within the transfer it overlaps. The unbudgeted cost
 is the finish phase, which runs one 181-point Bartlett scan per detection
-in **double** precision — and this FPU is single-precision, so those
-scans are emulated in software. Cadence is therefore UART-and-finish
+in **double** precision — and this FPU handles only single precision, so
+the board computes those scans with software floating-point routines
+instead of FPU instructions. Cadence is therefore UART-and-finish
 bound, and no real-time claim is made.
 
 ## 6. Limitations
@@ -1415,9 +1387,9 @@ pipeline itself:
 - **Double-precision DoA.** Each detection's 181-point Bartlett scan runs
   in double precision, which this single-precision FPU can only compute in
   software. Moving the scan to single precision should shorten the finish
-  phase, but it was not tried, and its results could then differ slightly
-  from the double-precision laptop chain, so the comparison rules would
-  need revisiting.
+  phase, but it was not tried. The batch chain on the laptop would still
+  compute the DoA in double precision, so the board's results could then
+  differ slightly from it, and the comparison rules would need revisiting.
 
 **The reduced scenario.** The experiment runs at V = 12, C = 32, S = 128,
 not the full 12 × 64 × 256 scenario, which halves the number of Doppler
@@ -1429,14 +1401,15 @@ outside this experiment.
 
 **The detection cap.** The CFAR cell list holds at most 64 cells. When
 more cells pass, the weakest are dropped and the overflow flag is set
-(section 1.3). In this session every frame matched the uncapped laptop
-chain, so the cap never removed a detection, but a crowded scene would
-lose its weakest ones.
+(section 1.3). In this session every frame matched the batch chain on
+the laptop, which has no such cap, so the cap never removed a detection,
+but a scene with many targets would lose its weakest ones.
 
 **What the verification covers.**
 
-- The board is compared with the laptop's chain, not with the scene. A
-  MATCH shows that the board computes the same detections; it does not
+- The board is compared with the frozen batch Q15 chain running on the
+  laptop (section 2.7), not with the true positions of the simulated
+  targets. A MATCH shows that the board computes the same detections; it does not
   show that those detections are good. Detection quality — how reliably
   targets are found, how many false alarms appear — is outside this
   experiment, and the only check against the actual targets is the loose

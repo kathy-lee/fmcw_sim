@@ -488,7 +488,7 @@ rows, run the pipeline and print the result. Every call begins with a new
 banner, and its `RDY` is what paces the subscriber. Section 4.2 draws the
 cycle in full.
 
-### 2.3 The one-pass pipeline: row phase and finish phase
+### 2.3 The one-pass pipeline
 
 The one-pass pipeline is set up once, by `onepass_q15_init()`, which
 `frontend_init()` calls at start-up. After that, every frame drives it
@@ -979,7 +979,7 @@ and the stack peak stays under 2 048 B throughout. Tie flips do not fail
 a frame, but each one is listed rather than hidden. The run stops after
 110 processed frames; its results are reported in section 5.
 
-## 4. Implementation
+## 4. Run-Time Flow and Reception
 
 ### 4.1 Flow in the subscriber
 
@@ -1348,9 +1348,9 @@ ping-pong reception added, with its two flags (528 B), the initialized
 data section (476 B), about 450 B of HAL and C-library variables, and
 the kernel's 104 B of state (pointers and counters). The margin of 6 116 B left the fit comfortable.
 
-### 5.3 Cadence — recorded, not claimed
+### 5.3 Cadence
 
-**~0.18 frames/s, about 5.5 s per processed frame.** Of 12 069 published
+**About 5.5 s per processed frame.** Of 12 069 published
 frames, 110 were processed and 11 959 dropped — roughly 109 per processed
 frame. The drops are by design: the subscriber always discards the queue
 backlog and takes the newest frame, so it stays current instead of

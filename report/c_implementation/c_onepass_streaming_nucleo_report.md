@@ -93,11 +93,6 @@ board's entire RAM — never exists anywhere. It is the frozen
 in the same order, split into "what can happen per row" and "what needs
 the whole channel".
 
-![Each arriving row is processed in place — DC removal, Hann, range FFT —
-and its kept half lands in one row of the resident plane; when a channel's
-last row arrives, the plane finish runs the slow-time work; the raw frame
-never exists](figures/rd-stream-row-path.svg)
-
 The split follows the data dependencies exactly:
 
 - **Per row (fast time)** — DC removal, range Hann, range FFT, keep the
@@ -132,10 +127,6 @@ Where the range stage streams its input, the cell walk streams its
 the same arithmetic, but writes only the answers that matter — a short
 list of passing cells — so it needs no scratch memory at all.
 
-![Frozen mask CFAR vs the cell walk: same power map in, identical threshold
-decisions; ~84 KiB of sliding-sum scratch and a full mask versus zero scratch
-and a 1.5 KiB ranked list](figures/cfar-frozen-vs-walk.svg)
-
 Both sides implement the identical CA-CFAR decision — geometry, edge
 clamping, Q16 threshold — on the same power map. The frozen path buys
 O(1)-per-cell speed with four map-scale int64 scratch arrays and emits a
@@ -149,17 +140,40 @@ full- and guard-window sums 2 × 32 × 64 × 8 32 768
 mask                        32 × 64         2 048
                                            ───────
 frozen working memory                      88 320 B  (86.3 KiB)
+
 cell list (the walk's only storage)  64 × 24  1 536 B
 ```
 
 The walk instead recomputes each window directly, which is O(window) per
 cell — slower in theory, irrelevant here — and stores nothing between
 cells. That ≈86 KiB is, together with the raw frame, one of the two
-things that could never fit on the board.
+things that could never fit on the board. The chart below follows one cell through the walk, from the min-range gate to the capped list.
 
-![Decision flow of the cell walk: min-range gate, direct window sums, the
-threshold test, append or ranked replacement into the capped list, final sort
-by scan order](figures/cfar-cell-walk-flow.svg)
+```
+for each cell (d, r) of the power map, in scan order:
+
+    r < min_range_bins ? ────────────────── yes ────────▶ skip, next cell
+    │ no
+    ▼
+    sum the full window and the guard box (edges clamped, no scratch)
+    noise = (full − guard) / n_train      (full − guard = training ring)
+    │
+    ▼
+    (power << 16) > α_q16 · noise ? ─────── no ─────────▶ next cell
+    │ yes
+    ▼
+    room in cells[] ? ───────────────────── yes ────────▶ append cells[n++]
+    │ no (list full)
+    ▼
+    margin beats the weakest kept cell ? ── yes ────────▶ replace it,
+    │ no                                                  overflow = 1
+    ▼
+    drop the newcomer, overflow = 1
+
+    every branch then moves on to the next cell
+
+after the last cell: sort cells by (d, r) → return n, cells[]
+```
 
 Most cells exit at the threshold and cost nothing. A passing cell is
 appended while there is room; once the list is full, a newcomer must beat
@@ -225,11 +239,6 @@ table of complex floats, 181·V·8 = 17 376 B on the heap — and reads it
 back on every use. The tableless form evaluates the *identical
 expression* at the point of use, so the table never exists.
 
-![Frozen DoA vs the tableless cell: the frozen path fills a 17 KiB steering
-table at init and reads it per use; the tableless path computes the identical
-expression at the point of use and stores nothing; both feed the same
-accumulation, so the spectra are bit-identical](figures/doa-cell-tableless.svg)
-
 The equivalence rests on one line. The frozen init writes
 
 ```c
@@ -260,13 +269,23 @@ the board it can occupy storage the power map no longer needs (1.4).
 The composition that joins the three restructures adds no signal
 processing. Its design content is scheduling — what runs when (2.3) —
 and storage — what lives where, and for how long, which is the subject
-of this section.
-The terms of 1.2 do not all live at once:
+of this section. As shown in the figure below, the terms of 1.2 do not all live at once:
 
-![Frame storage across one one-pass frame: planes live throughout, the row
-buffer only while rows arrive, the cell list from the CFAR walk on; the
-power map is live only from NCI to the CFAR walk, and the snapshots and
-spectrum reuse its storage after](figures/onepass-frame-memory.svg)
+```
+                    384 rows arrive       │ finish, per frame
+                    range work per row    │ NCI │CFAR │gather│DoA + emit
+                    ──────────────────────┼─────┼─────┼──────┼───────────▶
+planes    98 304 B  ████████████████████████████████████████████████████
+rowbuf       512 B  ██████████████████████
+cells      1 536 B                              ████████████████████████
+power     16 384 B                        ████████████
+  snapshots 3 072 B                                   ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
+  spectrum  1 448 B                                          ▒▒▒▒▒▒▒▒▒▒▒
+
+▒ = stored inside power's 16 384 B, free once the CFAR walk returns
+
+static frame storage: 98 304 + 512 + 1 536 + 16 384 = 116 736 B ≈ 114 KiB
+```
 
 Every byte of frame storage is caller-provided; the plans own only FFT
 tables and windows (~1.4 KiB, heap, built once). The lifetimes are part

@@ -1,0 +1,3 @@
+[submodule "embedded/third_party/CMSIS-DSP"]
+	path = embedded/third_party/CMSIS-DSP
+	url = https://github.com/ARM-software/CMSIS-DSP

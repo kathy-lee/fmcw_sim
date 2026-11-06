@@ -55,13 +55,26 @@ def _gate(d, r):
             slice(max(0, r - _GATE), r + _GATE + 1))
 
 
-def frame_metrics(cfg, targets, fp, *, n_frames=10, n_seeds=5):
+def frame_metrics(cfg, targets, fp, *, n_frames=10, n_seeds=5, pipeline=None):
     """Pd/Pfa/noise-floor/SFDR for one config, Monte-Carlo over seeds.
 
     Pd is for the weakest target; SFDR references the strongest (dominant) target
     and excludes BOTH target gates so the spur is a genuine quantization artifact,
     not the other real target. The targets move, so the gates are computed
-    per frame (the ground-truth cell, axes-independent of seed/fp)."""
+    per frame (the ground-truth cell, axes-independent of seed/fp).
+
+    `pipeline` selects WHICH implementation gets measured. It is a function
+    shaped exactly like _power_db above — hand it a scenario and a frame
+    identity, get back that frame's (power_db, mask) — and everything else
+    in here (the target gates, the seeds, the noise-only frames behind Pfa,
+    the four metrics) is then applied to whatever it returned.
+
+    It defaults to _power_db, the NumPy chain, so callers that do not pass
+    it behave exactly as before. evaluation/fixedpoint_c_eval.py passes
+    C-backed versions instead, which is how three implementations get
+    scored by one copy of this logic rather than three copies free to drift
+    apart."""
+    pipeline = pipeline or _power_db
     gid_weak = int(np.argmin([t.amplitude for t in targets]))
     gid_strong = int(np.argmax([t.amplitude for t in targets]))
     gen = FMCWBeatSignalGenerator(cfg)
@@ -82,14 +95,14 @@ def frame_metrics(cfg, targets, fp, *, n_frames=10, n_seeds=5):
     # noise_acc = []   # noise-floor-elevation metric (retired -> SNR loss; kept commented)
     for seed in range(n_seeds):
         for fi in range(n_frames):
-            power_db, mask = _power_db(cfg, targets, fp, fi, seed)
+            power_db, mask = pipeline(cfg, targets, fp, fi, seed)
             weak_sl, strong_sl = weak_gates[fi], strong_gates[fi]
             # Pd: any detection within +/-_GATE of the (moving) weak-target cell
             hits += int(mask[weak_sl].any()); trials += 1
             # Pfa: false-alarm rate on a NOISE-ONLY frame (no targets), same
             # fp/seed/frame -- a clean false-alarm rate, decoupled from the strong
             # return's sidelobes (whose spur story is carried by SFDR instead).
-            _, mask_n = _power_db(cfg, [], fp, fi, seed)
+            _, mask_n = pipeline(cfg, [], fp, fi, seed)
             mn = mask_n.copy(); mn[:, :6] = False
             fa += int(mn.sum()); fa_cells += mn.size
             # noise floor = median power_db over off-DC cells (needed for SNR)
@@ -135,13 +148,14 @@ def sweep_stage(cfg, targets, *, stage, bits, n_frames=10, n_seeds=5,
 
 
 def strong_return_spur_rate(cfg, targets, fp, *, n_frames=10, n_seeds=5,
-                            guard=(3, 6)):
+                            guard=(3, 6), pipeline=None):
     """Spurious-detection rate in target-free cells of the dynamic-range SCENE
     (strong return PRESENT), excluding a guard (doppler, range) around BOTH moving
     targets. This is NOT the classical Pfa (which is target-free/noise-only and
     bit-robust): it captures the strong return's quantization spurs crossing the
     CFAR threshold -- a dynamic-range effect, the real bit-driver for the cube
     stage. Denominator = eligible (non-excluded) cells."""
+    pipeline = pipeline or _power_db
     gid_w = int(np.argmin([t.amplitude for t in targets]))
     gid_s = int(np.argmax([t.amplitude for t in targets]))
     gen = FMCWBeatSignalGenerator(cfg)
@@ -157,7 +171,7 @@ def strong_return_spur_rate(cfg, targets, fp, *, n_frames=10, n_seeds=5,
     fa = elig = 0
     for seed in range(n_seeds):
         for fi in range(n_frames):
-            _, mask = _power_db(cfg, targets, fp, fi, seed)
+            _, mask = pipeline(cfg, targets, fp, fi, seed)
             keep = np.ones_like(mask, dtype=bool)
             keep[:, :6] = False
             for gid in (gid_w, gid_s):

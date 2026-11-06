@@ -28,3 +28,60 @@ docs/
 tests/golden/*.npy
 
 data/**
+
+# c_frontend build artifacts
+c_frontend/fmcw_frontend
+c_frontend/fmcw_frontend_debug
+c_frontend/libfmcw.so
+c_frontend/tests/test_*
+!c_frontend/tests/test_*.c
+c_frontend/tests/tmp_*
+
+# embedded harness: synced kernel copies and build output
+embedded/uno_fft_q15/fft.c
+embedded/uno_fft_q15/fft.h
+embedded/uno_fft_q15/fft_q15.c
+embedded/uno_fft_q15/fft_q15.h
+embedded/uno_fft_q15/fmcw.h
+embedded/uno_fft_q15/fmcw_q15.h
+embedded/uno_fft_q15/ref_host
+embedded/uno_fft_q15/build/
+
+# nucleo harness: generated HAL, synced kernel copies and build output
+embedded/nucleo_f446re_fft/Drivers/
+embedded/nucleo_f446re_fft/build/
+embedded/nucleo_f446re_fft/ref_host
+embedded/nucleo_f446re_fft/Core/Src/fft.c
+embedded/nucleo_f446re_fft/Core/Src/fft_q15.c
+embedded/nucleo_f446re_fft/Core/Inc/fft.h
+embedded/nucleo_f446re_fft/Core/Inc/fft_q15.h
+embedded/nucleo_f446re_fft/Core/Inc/fmcw.h
+embedded/nucleo_f446re_fft/Core/Inc/fmcw_q15.h
+
+# nucleo front end: generated HAL, synced kernel copies, params header, build output
+embedded/nucleo_f446re_frontend/Drivers/
+embedded/nucleo_f446re_frontend/build/
+embedded/nucleo_f446re_frontend/Makefile.cubemx
+embedded/nucleo_f446re_frontend/Core/Src/fft_q15.c
+embedded/nucleo_f446re_frontend/Core/Src/rd_q15.c
+embedded/nucleo_f446re_frontend/Core/Src/rd_stream_q15.c
+embedded/nucleo_f446re_frontend/Core/Src/cfar_cells_q15.c
+embedded/nucleo_f446re_frontend/Core/Src/doa_cell.c
+embedded/nucleo_f446re_frontend/Core/Src/onepass_q15.c
+embedded/nucleo_f446re_frontend/Core/Src/pointcloud.c
+embedded/nucleo_f446re_frontend/Core/Src/doa.c
+embedded/nucleo_f446re_frontend/Core/Src/convert_q15.c
+embedded/nucleo_f446re_frontend/Core/Inc/fmcw.h
+embedded/nucleo_f446re_frontend/Core/Inc/fmcw_q15.h
+embedded/nucleo_f446re_frontend/Core/Inc/fft_q15.h
+embedded/nucleo_f446re_frontend/Core/Inc/params.h
+embedded/nucleo_f446re_frontend/Core/Inc/rd_q15.h
+embedded/nucleo_f446re_frontend/Core/Inc/rd_stream_q15.h
+embedded/nucleo_f446re_frontend/Core/Inc/cfar_q15.h
+embedded/nucleo_f446re_frontend/Core/Inc/cfar_cells_q15.h
+embedded/nucleo_f446re_frontend/Core/Inc/doa.h
+embedded/nucleo_f446re_frontend/Core/Inc/doa_cell.h
+embedded/nucleo_f446re_frontend/Core/Inc/pointcloud.h
+embedded/nucleo_f446re_frontend/Core/Inc/convert_q15.h
+embedded/nucleo_f446re_frontend/Core/Inc/onepass_q15.h
+embedded/nucleo_f446re_frontend/Core/Inc/frontend_params.h

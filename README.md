@@ -14,11 +14,23 @@ The core of the project is an end-to-end chain from a synthetic FMCW beat-signal
 frame to confirmed tracks. Pure NumPy; each stage is an independent, testable
 module.
 
+SISO (single channel):
+
 ```
-generate ─► range-Doppler ─► CFAR ─► clustering ─┬────────────────────────► tracking
- (frame)      (RD map)       (cells)  (detections)│                            (tracks)
-                                                  └─(MIMO)─► NCI ─► DoA ─► point cloud ─┘
+generate ─► range-Doppler ─► CFAR ─► clustering ─► tracking
+ (frame)      (RD map)      (cells) (detections)   (tracks)
 ```
+
+MIMO (virtual array):
+
+```
+generate ─► range-Doppler ─► NCI ─► CFAR ─► DoA ─► point cloud ─► clustering ─► tracking
+ (frame)    (per channel)  (power) (cells)  (az)  (x,y,v,snr)     (objects)    (tracks)
+```
+
+The two paths differ after CFAR: SISO clusters detected *cells* directly on the
+RD grid, while MIMO first turns each detected cell into Cartesian points (via
+per-cell DoA), then clusters the *point cloud*.
 
 | Stage | Module | Entry point | What it does |
 |-------|--------|-------------|--------------|
@@ -66,6 +78,7 @@ both SISO (2-D) and MIMO (3-D) frames. Subscribers deserialize with
 | SISO tracked | `streaming_subscriber.py` | RD → CFAR → cluster → track (1-D) | layered RD view + track plot |
 | MIMO point cloud | `streaming_subscriber_mimo_pointcloud.py` | RD → NCI → CFAR → DoA → cloud | RD+CFAR / DoA spectra / BEV cloud |
 | MIMO tracked | `streaming_subscriber_mimo.py` | + Cartesian clustering & CTRV-EKF | BEV 2-D tracks (id-labelled trails) |
+| MIMO tracked, hybrid | `streaming_subscriber_mimo_hybrid.py` | as above, front end switchable `--frontend {python,c}` (C via `libfmcw.so`) | live A/B of Python vs C front end, same tracks |
 
 ### Usage
 
@@ -161,7 +174,7 @@ slice). The reusable logic lives in `processing/cube_export.py` (`extract_cubes`
 
 The following reports probe where each stage of the chain fails and what the governing
 lever is. They **build on one another**: later reports state only their
-methodology deltas and quote earlier results as baselines. Report 1&2 are failure analysis, report 3&4&5 are extensions.
+methodology deltas and quote earlier results as baselines. Report 1&2 are failure analysis, report 3&4&5 are extensions, report 6 is an implementation study.
 
 | # | Report | Stage under test | Serves as baseline for |
 |---|---|---|---|
@@ -170,6 +183,7 @@ methodology deltas and quote earlier results as baselines. Report 1&2 are failur
 | 3 | [Target Realism Test](report/target_realism/target_realism_test_report.md) | Target models (generator) → effects across the whole chain | realistic-target (Swerling fluctuation + extended multi-scatterer) detection & track penalties |
 | 4 | [MIMO Evaluation](report/mimo_evaluation/mimo_evaluation_report.md) | TDM-MIMO front end (NCI, DoA, Cartesian clustering + tracking) | float MIMO detection/angle/tracking baseline |
 | 5 | [Fixed-Point MIMO Front-End](report/fixedpoint_evaluation/fixedpoint_evaluation_report.md) | Front-end finite precision (ADC→FFT→NCI→CFAR input) | bit-width knees + radar-cube memory benefit |
+| 6 | [C Implementation](report/c_implementation/c_implementation.md) | C11 port of the MIMO front end (`c_frontend/`), float and fixed-point | stage-validated C baseline, C-vs-Python timing, and what int16 arithmetic costs: 9.4 of 16 bits used, weak-target Pd 1.00 → 0.54 |
 
 ---
 

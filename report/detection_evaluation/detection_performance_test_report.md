@@ -137,8 +137,7 @@ threshold would be tuned in-sample to the very noise it is then applied to, and 
 "empirical Pfa" measured downstream would be self-consistent with the calibration
 data rather than a true measurement. The codebase guards against this by defaulting
 `RadarConfig.seed` to `99999`, decoupled from CFAR's `0` (the unit tests use
-`12345` to make the requirement explicit). All plots in this report use the
-post-fix, decoupled streams.
+`12345` to make the requirement explicit).
 
 ---
 

@@ -1,0 +1,22 @@
+{
+  "_comment": "Shrunk streaming scene for the Nucleo one-pass front end: V=12 (3x4 TDM), C=32 chirps, S=128 samples. Ramp, chirp period AND bandwidth halved together with the counts: fs stays 6.4 MHz and the window stays ~9.6 m (64 kept bins x 0.15 m) at 2x coarser range resolution -- bin spacing is c/(2*bandwidth), so halving only the ramp would have halved the window to 4.8 m and dropped the far target off the map. Two moving targets at comfortable amplitudes (a pipeline-composition demo, not a dynamic-range study), separated in range so their CFAR windows do not interact.",
+  "radar": {
+    "fc_hz": 77000000000.0,
+    "bandwidth_hz": 1000000000.0,
+    "ramp_duration_s": 0.00002,
+    "chirp_period_s": 0.000025,
+    "n_range": 128,
+    "n_chirps": 32,
+    "noise_power": 0.0001,
+    "leakage_amplitude": 0.1,
+    "frame_period_s": 0.05,
+    "n_tx": 3,
+    "n_rx": 4,
+    "mimo_scheme": "tdm",
+    "rx_spacing_wl": 0.5
+  },
+  "targets": [
+    {"x": 3.0, "y": 0.2, "vx": 1.0, "vy": 0.0, "amplitude": 0.3, "motion_model": "cv_xy"},
+    {"x": 6.344, "y": 2.958, "vx": 2.0, "vy": 0.0, "amplitude": 0.05, "motion_model": "cv_xy"}
+  ]
+}

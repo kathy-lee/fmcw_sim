@@ -85,3 +85,13 @@ embedded/nucleo_f446re_frontend/Core/Inc/pointcloud.h
 embedded/nucleo_f446re_frontend/Core/Inc/convert_q15.h
 embedded/nucleo_f446re_frontend/Core/Inc/onepass_q15.h
 embedded/nucleo_f446re_frontend/Core/Inc/frontend_params.h
+
+# nucleo CMSIS-DSP comparison: generated HAL, synced kernel copies and build output
+embedded/nucleo_f446re_fft_cmsis/Drivers/
+embedded/nucleo_f446re_fft_cmsis/build/
+embedded/nucleo_f446re_fft_cmsis/Core/Src/fft.c
+embedded/nucleo_f446re_fft_cmsis/Core/Src/fft_q15.c
+embedded/nucleo_f446re_fft_cmsis/Core/Inc/fft.h
+embedded/nucleo_f446re_fft_cmsis/Core/Inc/fft_q15.h
+embedded/nucleo_f446re_fft_cmsis/Core/Inc/fmcw.h
+embedded/nucleo_f446re_fft_cmsis/Core/Inc/fmcw_q15.h

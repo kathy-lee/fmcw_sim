@@ -22,7 +22,8 @@ SYNC_SRC = $(KERNEL)/src/fft_q15.c
 SYNC_HDR = $(KERNEL)/include/fft_q15.h $(KERNEL)/include/fmcw_q15.h $(KERNEL)/include/fmcw.h
 DEFINE   = -DARITH_Q15=1
 STALE    = Core/Src/fft.c Core/Inc/fft.h
-DSP_SRC  = $(CMSIS_DSP)/Source/TransformFunctions/arm_cfft_q15.c
+DSP_SRC  = $(CMSIS_DSP)/Source/TransformFunctions/arm_cfft_q15.c \
+           $(CMSIS_DSP)/Source/TransformFunctions/arm_cfft_radix4_q15.c
 else
 SYNC_SRC = $(KERNEL)/src/fft.c
 SYNC_HDR = $(KERNEL)/include/fft.h $(KERNEL)/include/fmcw.h

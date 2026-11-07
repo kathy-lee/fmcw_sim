@@ -1,15 +1,16 @@
-/* Q15 and float FFT on an STM32F446RE: transform fixed input, report what
- * it cost, print everything in the format the host reference also prints.
+/* The project's FFT beside its CMSIS-DSP counterpart on an STM32F446RE: the
+ * same input through both, at 128 and 32 points, reporting cycles, memory and
+ * how far the outputs differ.
  *
- * This file is the apparatus, not the subject. It holds no arithmetic — no
- * butterflies, no twiddles, no shifts. Those live in the kernel copied in
- * from c_frontend and compiled unmodified, which is what makes a number
- * measured here a number about the code that ships.
+ * This file holds no FFT arithmetic. The project's kernel is copied in from
+ * c_frontend and CMSIS-DSP is compiled unmodified, so a number measured here
+ * is a number about that code.
  *
- * The configuration block comes first and is checked by the reader: a
- * wrong clock or a soft-float build produces plausible numbers that
- * measure the wrong thing, and nothing downstream would notice.
+ * The configuration block comes first and is checked by the reader: a wrong
+ * clock or a soft-float build produces plausible numbers that measure the
+ * wrong thing.
  */
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -22,26 +23,40 @@
 
 #if BRINGUP
 #define ARITH_NAME "bringup"
-#define VEC_N 0
 #else
 
+#include "arm_const_structs.h"
 #include "vectors.h"
 
 #if ARITH_Q15
 #include "fft_q15.h"
 typedef FftPlanQ15 plan_t;
 typedef cplx_q15 work_t;
+typedef q15_t elem_t;
+typedef arm_cfft_instance_q15 cmsis_t;
 #define ARITH_NAME "q15"
 #define PLAN_INIT(p, n) fft_q15_plan_init((p), (n))
-#define TRANSFORM(p, x) fft_q15_inplace((p), (x), NULL)
+#define OWN_FFT(p, x) fft_q15_inplace((p), (x), NULL)
+#define CMSIS_FFT(s, x) arm_cfft_q15((s), (x), 0, 1)
+#define CMSIS_128 (&arm_cfft_sR_q15_len128)
+#define CMSIS_32 (&arm_cfft_sR_q15_len32)
 #else
 #include "fft.h"
 typedef FftPlan plan_t;
 typedef cplx work_t;
+typedef float32_t elem_t;
+typedef arm_cfft_instance_f32 cmsis_t;
 #define ARITH_NAME "float"
 #define PLAN_INIT(p, n) fft_plan_init((p), (n))
-#define TRANSFORM(p, x) fft_inplace((p), (x))
+#define OWN_FFT(p, x) fft_inplace((p), (x))
+#define CMSIS_FFT(s, x) arm_cfft_f32((s), (x), 0, 1)
+#define CMSIS_128 (&arm_cfft_sR_f32_len128)
+#define CMSIS_32 (&arm_cfft_sR_f32_len32)
 #endif
+
+/* CMSIS-DSP takes a flat re,im,re,im array; the project's samples are
+ * structs. The cast below is only valid while these have no padding. */
+_Static_assert(sizeof(work_t) == 2 * sizeof(elem_t), "work_t must be two packed elements");
 
 #define ITERS 1000
 #define CANARY 0xC5
@@ -51,9 +66,28 @@ typedef cplx work_t;
 extern char _end;
 extern char _estack;
 
-static work_t work[VEC_N];
-static plan_t plan;
-static int plan_ok;
+typedef struct {
+    int n;
+    work_t *work;
+    const vec_sample *dc;
+    const vec_sample *radar;
+    const cmsis_t *cmsis;
+    plan_t plan;
+} size_case;
+
+typedef void (*fft_fn)(const size_case *c);
+
+static work_t work_128[VEC_N_128];
+static work_t work_32[VEC_N_32];
+/* Holds the project's output while CMSIS-DSP runs on the same input. */
+static work_t own_result[VEC_N_128];
+
+static size_case cases[] = {
+    { VEC_N_128, work_128, vec_dc_128, vec_radar_128, CMSIS_128, {0} },
+    { VEC_N_32, work_32, vec_dc_32, vec_radar_32, CMSIS_32, {0} },
+};
+
+static int plans_ok;
 static unsigned heap_after_init;
 static unsigned free_start;
 
@@ -94,73 +128,105 @@ static unsigned stack_peak(void)
     return (unsigned)(&_estack - p);
 }
 
-static void load(const vec_sample *v)
+/* Not inlined, so the reload costs the same in both timing loops. */
+static __attribute__((noinline)) void load(work_t *work, const vec_sample *v, int n)
 {
-    for (int i = 0; i < VEC_N; i++) {
-        work[i].re = VEC_RE(v, i);
-        work[i].im = VEC_IM(v, i);
+    for (int i = 0; i < n; i++) {
+        work[i].re = v[i].re;
+        work[i].im = v[i].im;
     }
 }
 
-static void print_value(double v)
+/* Both FFTs are reached through the same kind of indirect call, so that call
+ * adds the same small cost to each. */
+static void run_own(const size_case *c)
+{
+    OWN_FFT(&c->plan, c->work);
+}
+
+static void run_cmsis(const size_case *c)
+{
+    CMSIS_FFT(c->cmsis, (elem_t *)c->work);
+}
+
+static void print_value(const char *key, double v)
 {
 #if ARITH_Q15
-    printf("%d", (int)v);
+    printf(" %s=%d", key, (int)v);
 #else
-    printf("%.6e", v);
+    printf(" %s=%.6e", key, v);
 #endif
 }
 
-static void dump_twiddles(const plan_t *p)
+static double abs_max(double a, double b)
 {
-    for (int k = 0; k < VEC_N / 2; k++) {
-        printf("TW %d ", k);
-        print_value((double)p->twiddle[k].re);
-        printf(" ");
-        print_value((double)p->twiddle[k].im);
-        printf("\n");
-    }
+    a = fabs(a);
+    b = fabs(b);
+    return a > b ? a : b;
 }
 
-static void run_and_dump(const plan_t *p, const vec_sample *v, const char *name)
+static void report_dc(const size_case *c, const char *impl, fft_fn fn)
 {
-    load(v);
-    TRANSFORM(p, work);
-    printf("VEC %s\n", name);
-    for (int i = 0; i < VEC_N; i++) {
-        printf("OUT %d ", i);
-        print_value((double)work[i].re);
-        printf(" ");
-        print_value((double)work[i].im);
-        printf("\n");
+    load(c->work, c->dc, c->n);
+    fn(c);
+    double other = 0.0;
+    for (int i = 1; i < c->n; i++) {
+        double m = abs_max(c->work[i].re, c->work[i].im);
+        if (m > other) other = m;
     }
+    printf("OUT n=%d impl=%s vec=dc", c->n, impl);
+    print_value("bin0_re", c->work[0].re);
+    print_value("bin0_im", c->work[0].im);
+    print_value("other_peak", other);
+    printf("\n");
+}
+
+/* Compares real and imaginary parts as separate elements. */
+static void report_diff(const size_case *c)
+{
+    load(c->work, c->radar, c->n);
+    run_own(c);
+    for (int i = 0; i < c->n; i++) own_result[i] = c->work[i];
+
+    load(c->work, c->radar, c->n);
+    run_cmsis(c);
+
+    double max_diff = 0.0, sum2 = 0.0, own_peak = 0.0, cmsis_peak = 0.0;
+    for (int i = 0; i < c->n; i++) {
+        double dr = (double)own_result[i].re - (double)c->work[i].re;
+        double di = (double)own_result[i].im - (double)c->work[i].im;
+        double d = abs_max(dr, di);
+        double a = abs_max(own_result[i].re, own_result[i].im);
+        double b = abs_max(c->work[i].re, c->work[i].im);
+        if (d > max_diff) max_diff = d;
+        if (a > own_peak) own_peak = a;
+        if (b > cmsis_peak) cmsis_peak = b;
+        sum2 += dr * dr + di * di;
+    }
+    printf("CMP n=%d vec=radar", c->n);
+    print_value("own_peak", own_peak);
+    print_value("cmsis_peak", cmsis_peak);
+    printf(" max_abs_diff=%.6g rms_diff=%.6g\n", max_diff, sqrt(sum2 / (2.0 * c->n)));
 }
 
 /* Two loops with the same iteration count, because the transform is
  * destructive: every iteration must reload the input, and that reload has
  * to come back out of the number. Interrupts are off for the duration so
- * the millisecond SysTick does not land inside the count. Both raw figures
- * are printed so the subtraction can be judged rather than taken on trust. */
-static void timing(const plan_t *p)
+ * the millisecond SysTick does not land inside the count. */
+static void report_time(const size_case *c, const char *impl, fft_fn fn)
 {
     __disable_irq();
     uint32_t t0 = DWT->CYCCNT;
-    for (int k = 0; k < ITERS; k++) load(vec_radar);
+    for (int k = 0; k < ITERS; k++) load(c->work, c->radar, c->n);
     uint32_t t1 = DWT->CYCCNT;
-
+    for (int k = 0; k < ITERS; k++) { load(c->work, c->radar, c->n); fn(c); }
     uint32_t t2 = DWT->CYCCNT;
-    for (int k = 0; k < ITERS; k++) { load(vec_radar); TRANSFORM(p, work); }
-    uint32_t t3 = DWT->CYCCNT;
     __enable_irq();
 
     double copy_cyc = (double)(t1 - t0) / ITERS;
-    double total_cyc = (double)(t3 - t2) / ITERS;
-    double us_per_cyc = 1e6 / (double)SystemCoreClock;
-    printf("TIME iters %d copy_cyc %.1f total_cyc %.1f fft_cyc %.1f "
-           "copy_us %.4f total_us %.4f fft_us %.4f\n",
-           ITERS, copy_cyc, total_cyc, total_cyc - copy_cyc,
-           copy_cyc * us_per_cyc, total_cyc * us_per_cyc,
-           (total_cyc - copy_cyc) * us_per_cyc);
+    double total_cyc = (double)(t2 - t1) / ITERS;
+    printf("TIME n=%d impl=%s iters=%d copy_cyc=%.1f total_cyc=%.1f fft_cyc=%.1f\n",
+           c->n, impl, ITERS, copy_cyc, total_cyc, total_cyc - copy_cyc);
 }
 
 #endif /* !BRINGUP */
@@ -175,7 +241,13 @@ static void print_config(void)
 #endif
     fpu_enabled = ((SCB->CPACR >> 20) & 0xF) == 0xF;
 
+    int loopunroll = 0;
+#ifdef ARM_MATH_LOOPUNROLL
+    loopunroll = 1;
+#endif
+
     uint32_t acr = FLASH->ACR;
+    printf("# dsp_loopunroll %d\n", loopunroll);
     printf("# clk %lu\n", (unsigned long)SystemCoreClock);
     printf("# fpu %d\n", fpu_compiled && fpu_enabled);
     printf("# flash_ws %lu\n", (unsigned long)(acr & FLASH_ACR_LATENCY));
@@ -191,36 +263,35 @@ void harness_init(void)
 #if !BRINGUP
     paint_stack();
     free_start = free_ram();
-    plan_ok = (PLAN_INIT(&plan, VEC_N) == 0);
+    plans_ok = 1;
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++)
+        if (PLAN_INIT(&cases[i].plan, cases[i].n) != 0) plans_ok = 0;
     /* Taken before the first printf, which allocates stdout's buffer;
      * this is the kernel's heap, not the C library's. */
     heap_after_init = (unsigned)(heap_end() - &_end);
 #endif
 }
 
-#include "arm_const_structs.h"
 void harness_run(void)
 {
-#if ARITH_Q15
-    arm_cfft_q15(&arm_cfft_sR_q15_len128, (q15_t *)work, 0, 1);
-#else
-    arm_cfft_f32(&arm_cfft_sR_f32_len128, (float32_t *)work, 0, 1);
-#endif
-    printf("# nucleo-fft 1\n");
+    printf("# nucleo-fft-cmsis 1\n");
     printf("# arith %s\n", ARITH_NAME);
-    printf("# n %d\n", VEC_N);
     print_config();
 #if !BRINGUP
-    if (!plan_ok) {
+    if (!plans_ok) {
         printf("# ERROR plan init failed\n");
         printf("END\n");
         return;
     }
-    dump_twiddles(&plan);
-    run_and_dump(&plan, vec_dc, "dc");
-    run_and_dump(&plan, vec_radar, "radar");
-    timing(&plan);
-    printf("MEM heap %u stack_peak %u free_start %u\n",
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const size_case *c = &cases[i];
+        report_dc(c, "own", run_own);
+        report_dc(c, "cmsis", run_cmsis);
+        report_diff(c);
+        report_time(c, "own", run_own);
+        report_time(c, "cmsis", run_cmsis);
+    }
+    printf("MEM heap=%u stack_peak=%u free_start=%u\n",
            heap_after_init, stack_peak(), free_start);
 #endif
     printf("END\n");

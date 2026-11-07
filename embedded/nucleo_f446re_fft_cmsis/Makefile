@@ -17,6 +17,10 @@ KERNEL   = ../../c_frontend
 CMSIS_DSP = ../third_party/CMSIS-DSP
 BRINGUP ?= 0
 
+ifeq ($(filter $(ARITH),q15 float),)
+$(error ARITH must be q15 or float, got '$(ARITH)')
+endif
+
 ifeq ($(ARITH),q15)
 SYNC_SRC = $(KERNEL)/src/fft_q15.c
 SYNC_HDR = $(KERNEL)/include/fft_q15.h $(KERNEL)/include/fmcw_q15.h $(KERNEL)/include/fmcw.h
@@ -65,10 +69,10 @@ ELF = $(BUILD_DIR)/$(TARGET).elf
 $(ELF): $(OBJECTS)
 
 .DEFAULT_GOAL := help
-.PHONY: help sync vectors build flash capture distclean
+.PHONY: help sync vectors build flash capture report map distclean
 
 help:
-	@echo "targets: sync vectors build flash capture distclean"
+	@echo "targets: sync vectors build flash capture report map distclean"
 	@echo "         ARITH=q15|float (default q15), BRINGUP=1 for the configuration-only image"
 
 # build/ is created here because Makefile.cubemx makes its own directory
@@ -101,6 +105,13 @@ capture:
 	@grep -q '^END' build/stream_$(ARITH)_nucleo.txt \
 	    && echo "captured build/stream_$(ARITH)_nucleo.txt" \
 	    || (echo "stream incomplete — no END line"; exit 1)
+
+report:
+	$(PYTHON) read_results.py --build-dir build
+
+# The flash taken by each CMSIS-DSP function and table, largest last.
+map:
+	arm-none-eabi-nm --size-sort -S $(ELF) | grep -E ' (arm_|twiddleCoef|armBitRev)'
 
 # Makefile.cubemx already defines clean (its own build dir); this removes
 # everything the harness adds as well.

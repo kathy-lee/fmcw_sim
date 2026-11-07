@@ -190,14 +190,14 @@ def _section(arith: str, s: Stream, problems: list[str], size: dict[str, int]) -
         lines.append("  capture refused, no results shown")
         return lines
     lines.append(f"  {'n':>5}{'own cyc':>12}{'cmsis cyc':>12}{'cmsis/own':>11}"
-                 f"{'max diff':>10}{'rms diff':>10}")
+                 f"{'max diff':>12}{'rms diff':>12}")
     for n in SIZES:
         own = s.time[(n, "own")]["fft_cyc"]
         cmsis = s.time[(n, "cmsis")]["fft_cyc"]
         ratio = f"{cmsis / own:.2f}" if own else "-"
         c = s.cmp[n]
         lines.append(f"  {n:>5}{own:>12.0f}{cmsis:>12.0f}{ratio:>11}"
-                     f"{c['max_abs_diff']:>10g}{c['rms_diff']:>10g}")
+                     f"{c['max_abs_diff']:>12g}{c['rms_diff']:>12g}")
     lines.append(f"  flash {size.get('flash', '-')} B, "
                  f"static RAM {size.get('static_ram', '-')} B, "
                  f"heap {s.mem['heap']} B, stack peak {s.mem['stack_peak']} B")

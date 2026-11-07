@@ -113,3 +113,11 @@ def test_report_shows_ratio_and_memory(tmp_path):
     assert "38348" in text     # flash = text + data
     assert "3500" in text      # static RAM = data + bss
     assert "744" in text       # stack peak
+
+
+def test_report_keeps_long_difference_values_apart(tmp_path):
+    text = FIXTURE.replace("max_abs_diff=2 rms_diff=0.71",
+                           "max_abs_diff=0.0737305 rms_diff=0.00655588")
+    (tmp_path / "stream_q15_nucleo.txt").write_text(text)
+    row = next(l for l in report(tmp_path).splitlines() if l.split()[:1] == ["128"])
+    assert len(row.split()) == 6

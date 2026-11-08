@@ -121,3 +121,20 @@ def test_report_keeps_long_difference_values_apart(tmp_path):
     (tmp_path / "stream_q15_nucleo.txt").write_text(text)
     row = next(l for l in report(tmp_path).splitlines() if l.split()[:1] == ["128"])
     assert len(row.split()) == 6
+
+
+def test_non_numeric_value_is_refused():
+    text = FIXTURE.replace("n=128 impl=own vec=dc bin0_re=1000",
+                           "n=128 impl=own vec=dc bin0_re=10x0")
+    assert any("OUT" in p for p in check(parse(text), "q15"))
+
+
+def test_inconsistent_cycle_count_is_refused():
+    text = FIXTURE.replace("total_cyc=31000.0 fft_cyc=30100.0",
+                           "total_cyc=31000.0 fft_cyc=3010.0")
+    assert any("TIME" in p for p in check(parse(text), "q15"))
+
+
+def test_wrong_iteration_count_is_refused():
+    text = FIXTURE.replace("n=32 impl=own iters=1000", "n=32 impl=own iters=100")
+    assert any("TIME" in p for p in check(parse(text), "q15"))

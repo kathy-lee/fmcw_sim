@@ -25,6 +25,11 @@ IMPLS = ("own", "cmsis")
 SCALE_ABS_Q15 = 1
 SCALE_REL_FLOAT = 1e-6
 SCALE_PREFIX = "scale"
+ITERS = 1000
+# fft_cyc, total_cyc and copy_cyc are each rounded to 0.1 cycle when printed,
+# so they can disagree by up to 0.15; the margin covers float error on top.
+CYC_ROUNDING = 0.2
+TEXT_KEYS = {"impl", "vec"}
 
 OUT_KEYS = {"n", "impl", "vec", "bin0_re", "bin0_im", "other_peak"}
 CMP_KEYS = {"n", "vec", "max_abs_diff", "rms_diff", "own_peak", "cmsis_peak"}
@@ -54,11 +59,15 @@ def _value(text: str):
 
 
 def _fields(tokens: list[str], required: set[str]) -> dict | None:
-    """key=value tokens, or None when the row is mangled or incomplete."""
+    """key=value tokens, or None when the row is mangled or incomplete:
+    a missing key, or a value that should be a number and is not."""
     pairs = dict(t.split("=", 1) for t in tokens if "=" in t)
     if not required <= pairs.keys():
         return None
-    return {k: _value(v) for k, v in pairs.items()}
+    row = {k: _value(v) for k, v in pairs.items()}
+    if any(isinstance(v, str) for k, v in row.items() if k not in TEXT_KEYS):
+        return None
+    return row
 
 
 def _parse_block(lines: list[str]) -> Stream:
@@ -147,6 +156,18 @@ def _check_rows(s: Stream) -> list[str]:
     return bad
 
 
+def _check_time(s: Stream) -> list[str]:
+    """A dropped digit leaves a row that parses; the three cycle figures are
+    printed separately, so they can be checked against each other."""
+    bad = []
+    for (n, impl), row in s.time.items():
+        if row["iters"] != ITERS:
+            bad.append(f"TIME n={n} impl={impl}: iters is {row['iters']}, expected {ITERS}")
+        if abs(row["fft_cyc"] - (row["total_cyc"] - row["copy_cyc"])) > CYC_ROUNDING:
+            bad.append(f"TIME n={n} impl={impl}: fft_cyc is not total_cyc - copy_cyc")
+    return bad
+
+
 def _check_scale(s: Stream, arith: str) -> list[str]:
     bad = []
     for n in SIZES:
@@ -167,6 +188,7 @@ def check(stream: Stream, expected_arith: str) -> list[str]:
     """Problems with a capture. Empty means it can be trusted."""
     return (_check_rows(stream)
             + _check_config(stream, expected_arith)
+            + _check_time(stream)
             + _check_scale(stream, expected_arith))
 
 

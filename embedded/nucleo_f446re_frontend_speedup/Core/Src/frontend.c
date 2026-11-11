@@ -31,6 +31,10 @@ extern char _estack;
 #define R_BINS (FRONTEND_S / 2)
 #define HDR_LEN 14
 #define ROW_BYTES (FRONTEND_S * 4)
+/* How long one call listens for a frame header before it prints the banner
+ * and RDY again. The sender waits for an RDY that arrives live, so this is
+ * also its longest wait for the board between frames. */
+#define HDR_LISTEN_MS 100
 
 /* ---- static storage: every lifetime the linker can see ---- */
 
@@ -206,13 +210,10 @@ void frontend_init(void)
 void frontend_run(void)
 {
     banner();
-    /* the banner-only cut idled here instead of listening:
-     *     HAL_Delay(2000);
-     * the receive timeout below waits the same two seconds, listening */
     if (!plan_ok) { HAL_Delay(2000); return; }
 
     uint8_t hdr[HDR_LEN];
-    if (HAL_UART_Receive(&huart2, hdr, HDR_LEN, 2000) != HAL_OK)
+    if (HAL_UART_Receive(&huart2, hdr, HDR_LEN, HDR_LISTEN_MS) != HAL_OK)
         return;                              /* idle: banner again next call */
 
     uint32_t frame_id = (uint32_t)hdr[4] | ((uint32_t)hdr[5] << 8)

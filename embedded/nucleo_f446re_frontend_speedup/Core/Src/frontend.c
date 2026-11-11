@@ -21,6 +21,7 @@
 #include "frontend.h"
 #include "frontend_params.h"
 #include "onepass_q15.h"
+#include "onepass_stages_q15.h"
 
 extern UART_HandleTypeDef huart2;
 extern char _end;
@@ -37,7 +38,7 @@ static cplx_q15 planes[FRONTEND_V * FRONTEND_C * R_BINS];
 
 /* power is dead once the CFAR walk has produced the cell list; snapshots
  * and the DoA spectrum then live in its storage (disjoint sub-ranges,
- * snapshots first) — the overlay onepass_q15_finish's contract permits */
+ * snapshots first) — the overlay the finish stages' contract permits */
 static union {
     int64_t power[FRONTEND_C * R_BINS];
     struct {
@@ -152,29 +153,26 @@ static int rx_wait(uint32_t ms)
     return 0;
 }
 
-/* Detections are printed as they are computed, from V-sized locals; the
- * cycles spent printing are counted here and subtracted from the finish
- * phase so TIME reports compute only. The DET count line rides on the
- * first emission — the cell walk is complete by then, so plan.n_cells and
- * plan.overflow are already set. */
-typedef struct { int first; } EmitCtx;
-
-static uint32_t io_cyc;
-
-static void print_det(void *vctx, const OnepassDet *d)
+/* Detections are printed as they are computed, one line each. */
+static void print_det(const OnepassDet *d)
 {
-    EmitCtx *ctx = vctx;
-    uint32_t t0 = DWT->CYCCNT;
-    if (ctx->first) {
-        printf("DET %d %d\n", plan.n_cells, plan.overflow);
-        ctx->first = 0;
-    }
     printf("D %d %d %d %.9e %.9e %.9e %.9e %.17g %.17g\n",
            d->range_bin, d->doppler_bin, d->az_idx,
            d->x, d->y, d->v_radial, d->snr_db,
            (double)d->power, (double)d->thresh_q16 / 65536.0);
     fflush(stdout);
-    io_cyc += DWT->CYCCNT - t0;
+}
+
+/* The DoA scan with its cycles counted, so TIME can report it apart from
+ * the rest of a detection. */
+static uint32_t doa_cyc;
+
+static int timed_doa(void *ctx, const cplx *snap, const OnepassPlanQ15 *p)
+{
+    uint32_t t0 = DWT->CYCCNT;
+    int az_idx = onepass_doa_f64(ctx, snap, p);
+    doa_cyc += DWT->CYCCNT - t0;
+    return az_idx;
 }
 
 static void report_mem(void)
@@ -231,7 +229,7 @@ void frontend_run(void)
     }
 
     plan.sat = 0;               /* rows saturate too, not just the finish */
-    uint32_t row_cyc = 0;
+    uint32_t row_cyc = 0, plane_max_cyc = 0;
     int cur = 0;
     rx_err = 0;
     rx_arm(rx_buf[0]);
@@ -262,20 +260,45 @@ void frontend_run(void)
             plan.rowbuf = (cplx_q15 *)rx_buf[cur];
             uint32_t t0 = DWT->CYCCNT;
             onepass_q15_row(&plan, v, c);
-            row_cyc += DWT->CYCCNT - t0;
+            uint32_t dt = DWT->CYCCNT - t0;
+            row_cyc += dt;
+            if (dt > plane_max_cyc) plane_max_cyc = dt;
             cur ^= 1;
         }
     }
 
-    io_cyc = 0;
-    EmitCtx ectx = { 1 };
+    /* The finish, stage by stage. finish_cyc is the computation only;
+     * the cycles spent printing are reported apart, as emit_cyc. */
     uint32_t t0 = DWT->CYCCNT;
-    int n = onepass_q15_finish(&plan, print_det, &ectx);
-    uint32_t total = DWT->CYCCNT - t0;
-    if (ectx.first)                 /* zero detections: no emit ever fired */
-        printf("DET %d %d\n", n, plan.overflow);
-    printf("TIME row_cyc %lu finish_cyc %lu\n",
-           (unsigned long)row_cyc, (unsigned long)(total - io_cyc));
+    onepass_q15_power(&plan);
+    uint32_t power_cyc = DWT->CYCCNT - t0;
+
+    t0 = DWT->CYCCNT;
+    int n = onepass_q15_cells(&plan);
+    uint32_t cells_cyc = DWT->CYCCNT - t0;
+
+    t0 = DWT->CYCCNT;
+    printf("DET %d %d\n", n, plan.overflow);
+    uint32_t emit_cyc = DWT->CYCCNT - t0;
+
+    uint32_t det_cyc = 0;           /* includes the DoA scan until the end */
+    doa_cyc = 0;
+    for (int i = 0; i < n; i++) {
+        OnepassDet det;
+        t0 = DWT->CYCCNT;
+        onepass_q15_det(&plan, i, timed_doa, NULL, &det);
+        det_cyc += DWT->CYCCNT - t0;
+        t0 = DWT->CYCCNT;
+        print_det(&det);
+        emit_cyc += DWT->CYCCNT - t0;
+    }
+    printf("TIME row_cyc %lu finish_cyc %lu plane_max_cyc %lu power_cyc %lu "
+           "cells_cyc %lu det_cyc %lu doa_cyc %lu emit_cyc %lu\n",
+           (unsigned long)row_cyc,
+           (unsigned long)(power_cyc + cells_cyc + det_cyc),
+           (unsigned long)plane_max_cyc, (unsigned long)power_cyc,
+           (unsigned long)cells_cyc, (unsigned long)(det_cyc - doa_cyc),
+           (unsigned long)doa_cyc, (unsigned long)emit_cyc);
     report_mem();
     printf("SAT %ld\n", (long)plan.sat);
     printf("END %lu\n", (unsigned long)frame_id);

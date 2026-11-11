@@ -15,14 +15,16 @@ SYNC_SRC = $(KERNEL)/src/fft_q15.c $(KERNEL)/src/rd_q15.c \
            $(KERNEL)/src/onepass/rd_stream_q15.c $(KERNEL)/src/onepass/cfar_cells_q15.c \
            $(KERNEL)/src/onepass/doa_cell.c $(KERNEL)/src/onepass/onepass_q15.c \
            $(KERNEL)/src/pointcloud.c $(KERNEL)/src/doa.c \
-           $(KERNEL)/src/convert_q15.c
+           $(KERNEL)/src/convert_q15.c \
+           $(KERNEL)/src/onepass/onepass_stages_q15.c
 SYNC_HDR = $(KERNEL)/include/fmcw.h $(KERNEL)/include/fmcw_q15.h \
            $(KERNEL)/include/fft_q15.h $(KERNEL)/include/params.h \
            $(KERNEL)/include/rd_q15.h $(KERNEL)/include/onepass/rd_stream_q15.h \
            $(KERNEL)/include/cfar_q15.h $(KERNEL)/include/onepass/cfar_cells_q15.h \
            $(KERNEL)/include/doa.h $(KERNEL)/include/onepass/doa_cell.h \
            $(KERNEL)/include/pointcloud.h $(KERNEL)/include/convert_q15.h \
-           $(KERNEL)/include/onepass/onepass_q15.h
+           $(KERNEL)/include/onepass/onepass_q15.h \
+           $(KERNEL)/include/onepass/onepass_stages_q15.h
 
 # The output directory must not be named plain "build": the phony build
 # target would shadow it in the object rules' order-only prerequisite and

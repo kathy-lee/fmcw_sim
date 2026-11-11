@@ -28,6 +28,11 @@
 #else
 #define DOA_ARITH "f64"
 #endif
+#if FRONTEND_FFT_CMSIS
+#define FFT_IMPL "cmsis"
+#else
+#define FFT_IMPL "own"
+#endif
 
 extern UART_HandleTypeDef huart2;
 extern char _end;
@@ -123,6 +128,7 @@ static void banner(void)
            FRONTEND_PARAMS.cfar_alpha, FRONTEND_PARAMS.min_range_bins);
     printf("# doa 181 %d\n", FRONTEND_PARAMS.doa_n_sources);
     printf("# doa_arith " DOA_ARITH "\n");
+    printf("# fft_impl " FFT_IMPL "\n");
     printf("# maxdet %d\n", ONEPASS_MAX_DET);
     if (!plan_ok) printf("# ERROR plan init failed\n");
     printf("RDY\n");

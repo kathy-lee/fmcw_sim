@@ -14,9 +14,17 @@ CFG    ?= ../../data/c_export_stream128/params.cfg
 # the laptop to the last bit; f32 is the single-precision scan the FPU runs
 # natively.
 DOA    ?= f32
+# The FFT: own is the kernel's fft_q15.c, which matches the laptop to the
+# last bit; cmsis is CMSIS-DSP's arm_cfft_q15 behind the same interface,
+# faster but only close to the laptop.
+FFT    ?= own
+CMSIS_DSP = ../third_party/CMSIS-DSP
 
 ifeq ($(filter $(DOA),f64 f32),)
 $(error DOA must be f64 or f32, got '$(DOA)')
+endif
+ifeq ($(filter $(FFT),own cmsis),)
+$(error FFT must be own or cmsis, got '$(FFT)')
 endif
 
 SYNC_SRC = $(KERNEL)/src/fft_q15.c $(KERNEL)/src/rd_q15.c \
@@ -40,7 +48,7 @@ SYNC_HDR = $(KERNEL)/include/fmcw.h $(KERNEL)/include/fmcw_q15.h \
 # target would shadow it in the object rules' order-only prerequisite and
 # make would recurse forever. Every variable that changes the compiled
 # code is part of the name, so one variant never links another's objects.
-override BUILD_DIR = build/$(DOA)
+override BUILD_DIR = build/$(FFT)-$(DOA)
 
 include Makefile.cubemx
 
@@ -48,7 +56,24 @@ include Makefile.cubemx
 # kernel tree they came from (frozen kernels in src/, additions in
 # src/onepass/)
 KERNEL_C   = $(addprefix Core/Src/,$(notdir $(SYNC_SRC)))
-C_SOURCES += $(KERNEL_C) Core/Src/frontend.c Core/Src/retarget.c
+C_SOURCES += Core/Src/frontend.c Core/Src/retarget.c
+ifeq ($(FFT),cmsis)
+# fft_q15_cmsis.c takes the place of the copied fft_q15.c, which stays in
+# Core/Src but is not compiled.
+DSP_SRC    = $(CMSIS_DSP)/Source/TransformFunctions/arm_cfft_q15.c \
+             $(CMSIS_DSP)/Source/TransformFunctions/arm_cfft_radix4_q15.c \
+             $(CMSIS_DSP)/Source/CommonTables/arm_const_structs.c \
+             $(CMSIS_DSP)/Source/CommonTables/arm_common_tables.c \
+             $(CMSIS_DSP)/Source/TransformFunctions/arm_bitreversal2.c
+C_SOURCES += $(filter-out Core/Src/fft_q15.c,$(KERNEL_C)) \
+             Core/Src/fft_q15_cmsis.c $(DSP_SRC)
+# Makefile.cubemx expands its vpath before these sources are appended.
+vpath %.c $(sort $(dir $(DSP_SRC)))
+C_DEFS     += -DARM_MATH_LOOPUNROLL -DFRONTEND_FFT_CMSIS=1
+C_INCLUDES += -I$(CMSIS_DSP)/Include -I$(CMSIS_DSP)/PrivateInclude
+else
+C_SOURCES += $(KERNEL_C)
+endif
 C_INCLUDES += -I.
 ifeq ($(DOA),f32)
 C_DEFS     += -DFRONTEND_DOA_F32=1
@@ -64,7 +89,7 @@ $(ELF): $(OBJECTS)
 .PHONY: help sync build flash map distclean
 
 help:
-	@echo "targets: sync build flash map distclean   (CFG=path/to/params.cfg DOA=f64|f32)"
+	@echo "targets: sync build flash map distclean   (CFG=path/to/params.cfg DOA=f64|f32 FFT=own|cmsis)"
 
 sync:
 	@mkdir -p $(BUILD_DIR)

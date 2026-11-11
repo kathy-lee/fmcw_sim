@@ -22,6 +22,12 @@
 #include "frontend_params.h"
 #include "onepass_q15.h"
 #include "onepass_stages_q15.h"
+#if FRONTEND_DOA_F32
+#include "doa_cell_f32.h"
+#define DOA_ARITH "f32"
+#else
+#define DOA_ARITH "f64"
+#endif
 
 extern UART_HandleTypeDef huart2;
 extern char _end;
@@ -47,7 +53,11 @@ static union {
     int64_t power[FRONTEND_C * R_BINS];
     struct {
         cplx_q15 snapshots[ONEPASS_MAX_DET * FRONTEND_V];
-        double spectrum[181];
+        /* one scan runs per build, so its spectrum takes the same place */
+        union {
+            double spectrum[181];
+            float spectrum_f32[181];
+        };
     } post;
 } shared;
 
@@ -112,6 +122,7 @@ static void banner(void)
            FRONTEND_PARAMS.cfar_training_d, FRONTEND_PARAMS.cfar_training_r,
            FRONTEND_PARAMS.cfar_alpha, FRONTEND_PARAMS.min_range_bins);
     printf("# doa 181 %d\n", FRONTEND_PARAMS.doa_n_sources);
+    printf("# doa_arith " DOA_ARITH "\n");
     printf("# maxdet %d\n", ONEPASS_MAX_DET);
     if (!plan_ok) printf("# ERROR plan init failed\n");
     printf("RDY\n");
@@ -174,7 +185,14 @@ static uint32_t doa_cyc;
 static int timed_doa(void *ctx, const cplx *snap, const OnepassPlanQ15 *p)
 {
     uint32_t t0 = DWT->CYCCNT;
+#if FRONTEND_DOA_F32
+    (void)ctx;
+    int az_idx = doa_bartlett_cell_f32(snap, FRONTEND_DOA_W,
+                                       p->prm->n_virtual,
+                                       shared.post.spectrum_f32);
+#else
     int az_idx = onepass_doa_f64(ctx, snap, p);
+#endif
     doa_cyc += DWT->CYCCNT - t0;
     return az_idx;
 }

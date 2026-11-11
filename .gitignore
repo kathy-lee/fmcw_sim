@@ -125,3 +125,5 @@ embedded/nucleo_f446re_frontend_speedup/Core/Inc/onepass_q15.h
 embedded/nucleo_f446re_frontend_speedup/Core/Inc/frontend_params.h
 embedded/nucleo_f446re_frontend_speedup/Core/Src/onepass_stages_q15.c
 embedded/nucleo_f446re_frontend_speedup/Core/Inc/onepass_stages_q15.h
+embedded/nucleo_f446re_frontend_speedup/Core/Src/doa_cell_f32.c
+embedded/nucleo_f446re_frontend_speedup/Core/Inc/doa_cell_f32.h

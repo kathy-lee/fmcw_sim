@@ -15,6 +15,9 @@ Differences from streaming_subscriber_nucleo.py:
    transmission, the wait for the result and the reference computation
    are timed and averaged.
 
+4. DoA arithmetic. The banner says whether the board runs the double- or
+   the single-precision DoA scan, and the accepted-banner line shows it.
+
 Imported from streaming_subscriber_nucleo.py unchanged: the serial
 conversation (NucleoLink), frame and row packing, banner and result
 parsing, the dimension and CFAR check at start-up, and the exact
@@ -40,6 +43,16 @@ BITS_PER_BYTE = 10              # start bit, 8 data bits, stop bit
 CANDIDATE_BAUDS = (921600, 1500000, 1875000, 2000000)
 STAGES = ("power_cyc", "cells_cyc", "det_cyc", "doa_cyc", "emit_cyc")
 PHASES = ("ready_s", "send_s", "read_s", "ref_s")
+
+
+def parse_banner_ext(lines: list[str]) -> dict:
+    """The certified banner fields plus the ones only this build prints."""
+    out = parse_banner(lines)
+    for ln in lines:
+        t = ln.split()
+        if ln.startswith("# doa_arith") and len(t) >= 3:
+            out["doa_arith"] = t[2]
+    return out
 
 
 def parse_time(lines: list[str]) -> dict[str, int]:
@@ -193,7 +206,7 @@ def main() -> None:
 
     cfg = read_params(args.params)
     link = TimedLink(args.port, args.baud)
-    b = parse_banner(link.wait_ready())
+    b = parse_banner_ext(link.wait_ready())
     want = (int(cfg["n_virtual"]), int(cfg["n_chirps"]), int(cfg["n_samples"]))
     alpha_ok = abs(b.get("alpha", 0) - cfg["cfar_alpha"]) \
         <= 1e-9 * abs(cfg["cfar_alpha"])
@@ -201,7 +214,8 @@ def main() -> None:
         print(f"refusing: board {b} vs params dims {want} "
               f"alpha {cfg['cfar_alpha']}")
         raise SystemExit(1)
-    print(f"banner: dims {b['dims']} alpha {b['alpha']}  [accepted]")
+    print(f"banner: dims {b['dims']} alpha {b['alpha']} "
+          f"doa {b.get('doa_arith', 'not reported')}  [accepted]")
 
     fe = CFrontend(args.params)
     op = CFrontendOnepass(args.params)

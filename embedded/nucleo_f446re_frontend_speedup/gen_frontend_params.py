@@ -10,9 +10,18 @@ The board has no filesystem, so the flat key=value contract becomes a
 const FrontendParams in flash plus the #defines that size the static
 regions. Floats are emitted via repr(), which round-trips exactly through
 a correctly rounded strtod — the board's parameters are the laptop's to
-the last bit."""
+the last bit.
+
+The header also carries FRONTEND_DOA_W, the 181-entry steering table of the
+single-precision DoA scan: one complex factor per grid angle, computed here
+in double and rounded to float. That scan needs a uniform array, so element
+positions that are not multiples of one spacing are refused."""
 import argparse
+import math
+import struct
 from pathlib import Path
+
+DOA_N_GRID = 181
 
 
 def parse_cfg(path):
@@ -23,6 +32,28 @@ def parse_cfg(path):
         key, val = line.split("=", 1)
         out[key] = val
     return out
+
+
+def _f32(x):
+    """x rounded to single precision, as a C float literal."""
+    return repr(struct.unpack("f", struct.pack("f", x))[0]) + "f"
+
+
+def doa_table(pos_wl):
+    """Lines of the FRONTEND_DOA_W initializer for element positions pos_wl
+    (wavelengths), which must be e * d for one spacing d."""
+    d = pos_wl[1] - pos_wl[0] if len(pos_wl) > 1 else 0.0
+    for e, x in enumerate(pos_wl):
+        if abs(x - e * d) > 1e-12:
+            raise SystemExit(
+                f"pos_wl is not a uniform array: element {e} is at {x!r}, "
+                f"expected {e * d!r} for spacing {d!r}")
+    lines = [f"static const cplx FRONTEND_DOA_W[{DOA_N_GRID}] = {{"]
+    for g in range(DOA_N_GRID):
+        ph = 2.0 * math.pi * d * math.sin(math.radians(g - 90))
+        lines.append(f"    {{{_f32(math.cos(ph))}, {_f32(math.sin(ph))}}},")
+    lines.append("};")
+    return lines
 
 
 def main():
@@ -39,10 +70,12 @@ def main():
     vel = [repr(float(x)) for x in c["velocity_axis"].split(",")]
     pos = [repr(float(x)) for x in c["pos_wl"].split(",")]
     assert len(vel) == int(c["n_chirps"]) and len(pos) == int(c["n_virtual"])
+    table = doa_table([float(x) for x in c["pos_wl"].split(",")])
 
     lines = [f"/* generated from {a.cfg} — do not edit */",
              "#ifndef FRONTEND_PARAMS_H",
              "#define FRONTEND_PARAMS_H",
+             '#include "fmcw.h"',
              '#include "params.h"',
              f"#define FRONTEND_V {int(c['n_virtual'])}",
              f"#define FRONTEND_C {int(c['n_chirps'])}",
@@ -56,7 +89,9 @@ def main():
     lines.append(f"    .n_velocity = {len(vel)},")
     lines.append("    .pos_wl = { " + ", ".join(pos) + " },")
     lines.append(f"    .n_pos = {len(pos)},")
-    lines += ["};", "#endif", ""]
+    lines.append("};")
+    lines += table
+    lines += ["#endif", ""]
     Path(a.out).write_text("\n".join(lines))
     print(f"wrote {a.out}")
 

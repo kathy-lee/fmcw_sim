@@ -1,8 +1,8 @@
 """Timing, deadline and link helpers of the tolerant Nucleo subscriber:
 pure functions and a serial double, no board."""
 from simulator.streaming_subscriber_nucleo_tolerant import (
-    CANDIDATE_BAUDS, TimedLink, deadline_table, parse_time, phase_means,
-    row_deadline_cyc)
+    CANDIDATE_BAUDS, TimedLink, deadline_table, parse_banner_ext, parse_time,
+    phase_means, row_deadline_cyc)
 
 TIME_LINE = ("TIME row_cyc 25600000 finish_cyc 900000000 plane_max_cyc 410000 "
              "power_cyc 3000000 cells_cyc 2000000 det_cyc 5000000 "
@@ -85,3 +85,10 @@ def test_timed_link_skips_interleaved_banner():
 def test_timed_link_stops_at_board_error():
     res, times = _fake_link(FakeBoard(["ERR row 3 17"])).read_result()
     assert res.err == "ERR row 3 17" and times == {}
+
+
+def test_banner_doa_arith_parsed():
+    b = parse_banner_ext(["# dims 12 32 128", "# doa_arith f32"])
+    assert b["doa_arith"] == "f32"
+    assert b["dims"] == (12, 32, 128)
+    assert parse_banner_ext(["# doa_arith f32"])["doa_arith"] == "f32"

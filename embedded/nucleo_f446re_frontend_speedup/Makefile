@@ -10,13 +10,22 @@ PYTHON ?= python
 BAUD    = 921600
 KERNEL  = ../../c_frontend
 CFG    ?= ../../data/c_export_stream128/params.cfg
+# The DoA scan: f64 is the kernel's double-precision scan, which matches
+# the laptop to the last bit; f32 is the single-precision scan the FPU runs
+# natively.
+DOA    ?= f32
+
+ifeq ($(filter $(DOA),f64 f32),)
+$(error DOA must be f64 or f32, got '$(DOA)')
+endif
 
 SYNC_SRC = $(KERNEL)/src/fft_q15.c $(KERNEL)/src/rd_q15.c \
            $(KERNEL)/src/onepass/rd_stream_q15.c $(KERNEL)/src/onepass/cfar_cells_q15.c \
            $(KERNEL)/src/onepass/doa_cell.c $(KERNEL)/src/onepass/onepass_q15.c \
            $(KERNEL)/src/pointcloud.c $(KERNEL)/src/doa.c \
            $(KERNEL)/src/convert_q15.c \
-           $(KERNEL)/src/onepass/onepass_stages_q15.c
+           $(KERNEL)/src/onepass/onepass_stages_q15.c \
+           $(KERNEL)/src/onepass/doa_cell_f32.c
 SYNC_HDR = $(KERNEL)/include/fmcw.h $(KERNEL)/include/fmcw_q15.h \
            $(KERNEL)/include/fft_q15.h $(KERNEL)/include/params.h \
            $(KERNEL)/include/rd_q15.h $(KERNEL)/include/onepass/rd_stream_q15.h \
@@ -24,12 +33,14 @@ SYNC_HDR = $(KERNEL)/include/fmcw.h $(KERNEL)/include/fmcw_q15.h \
            $(KERNEL)/include/doa.h $(KERNEL)/include/onepass/doa_cell.h \
            $(KERNEL)/include/pointcloud.h $(KERNEL)/include/convert_q15.h \
            $(KERNEL)/include/onepass/onepass_q15.h \
-           $(KERNEL)/include/onepass/onepass_stages_q15.h
+           $(KERNEL)/include/onepass/onepass_stages_q15.h \
+           $(KERNEL)/include/onepass/doa_cell_f32.h
 
 # The output directory must not be named plain "build": the phony build
 # target would shadow it in the object rules' order-only prerequisite and
-# make would recurse forever. Namespace it the way the harness does.
-override BUILD_DIR = build/q15
+# make would recurse forever. Every variable that changes the compiled
+# code is part of the name, so one variant never links another's objects.
+override BUILD_DIR = build/$(DOA)
 
 include Makefile.cubemx
 
@@ -39,6 +50,9 @@ include Makefile.cubemx
 KERNEL_C   = $(addprefix Core/Src/,$(notdir $(SYNC_SRC)))
 C_SOURCES += $(KERNEL_C) Core/Src/frontend.c Core/Src/retarget.c
 C_INCLUDES += -I.
+ifeq ($(DOA),f32)
+C_DEFS     += -DFRONTEND_DOA_F32=1
+endif
 OPT        = -O2
 LDFLAGS   += -u _printf_float
 
@@ -50,7 +64,7 @@ $(ELF): $(OBJECTS)
 .PHONY: help sync build flash map distclean
 
 help:
-	@echo "targets: sync build flash map distclean   (CFG=path/to/params.cfg)"
+	@echo "targets: sync build flash map distclean   (CFG=path/to/params.cfg DOA=f64|f32)"
 
 sync:
 	@mkdir -p $(BUILD_DIR)

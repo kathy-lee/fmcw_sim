@@ -5,9 +5,10 @@ import pytest
 
 from simulator.streaming_subscriber_nucleo import BoardResult
 from simulator.streaming_subscriber_nucleo_tolerant import (
-    CANDIDATE_BAUDS, TimedLink, board_margin_db, compare_tolerant,
-    deadline_table, margin_class, parse_banner_ext, parse_time, phase_means,
-    resolve_compare, row_deadline_cyc)
+    CANDIDATE_BAUDS, TimedLink, _process_one, board_margin_db,
+    compare_tolerant, deadline_table, margin_class, parse_banner_ext,
+    parse_time, phase_means, reference_lib_path, resolve_reference,
+    row_deadline_cyc, score_targets, truth_targets)
 
 TIME_LINE = ("TIME row_cyc 25600000 finish_cyc 900000000 plane_max_cyc 410000 "
              "power_cyc 3000000 cells_cyc 2000000 det_cyc 5000000 "
@@ -181,12 +182,19 @@ def test_board_margin_db():
     assert board_margin_db(BoardResult()).shape == (0,)
 
 
-def test_resolve_compare():
-    assert resolve_compare("auto", {"fft_impl": "cmsis"}) == "tolerant"
-    assert resolve_compare("auto", {"fft_impl": "own"}) == "exact"
-    assert resolve_compare("auto", {}) == "exact"
-    assert resolve_compare("exact", {"fft_impl": "cmsis"}) == "exact"
-    assert resolve_compare("tolerant", {"fft_impl": "own"}) == "tolerant"
+def test_resolve_reference():
+    assert resolve_reference("auto", {"fft_impl": "cmsis"}) == "cmsis"
+    assert resolve_reference("auto", {"fft_impl": "own"}) == "own"
+    assert resolve_reference("auto", {}) == "own"
+    assert resolve_reference("own", {"fft_impl": "cmsis"}) == "own"
+    assert resolve_reference("cmsis", {"fft_impl": "own"}) == "cmsis"
+
+
+def test_reference_lib_path():
+    assert reference_lib_path("own") is None       # CFrontend's default
+    path = reference_lib_path("cmsis")
+    assert path.name == "libfmcw_cmsis.so"
+    assert path.parent.name == "c_frontend"
 
 
 def test_read_banner_returns_lines_up_to_rdy():
@@ -211,3 +219,139 @@ def test_tolerant_reports_snr_difference_by_margin():
     assert by["0-3 dB"][0] == 1
     assert by["0-3 dB"][1] == pytest.approx(0.3, abs=1e-9)
     assert by[">=20 dB"] == [2, 0.0]
+
+
+# ---- judging detections against the frame's true targets ----
+
+V_AXIS = [-13.0 + 0.8125 * i for i in range(32)]      # bin 16 is 0 m/s
+
+
+def _truth(range_m, velocity_mps, azimuth_deg):
+    return {"range_m": range_m, "velocity_mps": velocity_mps,
+            "azimuth_deg": azimuth_deg}
+
+
+def _targets(*truth):
+    return truth_targets(list(truth), range_per_bin=0.15, velocity_axis=V_AXIS,
+                         n_samples=128, min_range_bin=6)
+
+
+def test_truth_bins_from_range_and_velocity():
+    (t,) = _targets(_truth(3.0, 1.625, 5.0))
+    assert t["range_bin"] == pytest.approx(20.0)
+    assert t["doppler_bin"] == pytest.approx(18.0)
+    assert t["az_deg"] == 5.0 and t["in_map"]
+
+
+def test_truth_range_wraps_like_the_signal():
+    # 20 m is bin 133.3 of a 128-bin range FFT: it comes back in at bin 5.3,
+    # below the first kept bin
+    near, far = _targets(_truth(20.0, 0.0, 0.0), _truth(12.0, 0.0, 0.0))
+    assert near["range_bin"] == pytest.approx(133.0 + 1.0 / 3.0 - 128.0)
+    assert not near["in_map"]
+    assert far["range_bin"] == pytest.approx(80.0) and not far["in_map"]
+
+
+def test_target_found_with_its_cluster():
+    targets = _targets(_truth(3.0, 1.625, 5.0))
+    det = np.array([row(20, 18, 5, 40.0), row(21, 18, 6, 30.0)])
+    s = score_targets(det, targets, n_chirps=32,
+                      margin_db=np.array([25.0, 4.0]))
+    assert s["found"] == [True]
+    assert s["az_err_deg"] == [0.0]
+    assert s["peak_margin_db"] == [25.0]
+    assert (s["cluster"], s["away"]) == (2, 0)
+
+
+def test_target_missed():
+    targets = _targets(_truth(3.0, 1.625, 5.0))
+    s = score_targets(np.empty((0, 7)), targets, n_chirps=32)
+    assert s["found"] == [False]
+    assert s["az_err_deg"] == [None] and s["peak_margin_db"] == [None]
+
+
+def test_target_outside_the_map_is_not_judged():
+    targets = _targets(_truth(12.0, 0.0, 0.0))
+    s = score_targets(np.empty((0, 7)), targets, n_chirps=32)
+    assert s["found"] == [None]
+
+
+def test_detection_away_from_any_target_is_counted():
+    targets = _targets(_truth(3.0, 1.625, 5.0))
+    det = np.array([row(20, 18, 5, 40.0), row(50, 16, 0, 20.0)])
+    s = score_targets(det, targets, n_chirps=32)
+    assert s["found"] == [True]
+    assert (s["cluster"], s["away"]) == (1, 1)
+
+
+def test_angle_error_is_of_the_strongest_matching_detection():
+    targets = _targets(_truth(3.0, 1.625, 5.0))
+    det = np.array([row(20, 18, 9, 40.0), row(20, 19, 5, 30.0)])
+    s = score_targets(det, targets, n_chirps=32)
+    assert s["found"] == [True] and s["az_err_deg"] == [4.0]
+
+
+def test_doppler_distance_wraps():
+    # 12.6 m/s is bin 31.5; a detection in Doppler bin 0 is half a bin away
+    targets = _targets(_truth(3.0, -13.0 + 0.8125 * 31.5, 0.0))
+    det = np.array([row(20, 0, 0, 40.0)])
+    assert score_targets(det, targets, n_chirps=32)["found"] == [True]
+
+
+class _OneResultLink:
+    """Link double: hands back one prepared board result."""
+
+    def __init__(self, res):
+        self.res = res
+
+    def wait_ready(self):
+        pass
+
+    def send_frame(self, frame_id, rows_q, row_pace):
+        pass
+
+    def read_result(self):
+        return self.res, {}
+
+
+class _NoQuantizer:
+    last_sat = 0
+
+    def quantize(self, frame):
+        return None
+
+
+class _FixedChain:
+    """Reference double: the same detections for every frame."""
+
+    def __init__(self, det):
+        self.det = det
+
+    def q15_process_frame(self, frame):
+        return self.det
+
+
+def _one_frame(fe_truth=None):
+    targets = _targets(_truth(3.0, 1.625, 5.0))
+    board = BoardResult(
+        n=1, dets=[(20, 18, 95, 1.5, -0.5, 2.0, 40.0, 200, 100.0)])
+    same = np.array([row(20, 18, 5, 40.0)])
+    frame = np.zeros((12, 32, 128), dtype=np.complex64)
+    return _process_one(_OneResultLink(board), _FixedChain(same),
+                        _NoQuantizer(), frame, 0, None, targets=targets,
+                        fe_truth=fe_truth)[4]
+
+
+def test_targets_scored_against_the_comparison_reference_by_default():
+    out = _one_frame()
+    assert out["verdict"] == "MATCH"
+    assert out["score_board"]["found"] == [True]
+    assert out["score_ref"]["found"] == [True]
+
+
+def test_targets_scored_against_a_separate_reference_when_given():
+    # the verdict still comes from the comparison reference
+    out = _one_frame(fe_truth=_FixedChain(np.empty((0, 7))))
+    assert out["verdict"] == "MATCH"
+    assert out["score_board"]["found"] == [True]
+    assert out["score_ref"]["found"] == [False]

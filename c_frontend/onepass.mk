@@ -17,3 +17,37 @@ SRC += src/onepass/cfar_cells_q15.c src/onepass/rd_stream_q15.c \
 TESTS += tests/test_cfar_cells_q15 tests/test_rd_stream_q15 \
          tests/test_doa_cell tests/test_onepass_q15 \
          tests/test_onepass_stages_q15 tests/test_doa_cell_f32
+
+# The same library on the CMSIS-DSP FFT: the laptop reference for a board
+# built with FFT=cmsis. fft_q15.c gives way to the file the board compiles
+# (fft_q15_cmsis.c) and to CMSIS-DSP's FFT in the version the board runs
+# (src/onepass/cfft_q15_board_path.c). libfmcw.so is not affected.
+#
+# CMSIS-DSP is not written for -Wpedantic -Werror, so this target has its
+# own flags. __GNUC_PYTHON__ is CMSIS-DSP's switch for a compiler without
+# the CMSIS-Core headers. -Bsymbolic keeps every call inside this library
+# when both libraries are loaded into one process.
+CMSIS_DSP   = ../embedded/third_party/CMSIS-DSP
+CMSIS_TF    = $(CMSIS_DSP)/Source/TransformFunctions
+CMSIS_SRC   = ../embedded/nucleo_f446re_frontend_speedup/Core/Src/fft_q15_cmsis.c \
+              src/onepass/cfft_q15_board_path.c \
+              $(CMSIS_TF)/arm_bitreversal.c $(CMSIS_TF)/arm_bitreversal2.c \
+              $(CMSIS_DSP)/Source/CommonTables/arm_const_structs.c \
+              $(CMSIS_DSP)/Source/CommonTables/arm_common_tables.c
+CMSIS_FLAGS = -std=gnu11 -Wall -O2 -Iinclude -Iinclude/onepass \
+              -I$(CMSIS_DSP)/Include -I$(CMSIS_DSP)/PrivateInclude \
+              -I$(CMSIS_TF) -D__GNUC_PYTHON__ -DARM_MATH_LOOPUNROLL
+
+lib-cmsis: libfmcw_cmsis.so
+
+libfmcw_cmsis.so: $(SRC) $(CMSIS_SRC) $(HDRS)
+	$(CC) $(CMSIS_FLAGS) -fPIC -shared -Wl,-Bsymbolic -Wl,--no-undefined \
+	    -o $@ $(filter-out src/fft_q15.c,$(SRC)) $(CMSIS_SRC) $(LDLIBS)
+
+clean: clean-cmsis
+clean-cmsis:
+	rm -f libfmcw_cmsis.so
+
+.PHONY: lib-cmsis clean-cmsis
+# this file is included above the main Makefile's first rule
+.DEFAULT_GOAL := all

@@ -3,8 +3,9 @@
  *
  * arm_cfft_q15 scales as the project FFT does — the output is the DFT
  * divided by n — but rounds differently inside, so its bins differ from
- * the project FFT's by a few counts. Results from this build are close to
- * the laptop reference, not bit-identical.
+ * the project FFT's by a few counts. The laptop reference for this build
+ * is therefore the batch chain compiled with this same file
+ * (c_frontend/libfmcw_cmsis.so).
  *
  * The tables are CMSIS-DSP's constants in flash: a plan allocates nothing,
  * and its twiddle and bitrev stay NULL. */

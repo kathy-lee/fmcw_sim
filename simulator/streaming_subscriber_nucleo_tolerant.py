@@ -18,12 +18,24 @@ Differences from streaming_subscriber_nucleo.py:
 4. DoA arithmetic. The banner says whether the board runs the double- or
    the single-precision DoA scan, and the accepted-banner line shows it.
 
-5. Tolerant comparison. A board built with the CMSIS-DSP FFT is close to
-   the laptop reference but not bit-identical, so its frames cannot all
-   pass the exact comparison. compare_tolerant gives one of three
+5. Reference with the board's FFT. The banner says which FFT the board
+   runs. For the CMSIS-DSP FFT the laptop reference is the same batch
+   chain built on that FFT (c_frontend/libfmcw_cmsis.so), so the exact
+   comparison applies to either build. --reference overrides the choice.
+
+   Against a reference with a different FFT the results are close but not
+   bit-identical. For that case --compare tolerant gives one of three
    verdicts: MATCH (the exact comparison passes), CLOSE (every difference
-   is within the stated limits) or MISMATCH. --compare selects exact or
-   tolerant; the default, auto, follows the FFT the banner reports.
+   is within the stated limits) or MISMATCH.
+
+6. True targets. Every published frame carries the true range, velocity
+   and azimuth of its targets. The board's detections and the laptop
+   reference's are each judged against them: whether each target inside
+   the map was found, the angle error, and how many detections lie away
+   from every target. This judges the detection result itself, whichever
+   FFT produced it. The reference in this report is always the chain on
+   the project FFT, so for a CMSIS-DSP board it shows what the change of
+   FFT does to the detections.
 
 Imported from streaming_subscriber_nucleo.py unchanged: the serial
 conversation (NucleoLink), frame and row packing, banner and result
@@ -36,6 +48,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -94,12 +107,21 @@ def board_margin_db(result: BoardResult) -> np.ndarray:
     return np.array([10.0 * np.log10(d[7] / d[8]) for d in result.dets])
 
 
-def resolve_compare(mode: str, banner: dict) -> str:
-    """The comparison to run: "exact" or "tolerant". "auto" is tolerant
-    only for a board that reports the CMSIS-DSP FFT."""
+def resolve_reference(mode: str, banner: dict) -> str:
+    """The FFT of the laptop reference: "own" or "cmsis". "auto" follows
+    the FFT the board reports, so the two sides run the same arithmetic."""
     if mode != "auto":
         return mode
-    return "tolerant" if banner.get("fft_impl") == "cmsis" else "exact"
+    return "cmsis" if banner.get("fft_impl") == "cmsis" else "own"
+
+
+def reference_lib_path(fft: str) -> Path | None:
+    """The library holding the batch chain on that FFT; None is CFrontend's
+    default, the chain on the project FFT."""
+    if fft == "own":
+        return None
+    return (Path(__file__).resolve().parents[1] / "c_frontend"
+            / "libfmcw_cmsis.so")
 
 
 def compare_tolerant(board: np.ndarray, ref: np.ndarray,
@@ -198,6 +220,123 @@ def compare_tolerant(board: np.ndarray, ref: np.ndarray,
     return ("MISMATCH" if hard else "CLOSE"), msgs, counts
 
 
+MATCH_BINS = 1.0        # a target is found by a detection this close
+CLUSTER_BINS = 2.0      # detections this close belong to the target
+
+
+def truth_targets(ground_truth: list[dict], range_per_bin: float,
+                  velocity_axis, n_samples: int,
+                  min_range_bin: int) -> list[dict]:
+    """The frame's true targets in the board's bin coordinates.
+
+    The bins are computed from the true range and velocity with the
+    board's own range_per_bin and velocity axis. The range wraps at
+    n_samples bins, as the sampled beat signal does; a target is in the
+    map when its wrapped range lies in the kept bins."""
+    v0, dv = velocity_axis[0], velocity_axis[1] - velocity_axis[0]
+    out = []
+    for t in ground_truth:
+        rb = (t["range_m"] / range_per_bin) % n_samples
+        db = ((t["velocity_mps"] - v0) / dv) % len(velocity_axis)
+        out.append({"range_bin": rb, "doppler_bin": db,
+                    "az_deg": t["azimuth_deg"],
+                    "in_map": min_range_bin <= rb <= n_samples // 2 - 1})
+    return out
+
+
+def score_targets(det: np.ndarray, targets: list[dict], n_chirps: int,
+                  margin_db: np.ndarray | None = None) -> dict:
+    """Judge detections (det_rows order) against the true targets.
+
+    Per target: found is True when a detection lies within MATCH_BINS of
+    it in range and in Doppler, False when none does, None when the
+    target is outside the map. az_err_deg and peak_margin_db describe the
+    strongest such detection (None without one, or without margin_db).
+    cluster counts the detections within CLUSTER_BINS of any target, away
+    the rest. Doppler distance wraps around the axis."""
+    def offsets(d, t):
+        dd = abs(d[1] - t["doppler_bin"])
+        return abs(d[0] - t["range_bin"]), min(dd, n_chirps - dd)
+
+    found, az_err, peak = [], [], []
+    for t in targets:
+        if not t["in_map"]:
+            found.append(None), az_err.append(None), peak.append(None)
+            continue
+        best = None
+        for i, d in enumerate(det):
+            dr, dd = offsets(d, t)
+            if dr <= MATCH_BINS and dd <= MATCH_BINS and \
+                    (best is None or d[6] > det[best][6]):
+                best = i
+        found.append(best is not None)
+        az_err.append(None if best is None
+                      else float(abs(det[best][2] - t["az_deg"])))
+        peak.append(None if best is None or margin_db is None
+                    else float(margin_db[best]))
+    cluster = 0
+    for d in det:
+        if any(max(offsets(d, t)) <= CLUSTER_BINS for t in targets):
+            cluster += 1
+    return {"found": found, "az_err_deg": az_err, "peak_margin_db": peak,
+            "cluster": cluster, "away": len(det) - cluster}
+
+
+class TargetTally:
+    """Session totals of score_targets, for the board and the reference."""
+
+    def __init__(self, ref_name: str = "reference"):
+        self.ref_name = ref_name
+        self.per_target: dict[int, dict] = {}
+        self.cluster = {"board": 0, "ref": 0}
+        self.away = {"board": 0, "ref": 0}
+
+    def add(self, board: dict, ref: dict) -> None:
+        for side, sc in (("board", board), ("ref", ref)):
+            self.cluster[side] += sc["cluster"]
+            self.away[side] += sc["away"]
+            for k, hit in enumerate(sc["found"]):
+                if hit is None:
+                    continue
+                t = self.per_target.setdefault(k, {
+                    "in_map": 0,
+                    "found": {"board": 0, "ref": 0},
+                    "az_max": {"board": 0.0, "ref": 0.0},
+                    "peak": []})
+                if side == "board":
+                    t["in_map"] += 1
+                    if sc["peak_margin_db"][k] is not None:
+                        t["peak"].append(sc["peak_margin_db"][k])
+                if hit:
+                    t["found"][side] += 1
+                    t["az_max"][side] = max(t["az_max"][side],
+                                            sc["az_err_deg"][k])
+
+    def lines(self) -> list[str]:
+        if not self.per_target:
+            return []
+        out = ["true targets (found: a detection within "
+               f"{MATCH_BINS:g} bin in range and Doppler):"]
+        for k in sorted(self.per_target):
+            t = self.per_target[k]
+            peak = (f"{min(t['peak']):.1f} to {max(t['peak']):.1f} dB"
+                    if t["peak"] else "n/a")
+            out.append(
+                f"   target {k}: in map {t['in_map']} frames | found: "
+                f"board {t['found']['board']}, "
+                f"{self.ref_name} {t['found']['ref']} | "
+                f"largest angle error: "
+                f"board {t['az_max']['board']:.1f} deg, "
+                f"{self.ref_name} {t['az_max']['ref']:.1f} deg | "
+                f"board peak above threshold: {peak}")
+        out.append(
+            f"   detections near a target: board {self.cluster['board']}, "
+            f"{self.ref_name} {self.cluster['ref']} | "
+            f"away from every target: board {self.away['board']}, "
+            f"{self.ref_name} {self.away['ref']}")
+        return out
+
+
 def parse_time(lines: list[str]) -> dict[str, int]:
     """Every name/value pair of the block's TIME line; empty without one."""
     for ln in lines:
@@ -279,11 +418,15 @@ class TimedLink(NucleoLink):
 
 
 def _process_one(link, fe, op, frame, frame_id, t_pub, row_pace: float = 0.0,
-                 compare: str = "exact"):
+                 compare: str = "exact", targets: list[dict] | None = None,
+                 fe_truth=None):
     """Quantize, await RDY, send, read, diff one frame. Returns
     (verdict_line, result, time_fields, phase_seconds, outcome), where
     outcome is the comparison's counts plus "verdict", or None when the
-    board reported an error.
+    board reported an error. With targets (truth_targets), outcome also
+    holds score_targets for the board and for a reference: fe_truth's
+    detections when it is given, else those of fe, the chain the verdict
+    comes from.
 
     send_s ends when the last row is handed to the serial driver, which
     may still hold bytes; read_s runs from there to the end of the result
@@ -316,6 +459,13 @@ def _process_one(link, fe, op, frame, frame_id, t_pub, row_pace: float = 0.0,
                    "max_snr_diff_db": 0.0, "max_board_only_margin_db": 0.0,
                    "failed": [], "snr_diff_by_margin": {}}
     outcome["verdict"] = verdict
+    if targets is not None:
+        n_chirps = frame.shape[1]
+        outcome["score_board"] = score_targets(
+            det_rows(res), targets, n_chirps, board_margin_db(res))
+        truth_ref = ref if fe_truth is None \
+            else fe_truth.q15_process_frame(frame)
+        outcome["score_ref"] = score_targets(truth_ref, targets, n_chirps)
     phases["ref_s"] = time.time() - t3
     lat = time.time() - (t_pub if t_pub else t0)
     detail = f"{res.n} dets, tie flips {outcome['flips']}"
@@ -386,10 +536,14 @@ def main() -> None:
                     help="seconds to sleep after each row (diagnostic)")
     ap.add_argument("--max-frames", type=int, default=0, help="0 = forever")
     ap.add_argument("--summary-every", type=int, default=10)
-    ap.add_argument("--compare", choices=("auto", "exact", "tolerant"),
+    ap.add_argument("--reference", choices=("auto", "own", "cmsis"),
                     default="auto",
-                    help="auto: tolerant for a CMSIS-DSP FFT board, "
-                         "else exact")
+                    help="FFT of the laptop reference; auto: the FFT the "
+                         "board reports")
+    ap.add_argument("--compare", choices=("exact", "tolerant"),
+                    default="exact",
+                    help="tolerant: for a reference whose FFT differs "
+                         "from the board's")
     args = ap.parse_args()
 
     from processing.c_frontend import CFrontend
@@ -408,11 +562,27 @@ def main() -> None:
     print(f"banner: dims {b['dims']} alpha {b['alpha']} "
           f"doa {b.get('doa_arith', 'not reported')} "
           f"fft {b.get('fft_impl', 'not reported')}  [accepted]")
-    compare = resolve_compare(args.compare, b)
-    print(f"comparison: {compare}")
+    compare = args.compare
+    ref_fft = resolve_reference(args.reference, b)
+    lib_path = reference_lib_path(ref_fft)
+    if lib_path is not None and not lib_path.exists():
+        print(f"refusing: {lib_path} is not built — "
+              f"make -C c_frontend lib-cmsis")
+        raise SystemExit(1)
+    print(f"reference: {ref_fft} FFT, comparison: {compare}")
 
-    fe = CFrontend(args.params)
+    fe = CFrontend(args.params, lib_path=lib_path)
+    # the true-target report keeps the project-FFT chain as its reference
+    fe_truth = None if ref_fft == "own" else CFrontend(args.params)
     op = CFrontendOnepass(args.params)
+    velocity_axis = [float(x) for x in cfg["velocity_axis"].split(",")]
+    tally = TargetTally("reference" if fe_truth is None
+                        else "own-FFT reference")
+
+    def targets_of(ground_truth):
+        return truth_targets(ground_truth, cfg["range_per_bin"],
+                             velocity_axis, int(cfg["n_samples"]),
+                             int(cfg["min_range_bins"]))
 
     if args.one_shot:
         from simulator.beat_signal_generator import (FMCWBeatSignalGenerator,
@@ -422,13 +592,17 @@ def main() -> None:
         frame = gen.generate_frame_mimo(targets, frame_index=0)
         frame = np.ascontiguousarray(frame.astype(np.complex64))
         line, res, times, phases, outcome = _process_one(
-            link, fe, op, frame, 0, None, args.row_pace, compare)
+            link, fe, op, frame, 0, None, args.row_pace, compare,
+            targets_of(gen.ground_truth(targets, frame_index=0)), fe_truth)
         print(line)
         print(f"TIME row_cyc {res.row_cyc} finish_cyc {res.finish_cyc}   "
               f"MEM heap {res.heap} stack_peak {res.stack_peak} "
               f"free_start {res.free_start}  SAT {res.sat}")
         print("\n".join(_timing_lines([times] if times else [], [phases],
                                       args.baud)))
+        if outcome:
+            tally.add(outcome["score_board"], outcome["score_ref"])
+            print("\n".join(tally.lines()))
         link.close()
         raise SystemExit(
             0 if outcome and outcome["verdict"] != "MISMATCH" else 1)
@@ -470,11 +644,13 @@ def main() -> None:
             frame = np.ascontiguousarray(frame.astype(np.complex64))
             line, res, times, phases, outcome = _process_one(
                 link, fe, op, frame, fid, float(header["timestamp_unix_s"]),
-                args.row_pace, compare)
+                args.row_pace, compare,
+                targets_of(header.get("ground_truth", [])), fe_truth)
             print(line, flush=True)
             if res.err:
                 continue
             processed += 1
+            tally.add(outcome["score_board"], outcome["score_ref"])
             mismatches += outcome["verdict"] == "MISMATCH"
             close_total += outcome["verdict"] == "CLOSE"
             flips_total += outcome["flips"]
@@ -541,6 +717,8 @@ def main() -> None:
                 n_pairs, d_max = snr_by_margin[cls]
                 print(f"      {cls:>9}: {n_pairs} pairs, "
                       f"largest {d_max:.3f} dB")
+    for ln in tally.lines():
+        print(ln)
     if plane_max_session:
         print("row deadline by baud rate, for the session's slowest row:")
         for ln in deadline_table(plane_max_session):

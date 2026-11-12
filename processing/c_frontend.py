@@ -26,18 +26,28 @@ import numpy as np
 
 _LIB_PATH = Path(__file__).resolve().parents[1] / "c_frontend" / "libfmcw.so"
 _lib = None
+_other_libs: dict[str, ctypes.CDLL] = {}    # loaded from a given lib_path
 
 
-def _load() -> ctypes.CDLL:
+def _load(lib_path: str | Path | None = None) -> ctypes.CDLL:
     """Load libfmcw.so once and declare every signature (the one place a
-    contract mismatch with fmcw_api.h could hide)."""
+    contract mismatch with fmcw_api.h could hide). lib_path names another
+    build of the same library, loaded once and kept beside it."""
     global _lib
-    if _lib is not None:
-        return _lib
-    if not _LIB_PATH.exists():
-        raise OSError(f"{_LIB_PATH} not found — build it with: "
-                      f"make -C c_frontend lib")
-    lib = ctypes.CDLL(str(_LIB_PATH))
+    if lib_path is None:
+        if _lib is not None:
+            return _lib
+        if not _LIB_PATH.exists():
+            raise OSError(f"{_LIB_PATH} not found — build it with: "
+                          f"make -C c_frontend lib")
+        path = _LIB_PATH
+    else:
+        path = Path(lib_path)
+        if str(path) in _other_libs:
+            return _other_libs[str(path)]
+        if not path.exists():
+            raise OSError(f"{path} not found")
+    lib = ctypes.CDLL(str(path))
     c_float_p = ctypes.POINTER(ctypes.c_float)
     c_double_p = ctypes.POINTER(ctypes.c_double)
     c_uint8_p = ctypes.POINTER(ctypes.c_uint8)
@@ -100,7 +110,10 @@ def _load() -> ctypes.CDLL:
     # void fmcw_q15_reset_saturations(void *h);
     lib.fmcw_q15_reset_saturations.argtypes = [ctypes.c_void_p]
     lib.fmcw_q15_reset_saturations.restype = None
-    _lib = lib
+    if lib_path is None:
+        _lib = lib
+    else:
+        _other_libs[str(path)] = lib
     return lib
 
 
@@ -120,8 +133,9 @@ def _checked(arr: np.ndarray, dtype, shape, name: str) -> np.ndarray:
 class CFrontend:
     """One C front-end context: params + buffers + plans behind a handle."""
 
-    def __init__(self, params_cfg: str | Path):
-        lib = _load()
+    def __init__(self, params_cfg: str | Path,
+                 lib_path: str | Path | None = None):
+        lib = _load(lib_path)
         self._lib = lib
         self._h = lib.fmcw_create(str(params_cfg).encode())
         if not self._h:

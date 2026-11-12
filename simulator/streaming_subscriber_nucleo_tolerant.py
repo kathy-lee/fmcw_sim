@@ -36,7 +36,7 @@ Differences from streaming_subscriber_nucleo.py:
    and azimuth of its targets. The board's detections and the laptop
    reference's are each judged against them: whether each target inside
    the map was found, the angle error, and how many detections lie away
-   from every target. This judges the detection result itself, whichever
+   from every target, that is, outside the CFAR guard region of each. This judges the detection result itself, whichever
    FFT produced it. The reference in this report is always the chain on
    the project FFT, so for a CMSIS-DSP board it shows what the change of
    FFT does to the detections.
@@ -242,7 +242,6 @@ def compare_tolerant(board: np.ndarray, ref: np.ndarray,
 
 
 MATCH_BINS = 1.0        # a target is found by a detection this close
-CLUSTER_BINS = 2.0      # detections this close belong to the target
 
 
 def truth_targets(ground_truth: list[dict], range_per_bin: float,
@@ -266,15 +265,21 @@ def truth_targets(ground_truth: list[dict], range_per_bin: float,
 
 
 def score_targets(det: np.ndarray, targets: list[dict], n_chirps: int,
-                  margin_db: np.ndarray | None = None) -> dict:
+                  margin_db: np.ndarray | None = None, *,
+                  cluster_bins: tuple[float, float]) -> dict:
     """Judge detections (det_rows order) against the true targets.
 
     Per target: found is True when a detection lies within MATCH_BINS of
     it in range and in Doppler, False when none does, None when the
     target is outside the map. az_err_deg and peak_margin_db describe the
     strongest such detection (None without one, or without margin_db).
-    cluster counts the detections within CLUSTER_BINS of any target, away
-    the rest. Doppler distance wraps around the axis."""
+
+    cluster counts the detections that belong to some target: within
+    cluster_bins = (range bins, Doppler bins) of it. away counts the
+    rest. The caller passes the CFAR guard cells, the extent over which
+    the front end itself expects a target to spread: a strong target's
+    skirt is detected several bins from its peak. Doppler distance wraps
+    around the axis."""
     def offsets(d, t):
         dd = abs(d[1] - t["doppler_bin"])
         return abs(d[0] - t["range_bin"]), min(dd, n_chirps - dd)
@@ -297,8 +302,11 @@ def score_targets(det: np.ndarray, targets: list[dict], n_chirps: int,
                     else float(margin_db[best]))
     cluster = 0
     for d in det:
-        if any(max(offsets(d, t)) <= CLUSTER_BINS for t in targets):
-            cluster += 1
+        for t in targets:
+            dr, dd = offsets(d, t)
+            if dr <= cluster_bins[0] and dd <= cluster_bins[1]:
+                cluster += 1
+                break
     return {"found": found, "az_err_deg": az_err, "peak_margin_db": peak,
             "cluster": cluster, "away": len(det) - cluster}
 
@@ -306,8 +314,10 @@ def score_targets(det: np.ndarray, targets: list[dict], n_chirps: int,
 class TargetTally:
     """Session totals of score_targets, for the board and the reference."""
 
-    def __init__(self, ref_name: str = "reference"):
+    def __init__(self, ref_name: str = "reference",
+                 cluster_bins: tuple[float, float] | None = None):
         self.ref_name = ref_name
+        self.cluster_bins = cluster_bins    # as given to score_targets
         self.per_target: dict[int, dict] = {}
         self.cluster = {"board": 0, "ref": 0}
         self.away = {"board": 0, "ref": 0}
@@ -350,8 +360,12 @@ class TargetTally:
                 f"board {t['az_max']['board']:.1f} deg, "
                 f"{self.ref_name} {t['az_max']['ref']:.1f} deg | "
                 f"board peak above threshold: {peak}")
+        window = "" if self.cluster_bins is None else (
+            f" (within {self.cluster_bins[0]:g} range and "
+            f"{self.cluster_bins[1]:g} Doppler bins)")
         out.append(
-            f"   detections near a target: board {self.cluster['board']}, "
+            f"   detections near a target{window}: "
+            f"board {self.cluster['board']}, "
             f"{self.ref_name} {self.cluster['ref']} | "
             f"away from every target: board {self.away['board']}, "
             f"{self.ref_name} {self.away['ref']}")
@@ -440,14 +454,16 @@ class TimedLink(NucleoLink):
 
 def _process_one(link, fe, op, frame, frame_id, t_pub, row_pace: float = 0.0,
                  compare: str = "exact", targets: list[dict] | None = None,
-                 fe_truth=None):
+                 fe_truth=None,
+                 cluster_bins: tuple[float, float] | None = None):
     """Quantize, await RDY, send, read, diff one frame. Returns
     (verdict_line, result, time_fields, phase_seconds, outcome), where
     outcome is the comparison's counts plus "verdict", or None when the
     board reported an error. With targets (truth_targets), outcome also
     holds score_targets for the board and for a reference: fe_truth's
     detections when it is given, else those of fe, the chain the verdict
-    comes from.
+    comes from. cluster_bins is score_targets' window and is needed with
+    targets.
 
     send_s ends when the last row is handed to the serial driver, which
     may still hold bytes; read_s runs from there to the end of the result
@@ -483,10 +499,12 @@ def _process_one(link, fe, op, frame, frame_id, t_pub, row_pace: float = 0.0,
     if targets is not None:
         n_chirps = frame.shape[1]
         outcome["score_board"] = score_targets(
-            det_rows(res), targets, n_chirps, board_margin_db(res))
+            det_rows(res), targets, n_chirps, board_margin_db(res),
+            cluster_bins=cluster_bins)
         truth_ref = ref if fe_truth is None \
             else fe_truth.q15_process_frame(frame)
-        outcome["score_ref"] = score_targets(truth_ref, targets, n_chirps)
+        outcome["score_ref"] = score_targets(truth_ref, targets, n_chirps,
+                                             cluster_bins=cluster_bins)
     phases["ref_s"] = time.time() - t3
     lat = time.time() - (t_pub if t_pub else t0)
     detail = f"{res.n} dets, tie flips {outcome['flips']}"
@@ -602,8 +620,10 @@ def main() -> None:
     fe_truth = None if ref_fft == "own" else CFrontend(args.params)
     op = CFrontendOnepass(args.params)
     velocity_axis = [float(x) for x in cfg["velocity_axis"].split(",")]
+    # a detection belongs to a target inside the CFAR guard region
+    cluster_bins = (int(cfg["cfar_guard_r"]), int(cfg["cfar_guard_d"]))
     tally = TargetTally("reference" if fe_truth is None
-                        else "own-FFT reference")
+                        else "own-FFT reference", cluster_bins)
 
     def targets_of(ground_truth):
         return truth_targets(ground_truth, cfg["range_per_bin"],
@@ -619,7 +639,8 @@ def main() -> None:
         frame = np.ascontiguousarray(frame.astype(np.complex64))
         line, res, times, phases, outcome = _process_one(
             link, fe, op, frame, 0, None, args.row_pace, compare,
-            targets_of(gen.ground_truth(targets, frame_index=0)), fe_truth)
+            targets_of(gen.ground_truth(targets, frame_index=0)), fe_truth,
+            cluster_bins)
         print(line)
         print(f"TIME row_cyc {res.row_cyc} finish_cyc {res.finish_cyc}   "
               f"MEM heap {res.heap} stack_peak {res.stack_peak} "
@@ -672,7 +693,8 @@ def main() -> None:
             line, res, times, phases, outcome = _process_one(
                 link, fe, op, frame, fid, float(header["timestamp_unix_s"]),
                 args.row_pace, compare,
-                targets_of(header.get("ground_truth", [])), fe_truth)
+                targets_of(header.get("ground_truth", [])), fe_truth,
+                cluster_bins)
             print(line, flush=True)
             if res.err:
                 board_errors += 1

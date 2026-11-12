@@ -5,7 +5,7 @@ import pytest
 
 from simulator.streaming_subscriber_nucleo import BoardResult
 from simulator.streaming_subscriber_nucleo_tolerant import (
-    CANDIDATE_BAUDS, TimedLink, _process_one, board_margin_db,
+    CANDIDATE_BAUDS, TargetTally, TimedLink, _process_one, board_margin_db,
     check_banner_baud, compare_tolerant, deadline_table, margin_class, parse_banner_ext,
     parse_time, phase_means, reference_lib_path, resolve_reference,
     row_deadline_cyc, score_targets, truth_targets)
@@ -267,7 +267,7 @@ def test_truth_range_wraps_like_the_signal():
 def test_target_found_with_its_cluster():
     targets = _targets(_truth(3.0, 1.625, 5.0))
     det = np.array([row(20, 18, 5, 40.0), row(21, 18, 6, 30.0)])
-    s = score_targets(det, targets, n_chirps=32,
+    s = score_targets(det, targets, n_chirps=32, cluster_bins=(2, 2),
                       margin_db=np.array([25.0, 4.0]))
     assert s["found"] == [True]
     assert s["az_err_deg"] == [0.0]
@@ -277,21 +277,21 @@ def test_target_found_with_its_cluster():
 
 def test_target_missed():
     targets = _targets(_truth(3.0, 1.625, 5.0))
-    s = score_targets(np.empty((0, 7)), targets, n_chirps=32)
+    s = score_targets(np.empty((0, 7)), targets, n_chirps=32, cluster_bins=(2, 2))
     assert s["found"] == [False]
     assert s["az_err_deg"] == [None] and s["peak_margin_db"] == [None]
 
 
 def test_target_outside_the_map_is_not_judged():
     targets = _targets(_truth(12.0, 0.0, 0.0))
-    s = score_targets(np.empty((0, 7)), targets, n_chirps=32)
+    s = score_targets(np.empty((0, 7)), targets, n_chirps=32, cluster_bins=(2, 2))
     assert s["found"] == [None]
 
 
 def test_detection_away_from_any_target_is_counted():
     targets = _targets(_truth(3.0, 1.625, 5.0))
     det = np.array([row(20, 18, 5, 40.0), row(50, 16, 0, 20.0)])
-    s = score_targets(det, targets, n_chirps=32)
+    s = score_targets(det, targets, n_chirps=32, cluster_bins=(2, 2))
     assert s["found"] == [True]
     assert (s["cluster"], s["away"]) == (1, 1)
 
@@ -299,15 +299,41 @@ def test_detection_away_from_any_target_is_counted():
 def test_angle_error_is_of_the_strongest_matching_detection():
     targets = _targets(_truth(3.0, 1.625, 5.0))
     det = np.array([row(20, 18, 9, 40.0), row(20, 19, 5, 30.0)])
-    s = score_targets(det, targets, n_chirps=32)
+    s = score_targets(det, targets, n_chirps=32, cluster_bins=(2, 2))
     assert s["found"] == [True] and s["az_err_deg"] == [4.0]
+
+
+def test_cluster_window_is_per_axis():
+    # the target is at range bin 20, Doppler bin 18
+    targets = _targets(_truth(3.0, 1.625, 5.0))
+    in_range = np.array([row(23, 18, 5, 20.0)])      # 3 range bins off
+    in_doppler = np.array([row(20, 21, 5, 20.0)])    # 3 Doppler bins off
+
+    def counts(det, window):
+        s = score_targets(det, targets, n_chirps=32, cluster_bins=window)
+        return s["cluster"], s["away"]
+
+    assert counts(in_range, (4, 2)) == (1, 0)
+    assert counts(in_range, (2, 2)) == (0, 1)
+    assert counts(in_doppler, (4, 2)) == (0, 1)
+    assert counts(in_doppler, (2, 2)) == (0, 1)
+    assert counts(in_doppler, (2, 4)) == (1, 0)
+
+
+def test_tally_states_its_cluster_window():
+    targets = _targets(_truth(3.0, 1.625, 5.0))
+    sc = score_targets(np.array([row(20, 18, 5, 40.0)]), targets,
+                       n_chirps=32, cluster_bins=(4, 2))
+    tally = TargetTally(cluster_bins=(4, 2))
+    tally.add(sc, sc)
+    assert "within 4 range and 2 Doppler bins" in "\n".join(tally.lines())
 
 
 def test_doppler_distance_wraps():
     # 12.6 m/s is bin 31.5; a detection in Doppler bin 0 is half a bin away
     targets = _targets(_truth(3.0, -13.0 + 0.8125 * 31.5, 0.0))
     det = np.array([row(20, 0, 0, 40.0)])
-    assert score_targets(det, targets, n_chirps=32)["found"] == [True]
+    assert score_targets(det, targets, n_chirps=32, cluster_bins=(2, 2))["found"] == [True]
 
 
 class _OneResultLink:
@@ -351,7 +377,7 @@ def _one_frame(fe_truth=None):
     frame = np.zeros((12, 32, 128), dtype=np.complex64)
     return _process_one(_OneResultLink(board), _FixedChain(same),
                         _NoQuantizer(), frame, 0, None, targets=targets,
-                        fe_truth=fe_truth)[4]
+                        fe_truth=fe_truth, cluster_bins=(4, 2))[4]
 
 
 def test_targets_scored_against_the_comparison_reference_by_default():

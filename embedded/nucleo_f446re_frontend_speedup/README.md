@@ -28,6 +28,11 @@ subscriber were made to report where the time goes. The board's `TIME` line give
 (`plane_max_cyc`). The subscriber times its own phases: the wait for the board's
 `RDY`, sending, waiting for the result, and computing the reference.
 
+Added later, for the sending time: the board stamps the cycle counter when each
+row is complete and reports the time from the first to the last row of the
+frame (`rx_span_cyc`) and the shortest and longest gap between two rows
+(`rx_gap_min_cyc`, `rx_gap_max_cyc`).
+
 For this the kernel's finish was split into separately callable stages
 (`c_frontend/src/onepass/onepass_stages_q15.c`), with the same arithmetic.
 
@@ -119,7 +124,8 @@ exact:
 | 921 600 | 918 367 (0.35 % slow) | default for `FFT=own` |
 | 1 500 000 | exact | not needed |
 | 1 875 000 | exact | default for `FFT=cmsis` |
-| 2 000 000 | 2 045 454 (2.3 % fast) | not run: the slowest row does not fit |
+| 1 956 522 | exact | tried: no gain, see "What limits the frame time now" |
+| 2 000 000 | 2 045 454 (2.3 % fast) | not run |
 
 The attempts at 1.875 Mbaud with the CMSIS-DSP FFT:
 
@@ -187,6 +193,7 @@ result parsing and the exact comparison. What it adds:
 |---|---|
 | Full timing | Reads every field of the board's `TIME` line. Each summary shows the finish stages and the slowest row. |
 | Row deadline | Shows the slowest row against the time one row takes on the wire at the rate in use, with the margin left, and warns when it is exceeded. |
+| Arrival of the rows | Shows what the board measured: the time from the first to the last row of a frame, and the shortest and longest gap between two rows, each beside the value the wire alone would give. |
 | Laptop phases | Times the wait for `RDY`, sending, the wait for the result and the reference, per frame. |
 | Banner fields | Shows the DoA arithmetic, the FFT and the UART rate the board reports, and refuses to start on a wrong rate. |
 | Fresh banner | Discards buffered output before reading the banner (see step 2). |
@@ -268,17 +275,38 @@ of 2 048 and the stack at 992 B of 4 096.
 
 ### What limits the frame time now
 
-Of the 1.78 s, sending takes 1.54 s.
+Of the 1.78 s, sending takes 1.54 s, and that is set by the ST-LINK, not by the
+UART rate or the board.
 
-- **The slowest row.** At 1.875 Mbaud it takes 481 506 cycles of the 493 440
-  available, a margin of 2.5 %. A missed deadline is reported by the board as a
-  row error; it cannot produce a wrong result. A faster rate needs a shorter
-  slowest row, for example by spreading a plane's Doppler FFTs over the rows of
-  the next plane.
-- **The path through the ST-LINK.** The rows need 1.05 s on the wire at this
-  rate, but sending takes 1.54 s. Where the other 0.5 s goes has not been
-  measured.
+- **The ST-LINK passes on 128 bytes per millisecond.** At 1.875 Mbaud the rows
+  need 1.05 s on the wire, but sending takes 1.54 s. Two measurements located
+  the other 0.5 s:
+
+  | Measurement | Result |
+  |---|---|
+  | The whole frame in one write instead of 385 | the write still takes 1.542 s: the laptop's writing is not the cause |
+  | Arrival of the rows on the board, 1.875 Mbaud | first to last row 1.53 s; gaps between rows 3.97 to 6.52 ms, where the wire alone gives 2.74 ms |
+  | The same at 1.9565 Mbaud | write 1.542 s, gaps 3.97 to 4.13 ms: no change |
+
+  A row of 514 bytes every 4 ms is 128 bytes per millisecond, which is two
+  64-byte USB packets per 1 ms USB frame. That reading is an inference from
+  these numbers, not taken from ST-LINK documentation, and rates above
+  1.9565 Mbaud were not tried. Below that ceiling the ST-LINK also loses time:
+  at 921600 baud sending took 2.48 s for 2.14 s on the wire.
+- **The slowest row is not the limit.** At 1.875 Mbaud it takes about 481 000
+  cycles (2.68 ms). That is 2.5 % less than the time a row takes on the wire,
+  but the rows really arrive at least 3.97 ms apart, so about a third of the
+  time between two rows is free. At 1.9565 Mbaud the slowest row is longer than
+  the wire time of a row, the subscriber prints its warning, and the run still
+  had no board error and matched in 10 of 10 frames. A missed deadline is
+  reported by the board as a row error; it cannot produce a wrong result.
 - **The finish** is 101 ms, of which the CFAR cell stage is 89 ms.
+
+So a faster UART rate gains nothing here, and neither does a shorter slowest
+row (for example by spreading a plane's Doppler FFTs over the rows of the next
+plane). The board's own work is about 0.18 s per frame. Sending faster than
+128 bytes per millisecond needs a path that does not go through the ST-LINK,
+for example a separate USB-to-serial adapter on another UART of the processor.
 
 ## Known properties of the detections
 

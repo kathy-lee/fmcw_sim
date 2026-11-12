@@ -101,6 +101,46 @@ def test_summary_lines_layout():
     ]
 
 
+ARRIVAL_FIELDS = (" rx_span_cyc 277200000 rx_gap_min_cyc 702000 "
+                  "rx_gap_max_cyc 738000")
+
+
+def test_arrival_fields_parsed():
+    t = parse_time([TIME_LINE + ARRIVAL_FIELDS])
+    assert t["rx_span_cyc"] == 277200000
+    assert (t["rx_gap_min_cyc"], t["rx_gap_max_cyc"]) == (702000, 738000)
+    assert t["emit_cyc"] == 40000000
+
+
+def test_summary_shows_how_the_rows_arrived():
+    # 384 rows: 383 gaps of 493440 cycles would be 1.05 s on the wire alone
+    lines = summary_lines(SUMMARY_COUNTS,
+                          [parse_time([TIME_LINE + ARRIVAL_FIELDS])],
+                          SUMMARY_PHASES, baud=1875000, n_rows=384)
+    assert lines[7] == (
+        "  arrival       first to last row 1.54 s (wire alone 1.05 s) | "
+        "gap between rows 3.90 to 4.10 ms (wire alone 2.74 ms)")
+    assert lines[8].startswith("  memory")
+
+
+def test_arrival_over_several_frames():
+    a = parse_time([TIME_LINE + ARRIVAL_FIELDS])
+    b = dict(a, rx_span_cyc=273600000, rx_gap_min_cyc=540000,
+             rx_gap_max_cyc=900000)
+    lines = summary_lines(SUMMARY_COUNTS, [a, b], SUMMARY_PHASES * 2,
+                          baud=1875000, n_rows=384)
+    # the mean span, the shortest and the longest gap of the frames
+    assert lines[7] == (
+        "  arrival       first to last row 1.53 s (wire alone 1.05 s) | "
+        "gap between rows 3.00 to 5.00 ms (wire alone 2.74 ms)")
+
+
+def test_summary_without_arrival_fields_has_no_arrival_line():
+    lines = summary_lines(SUMMARY_COUNTS, [parse_time([TIME_LINE])],
+                          SUMMARY_PHASES, baud=1875000, n_rows=384)
+    assert not any(ln.startswith("  arrival") for ln in lines)
+
+
 def test_summary_without_stage_times_leaves_those_lines_out():
     # a board whose TIME line has only the two totals
     lines = summary_lines(SUMMARY_COUNTS, [{}], SUMMARY_PHASES, baud=921600)

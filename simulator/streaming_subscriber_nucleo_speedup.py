@@ -5,8 +5,10 @@
 Differences from streaming_subscriber_nucleo.py:
 
 1. Full timing. The board's TIME line is read in full, so the summaries
-   show each finish stage (power, cells, detection, DoA, printing) and the
-   slowest single row, plane_max_cyc.
+   show each finish stage (power, cells, detection, DoA, printing), the
+   slowest single row, plane_max_cyc, and how the rows arrived at the
+   board: the time from the first to the last row and the gaps between
+   rows, beside what a wire without pauses would give.
 2. Row deadline. With ping-pong reception a row must be processed before
    the next one has arrived. The summaries show plane_max_cyc against
    the time one row takes on the wire at the baud in use, with the margin,
@@ -411,6 +413,28 @@ def _process_one(link, fe, op, frame, frame_id, t_pub, row_pace: float = 0.0,
     return line, res, times, phases, outcome
 
 
+ARRIVAL = ("rx_span_cyc", "rx_gap_min_cyc", "rx_gap_max_cyc")
+
+
+def arrival_text(time_rows: list[dict[str, int]], baud: int, clk: int,
+                 n_rows: int | None) -> str | None:
+    """How the rows of a frame arrived at the board, beside what a wire
+    without pauses would give: the time from the first row to the last
+    (the mean over the frames) and the shortest and longest gap between
+    two rows. None when the board did not report it."""
+    if not n_rows or not time_rows or \
+            not all(k in t for t in time_rows for k in ARRIVAL):
+        return None
+    row = row_deadline_cyc(baud, clk)
+    span = sum(t["rx_span_cyc"] for t in time_rows) / len(time_rows)
+    gap_min = min(t["rx_gap_min_cyc"] for t in time_rows)
+    gap_max = max(t["rx_gap_max_cyc"] for t in time_rows)
+    return (f"first to last row {span / clk:.2f} s (wire alone "
+            f"{(n_rows - 1) * row / clk:.2f} s) | gap between rows "
+            f"{gap_min / clk * 1e3:.2f} to {gap_max / clk * 1e3:.2f} ms "
+            f"(wire alone {row / clk * 1e3:.2f} ms)")
+
+
 def _labelled(label: str, text: str) -> str:
     return f"  {label:<{LABEL_W}}  {text}"
 
@@ -421,13 +445,13 @@ def _heading(text: str) -> str:
 
 def summary_lines(counts: dict, time_rows: list[dict[str, int]],
                   phase_rows: list[dict[str, float]], baud: int,
-                  clk: int = CLK_HZ) -> list[str]:
+                  clk: int = CLK_HZ, n_rows: int | None = None) -> list[str]:
     """One periodic summary. counts holds the session totals (processed,
     dropped, board_errors, mismatches, flips), the means since the last
     summary (latency_s, row_cyc, finish_cyc) and the session's largest
     heap and stack. time_rows and phase_rows are the frames since the
     last summary; lines whose values the board did not report are left
-    out."""
+    out. n_rows, the rows of one frame, is needed for the arrival line."""
     lines = [
         _heading(f"{counts['processed']} frames processed"),
         _labelled("frames",
@@ -454,6 +478,9 @@ def summary_lines(counts: dict, time_rows: list[dict[str, int]],
     if plane_max:
         lines.append(_labelled("slowest row",
                                slowest_row_text(plane_max, baud, clk)))
+    arrival = arrival_text(time_rows, baud, clk, n_rows)
+    if arrival:
+        lines.append(_labelled("arrival", arrival))
     lines.append(_labelled(
         "memory", f"heap {counts['heap']} B | stack {counts['stack']} B  "
                   f"(largest so far)"))
@@ -570,7 +597,7 @@ def main() -> None:
                  "row_cyc": res.row_cyc, "finish_cyc": res.finish_cyc,
                  "heap": res.heap, "stack": res.stack_peak},
                 [times] if times else [], [phases], args.baud,
-                b.get("clk", CLK_HZ))))
+                b.get("clk", CLK_HZ), want[0] * want[1])))
             print("\n".join(session_lines(
                 ref_fft, 1, int(outcome["verdict"] == "MISMATCH"),
                 outcome["flips"], 0, times.get("plane_max_cyc", 0),
@@ -642,7 +669,8 @@ def main() -> None:
                          "latency_s": lat_sum / n, "row_cyc": row_sum / n,
                          "finish_cyc": fin_sum / n,
                          "heap": heap_max, "stack": stack_max},
-                        time_rows, phase_rows, args.baud, clk):
+                        time_rows, phase_rows, args.baud, clk,
+                        want[0] * want[1]):
                     print(ln, flush=True)
                 lat_sum = row_sum = fin_sum = 0.0
                 time_rows, phase_rows = [], []

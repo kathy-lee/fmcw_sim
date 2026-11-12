@@ -161,10 +161,17 @@ static void drain_rx(void)
  * interrupt context and polled from the main loop — single writer,
  * single reader, no further synchronization needed. */
 static volatile int rx_done, rx_err;
+/* The cycle count at the moment the last byte of a row arrived. The main
+ * loop reads it before it arms the reception of the row after next, so it
+ * always belongs to the row rx_done announces. */
+static volatile uint32_t rx_stamp;
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-    if (huart == &huart2) rx_done = 1;
+    if (huart == &huart2) {
+        rx_stamp = DWT->CYCCNT;
+        rx_done = 1;
+    }
 }
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
@@ -269,6 +276,11 @@ void frontend_run(void)
 
     plan.sat = 0;               /* rows saturate too, not just the finish */
     uint32_t row_cyc = 0, plane_max_cyc = 0;
+    /* How the rows arrived: from the first row's last byte to the last
+     * row's, and the shortest and longest time between two rows. On a
+     * wire without pauses every gap is one row's wire time. */
+    uint32_t rx_first = 0, rx_prev = 0;
+    uint32_t rx_gap_min = 0xFFFFFFFFu, rx_gap_max = 0;
     int cur = 0;
     rx_err = 0;
     rx_arm(rx_buf[0]);
@@ -281,6 +293,15 @@ void frontend_run(void)
                 drain_rx();
                 return;
             }
+            uint32_t stamp = rx_stamp;
+            if (v == 0 && c == 0) {
+                rx_first = stamp;
+            } else {
+                uint32_t gap = stamp - rx_prev;
+                if (gap < rx_gap_min) rx_gap_min = gap;
+                if (gap > rx_gap_max) rx_gap_max = gap;
+            }
+            rx_prev = stamp;
             /* the overlap: the next row starts landing in the other
              * buffer before this one is checksummed and processed */
             if (v != FRONTEND_V - 1 || c != FRONTEND_C - 1)
@@ -332,12 +353,15 @@ void frontend_run(void)
         emit_cyc += DWT->CYCCNT - t0;
     }
     printf("TIME row_cyc %lu finish_cyc %lu plane_max_cyc %lu power_cyc %lu "
-           "cells_cyc %lu det_cyc %lu doa_cyc %lu emit_cyc %lu\n",
+           "cells_cyc %lu det_cyc %lu doa_cyc %lu emit_cyc %lu "
+           "rx_span_cyc %lu rx_gap_min_cyc %lu rx_gap_max_cyc %lu\n",
            (unsigned long)row_cyc,
            (unsigned long)(power_cyc + cells_cyc + det_cyc),
            (unsigned long)plane_max_cyc, (unsigned long)power_cyc,
            (unsigned long)cells_cyc, (unsigned long)(det_cyc - doa_cyc),
-           (unsigned long)doa_cyc, (unsigned long)emit_cyc);
+           (unsigned long)doa_cyc, (unsigned long)emit_cyc,
+           (unsigned long)(rx_prev - rx_first),
+           (unsigned long)rx_gap_min, (unsigned long)rx_gap_max);
     report_mem();
     printf("SAT %ld\n", (long)plan.sat);
     printf("END %lu\n", (unsigned long)frame_id);

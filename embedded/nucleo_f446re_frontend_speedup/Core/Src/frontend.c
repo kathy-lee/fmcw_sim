@@ -117,6 +117,19 @@ static void print_config(void)
     printf("# flash_acr 0x%08lx\n", (unsigned long)acr);
 }
 
+/* The UART rate as the hardware has it: the bus clock over the divider in
+ * the rate register, whose low bits are sixteenths of the divider with 16
+ * samples per bit and eighths with 8. A requested rate the divider cannot
+ * produce shows here as the rate actually running. */
+static unsigned long uart_baud(void)
+{
+    uint32_t brr = USART2->BRR;
+    uint32_t div = (USART2->CR1 & USART_CR1_OVER8)
+                       ? 8U * (brr >> 4) + (brr & 7U)
+                       : brr;
+    return div ? (unsigned long)(HAL_RCC_GetPCLK1Freq() / div) : 0UL;
+}
+
 static void banner(void)
 {
     printf("# onepass-frontend 1\n");
@@ -129,6 +142,7 @@ static void banner(void)
     printf("# doa 181 %d\n", FRONTEND_PARAMS.doa_n_sources);
     printf("# doa_arith " DOA_ARITH "\n");
     printf("# fft_impl " FFT_IMPL "\n");
+    printf("# baud %lu\n", uart_baud());
     printf("# maxdet %d\n", ONEPASS_MAX_DET);
     if (!plan_ok) printf("# ERROR plan init failed\n");
     printf("RDY\n");

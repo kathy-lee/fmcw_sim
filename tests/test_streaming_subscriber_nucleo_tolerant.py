@@ -6,7 +6,7 @@ import pytest
 from simulator.streaming_subscriber_nucleo import BoardResult
 from simulator.streaming_subscriber_nucleo_tolerant import (
     CANDIDATE_BAUDS, TimedLink, _process_one, board_margin_db,
-    compare_tolerant, deadline_table, margin_class, parse_banner_ext,
+    check_banner_baud, compare_tolerant, deadline_table, margin_class, parse_banner_ext,
     parse_time, phase_means, reference_lib_path, resolve_reference,
     row_deadline_cyc, score_targets, truth_targets)
 
@@ -102,6 +102,18 @@ def test_banner_doa_arith_parsed():
 
 def test_banner_fft_impl_parsed():
     assert parse_banner_ext(["# fft_impl cmsis"])["fft_impl"] == "cmsis"
+
+
+def test_banner_baud_parsed():
+    assert parse_banner_ext(["# baud 1875000"])["baud"] == 1875000
+    assert "baud" not in parse_banner_ext(["# dims 12 32 128"])
+
+
+def test_banner_baud_mismatch_refused():
+    # 2 Mbaud cannot be exact on the board: it runs 2.3 % fast
+    assert check_banner_baud({"baud": 2045454}, 2000000) is None
+    assert "baud" in check_banner_baud({"baud": 921600}, 2000000)
+    assert "baud" in check_banner_baud({}, 2000000)
 
 
 def row(rng, dop, az, snr):

@@ -7,7 +7,6 @@
 
 PORT   ?= /dev/ttyACM0
 PYTHON ?= python
-BAUD    = 921600
 KERNEL  = ../../c_frontend
 CFG    ?= ../../data/c_export_stream128/params.cfg
 # The DoA scan: f64 is the kernel's double-precision scan, which matches
@@ -16,8 +15,21 @@ CFG    ?= ../../data/c_export_stream128/params.cfg
 DOA    ?= f32
 # The FFT: own is the kernel's fft_q15.c, which matches the laptop to the
 # last bit; cmsis is CMSIS-DSP's arm_cfft_q15 behind the same interface,
-# faster but only close to the laptop.
-FFT    ?= own
+# faster, and matched by the laptop's libfmcw_cmsis.so.
+FFT    ?= cmsis
+# The UART rate and its oversampling (0: 16 samples per bit, 1: 8). The
+# board derives the rate from its 45 MHz bus clock, so only some rates are
+# exact; the banner reports the rate actually set. The default is the
+# fastest rate at which the build's slowest row still ends before the
+# next row has arrived: 1875000, which is exact, for the CMSIS-DSP FFT,
+# and 921600 for the kernel's own.
+ifeq ($(FFT),cmsis)
+BAUD   ?= 1875000
+OVER8  ?= 1
+else
+BAUD   ?= 921600
+OVER8  ?= 0
+endif
 CMSIS_DSP = ../third_party/CMSIS-DSP
 
 ifeq ($(filter $(DOA),f64 f32),)
@@ -25,6 +37,9 @@ $(error DOA must be f64 or f32, got '$(DOA)')
 endif
 ifeq ($(filter $(FFT),own cmsis),)
 $(error FFT must be own or cmsis, got '$(FFT)')
+endif
+ifeq ($(filter $(OVER8),0 1),)
+$(error OVER8 must be 0 or 1, got '$(OVER8)')
 endif
 
 SYNC_SRC = $(KERNEL)/src/fft_q15.c $(KERNEL)/src/rd_q15.c \
@@ -48,7 +63,7 @@ SYNC_HDR = $(KERNEL)/include/fmcw.h $(KERNEL)/include/fmcw_q15.h \
 # target would shadow it in the object rules' order-only prerequisite and
 # make would recurse forever. Every variable that changes the compiled
 # code is part of the name, so one variant never links another's objects.
-override BUILD_DIR = build/$(FFT)-$(DOA)
+override BUILD_DIR = build/$(FFT)-$(DOA)-$(BAUD)-o$(OVER8)
 
 include Makefile.cubemx
 
@@ -78,6 +93,7 @@ C_INCLUDES += -I.
 ifeq ($(DOA),f32)
 C_DEFS     += -DFRONTEND_DOA_F32=1
 endif
+C_DEFS     += -DFRONTEND_BAUD=$(BAUD) -DFRONTEND_OVER8=$(OVER8)
 OPT        = -O2
 LDFLAGS   += -u _printf_float
 
@@ -89,7 +105,7 @@ $(ELF): $(OBJECTS)
 .PHONY: help sync build flash map distclean
 
 help:
-	@echo "targets: sync build flash map distclean   (CFG=path/to/params.cfg DOA=f64|f32 FFT=own|cmsis)"
+	@echo "targets: sync build flash map distclean   (CFG=path/to/params.cfg DOA=f64|f32 FFT=own|cmsis BAUD=rate OVER8=0|1)"
 
 sync:
 	@mkdir -p $(BUILD_DIR)

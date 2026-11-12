@@ -197,7 +197,19 @@ static void MX_USART2_UART_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN USART2_Init 2 */
-
+  /* The rate and oversampling come from the build (BAUD, OVER8); the
+   * generated lines above keep the project file's 921600. */
+#if defined(FRONTEND_BAUD) && defined(FRONTEND_OVER8)
+#if FRONTEND_BAUD != 921600 || FRONTEND_OVER8 != 0
+  huart2.Init.BaudRate = FRONTEND_BAUD;
+  huart2.Init.OverSampling =
+      FRONTEND_OVER8 ? UART_OVERSAMPLING_8 : UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+#endif
+#endif
   /* USER CODE END USART2_Init 2 */
 
 }

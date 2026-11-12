@@ -18,6 +18,10 @@ Differences from streaming_subscriber_nucleo.py:
 4. DoA arithmetic. The banner says whether the board runs the double- or
    the single-precision DoA scan, and the accepted-banner line shows it.
 
+   The banner also gives the UART rate the board actually runs. The
+   subscriber refuses to start when it differs from --baud by more than
+   3 %.
+
 5. Reference with the board's FFT. The banner says which FFT the board
    runs. For the CMSIS-DSP FFT the laptop reference is the same batch
    chain built on that FFT (c_frontend/libfmcw_cmsis.so), so the exact
@@ -62,6 +66,7 @@ CLK_HZ = 180_000_000
 ROW_WIRE_BYTES = 514            # 512 B of samples plus the 2-byte checksum
 BITS_PER_BYTE = 10              # start bit, 8 data bits, stop bit
 CANDIDATE_BAUDS = (921600, 1500000, 1875000, 2000000)
+BAUD_TOL = 0.03                 # board rate against the rate in use
 STAGES = ("power_cyc", "cells_cyc", "det_cyc", "doa_cyc", "emit_cyc")
 PHASES = ("ready_s", "send_s", "read_s", "ref_s")
 
@@ -96,7 +101,23 @@ def parse_banner_ext(lines: list[str]) -> dict:
             out["doa_arith"] = t[2]
         elif ln.startswith("# fft_impl") and len(t) >= 3:
             out["fft_impl"] = t[2]
+        elif ln.startswith("# baud") and len(t) >= 3:
+            out["baud"] = int(t[2])
     return out
+
+
+def check_banner_baud(banner: dict, baud: int) -> str | None:
+    """None when the board's UART rate is within BAUD_TOL of baud, else
+    the reason to refuse. The board cannot produce every rate exactly, so
+    a small difference is expected; a large one means the firmware was
+    built for another rate."""
+    got = banner.get("baud")
+    if got is None:
+        return "the board reports no baud rate (firmware without # baud)"
+    if abs(got - baud) > BAUD_TOL * baud:
+        return (f"the board's baud rate is {got}, the link is opened "
+                f"at {baud}")
+    return None
 
 
 def board_margin_db(result: BoardResult) -> np.ndarray:
@@ -559,9 +580,14 @@ def main() -> None:
         print(f"refusing: board {b} vs params dims {want} "
               f"alpha {cfg['cfar_alpha']}")
         raise SystemExit(1)
+    baud_err = check_banner_baud(b, args.baud)
+    if baud_err:
+        print(f"refusing: {baud_err}")
+        raise SystemExit(1)
     print(f"banner: dims {b['dims']} alpha {b['alpha']} "
           f"doa {b.get('doa_arith', 'not reported')} "
-          f"fft {b.get('fft_impl', 'not reported')}  [accepted]")
+          f"fft {b.get('fft_impl', 'not reported')} "
+          f"baud {b['baud']}  [accepted]")
     compare = args.compare
     ref_fft = resolve_reference(args.reference, b)
     lib_path = reference_lib_path(ref_fft)
@@ -616,6 +642,7 @@ def main() -> None:
           f"at {args.baud} baud")
 
     processed = mismatches = close_total = flips_total = drops = 0
+    board_errors = 0                    # frames the board answered with ERR
     board_only_total = ref_only_total = ref_only_frame_max = 0
     snr_diff_max = board_only_margin_max = 0.0
     failed_frames: dict[str, int] = {}     # rule -> MISMATCH frames
@@ -648,6 +675,7 @@ def main() -> None:
                 targets_of(header.get("ground_truth", [])), fe_truth)
             print(line, flush=True)
             if res.err:
+                board_errors += 1
                 continue
             processed += 1
             tally.add(outcome["score_board"], outcome["score_ref"])
@@ -679,6 +707,7 @@ def main() -> None:
             if processed % args.summary_every == 0:
                 n = args.summary_every
                 print(f"-- {processed} processed, {drops} dropped, "
+                      f"{board_errors} board errors, "
                       f"{mismatches} mismatches, {close_total} close, "
                       f"{flips_total} tie flips | "
                       f"latency {lat_sum / n:.2f} s | "
@@ -695,6 +724,8 @@ def main() -> None:
         print("\nbridge stopped.")
     finally:
         link.close()
+    print(f"board errors: {board_errors} frames (not processed, "
+          f"not compared)")
     print(f"comparison {compare}: "
           f"{processed - close_total - mismatches} MATCH, "
           f"{close_total} CLOSE, {mismatches} MISMATCH | "

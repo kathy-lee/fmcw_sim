@@ -12,7 +12,7 @@ frame's detections are still checked bit for bit against a laptop reference.
 | Certified build, as copied | 5.64 s | |
 | Shorter listen for the next frame | 3.78 s | 1.9 s of waiting for the board's ready signal |
 | Single-precision DoA scan | 2.73 s | 1.0 s of software floating point |
-| CMSIS-DSP FFT | 2.73 s | nothing yet: it makes the next step possible |
+| CMSIS-DSP FFT | 2.73 s | nothing by itself: the rows are processed while the next row arrives, so a faster row does not shorten the frame. It makes the next step possible |
 | UART at 1.875 Mbaud | 1.78 s | 0.94 s of transmission |
 
 The wire protocol, the memory layout and the kernels other than the FFT and the
@@ -20,10 +20,10 @@ DoA scan are those of the certified build; its README describes them.
 
 ## What was changed, and why
 
-### 1. Time every part of a frame
+### 1. Measure where the time goes
 
-Before changing anything, the board and the subscriber were made to report where
-the time goes. The board's `TIME` line gives the cycles of each finish stage
+This step changes no speed. Before changing anything, the board and the
+subscriber were made to report where the time goes. The board's `TIME` line gives the cycles of each finish stage
 (`power`, `cells`, `det`, `doa`, `emit`) and of the slowest single row
 (`plane_max_cyc`). The subscriber times its own phases: the wait for the board's
 `RDY`, sending, waiting for the result, and computing the reference.
@@ -169,7 +169,7 @@ Then, from the repository root, in two terminals:
 ```bash
 python3 -m simulator.streaming_publisher \
     --scenario scenarios/scenario_mimo_stream_128.json
-python3 -m simulator.streaming_subscriber_nucleo_tolerant \
+python3 -m simulator.streaming_subscriber_nucleo_speedup \
     --params data/c_export_stream128/params.cfg \
     --baud 1875000 --max-frames 110
 ```
@@ -178,7 +178,7 @@ python3 -m simulator.streaming_subscriber_nucleo_tolerant \
 
 ## The subscriber
 
-`simulator/streaming_subscriber_nucleo_tolerant.py` is used with this build. The
+`simulator/streaming_subscriber_nucleo_speedup.py` is used with this build. The
 certified `simulator/streaming_subscriber_nucleo.py` is unchanged, and the new
 script imports from it the serial conversation, the frame and row packing, the
 result parsing and the exact comparison. What it adds:
@@ -191,7 +191,6 @@ result parsing and the exact comparison. What it adds:
 | Banner fields | Shows the DoA arithmetic, the FFT and the UART rate the board reports, and refuses to start on a wrong rate. |
 | Fresh banner | Discards buffered output before reading the banner (see step 2). |
 | Reference by FFT | `--reference auto` (default) compares with the batch chain on the FFT the board reports: `libfmcw.so` or `libfmcw_cmsis.so`. `own` and `cmsis` force one. |
-| Tolerant comparison | `--compare tolerant` gives MATCH, CLOSE or MISMATCH with stated limits, for a reference whose FFT differs from the board's. The default is `exact`. |
 | True targets | Judges the detections against the true targets in each published frame (see below). |
 | Board errors | Counts the frames the board answers with `ERR`. They are not compared and were in no total before. |
 
@@ -303,7 +302,7 @@ board, with either FFT.
 ```bash
 make -C c_frontend test PYTHON=python3
 python3 -m pytest tests/test_c_frontend_cmsis.py \
-    tests/test_streaming_subscriber_nucleo_tolerant.py \
+    tests/test_streaming_subscriber_nucleo_speedup.py \
     tests/test_frontend_speedup_params.py -q
 ```
 

@@ -1,14 +1,14 @@
-"""Timing, deadline and link helpers of the tolerant Nucleo subscriber:
+"""Timing, deadline and link helpers of the speed-up Nucleo subscriber:
 pure functions and a serial double, no board."""
 import numpy as np
 import pytest
 
 from simulator.streaming_subscriber_nucleo import BoardResult
-from simulator.streaming_subscriber_nucleo_tolerant import (
-    CANDIDATE_BAUDS, TargetTally, TimedLink, _process_one, board_margin_db,
-    check_banner_baud, compare_tolerant, deadline_table, margin_class, parse_banner_ext,
-    parse_time, phase_means, reference_lib_path, resolve_reference,
-    row_deadline_cyc, score_targets, truth_targets)
+from simulator.streaming_subscriber_nucleo_speedup import (
+    TargetTally, TimedLink, _process_one, board_margin_db, check_banner_baud,
+    parse_banner_ext, parse_time, phase_means, reference_lib_path,
+    resolve_reference, row_deadline_cyc, score_targets, session_lines,
+    slowest_row_text, summary_lines, truth_targets)
 
 TIME_LINE = ("TIME row_cyc 25600000 finish_cyc 900000000 plane_max_cyc 410000 "
              "power_cyc 3000000 cells_cyc 2000000 det_cyc 5000000 "
@@ -50,16 +50,53 @@ def test_row_deadline_cyc():
     assert row_deadline_cyc(2000000) == 462600
 
 
-def test_deadline_table_marks_misses():
-    lines = deadline_table(500000)
-    assert len(lines) == len(CANDIDATE_BAUDS)
-    assert lines[0].split()[-1] == "ok"       # 921600: deadline 1003906
-    assert lines[2].split()[-1] == "MISS"     # 1875000: deadline 493440
+def test_slowest_row_text_shows_the_margin():
+    assert slowest_row_text(481444, 1875000) == \
+        "481444 of 493440 cycles at 1875000 baud (margin 2.4 %)"
 
 
-def test_deadline_at_the_limit_is_ok():
-    assert deadline_table(1003906, bauds=(921600,))[0].split()[-1] == "ok"
-    assert deadline_table(1003907, bauds=(921600,))[0].split()[-1] == "MISS"
+def test_slowest_row_at_the_limit_is_no_warning():
+    assert slowest_row_text(1003906, 921600) == \
+        "1003906 of 1003906 cycles at 921600 baud (margin 0.0 %)"
+
+
+def test_slowest_row_over_the_deadline_warns():
+    assert slowest_row_text(500000, 1875000) == \
+        "WARNING 500000 of 493440 cycles at 1875000 baud (over by 1.3 %)"
+
+
+SUMMARY_COUNTS = {"processed": 10, "dropped": 307, "board_errors": 0,
+                  "mismatches": 0, "flips": 0, "latency_s": 1.78,
+                  "row_cyc": 13.7e6, "finish_cyc": 17.9e6,
+                  "heap": 336, "stack": 912}
+SUMMARY_PHASES = [{"ready_s": 0.09, "send_s": 1.55, "read_s": 0.11,
+                   "ref_s": 0.01}]
+
+
+def test_summary_lines_layout():
+    lines = summary_lines(SUMMARY_COUNTS, [parse_time([TIME_LINE])],
+                          SUMMARY_PHASES, baud=1875000)
+    assert lines[0].startswith("== 10 frames processed =")
+    assert lines[1:] == [
+        "  frames        dropped 307 | board errors 0 | mismatches 0 | "
+        "tie flips 0",
+        "  latency       1.78 s per frame",
+        "  laptop        ready 0.09 s | send 1.55 s | read 0.11 s | "
+        "reference 0.01 s",
+        "  board         rows 13.7 Mcyc (76 ms) | finish 17.9 Mcyc (99 ms)",
+        "  finish        power 3.00 | cells 2.00 | det 5.00 | doa 890.00 | "
+        "emit 40.00  (Mcyc)",
+        "  slowest row   410000 of 493440 cycles at 1875000 baud "
+        "(margin 16.9 %)",
+        "  memory        heap 336 B | stack 912 B  (largest so far)",
+    ]
+
+
+def test_summary_without_stage_times_leaves_those_lines_out():
+    # a board whose TIME line has only the two totals
+    lines = summary_lines(SUMMARY_COUNTS, [{}], SUMMARY_PHASES, baud=921600)
+    labels = [ln.split()[0] for ln in lines[1:]]
+    assert labels == ["frames", "latency", "laptop", "board", "memory"]
 
 
 def test_phase_means():
@@ -121,73 +158,6 @@ def row(rng, dop, az, snr):
     return [rng, dop, az, 1.5, -0.5, 2.0, snr]
 
 
-def _ref():
-    return np.array([row(10, 3, -20, 30.0), row(25, 7, 5, 25.0),
-                     row(40, 12, 31, 18.0)], dtype=np.float64)
-
-
-def _margins(n):
-    return np.full(n, 10.0)
-
-
-def test_tolerant_identical_is_match():
-    verdict, _, counts = compare_tolerant(_ref(), _ref(), _margins(3))
-    assert verdict == "MATCH" and counts["flips"] == 0
-    empty = np.empty((0, 7))
-    assert compare_tolerant(empty, empty, np.empty(0))[0] == "MATCH"
-
-
-def test_tolerant_small_snr_difference_is_close():
-    board = _ref()
-    board[1, 6] += 0.05
-    verdict, _, counts = compare_tolerant(board, _ref(), _margins(3))
-    assert verdict == "CLOSE"
-    assert counts["max_snr_diff_db"] == pytest.approx(0.05, abs=1e-9)
-
-
-def test_tolerant_large_snr_difference_is_mismatch():
-    board = _ref()
-    board[1, 6] += 2.0
-    assert compare_tolerant(board, _ref(), _margins(3))[0] == "MISMATCH"
-
-
-def test_tolerant_az_two_steps_is_mismatch():
-    board = _ref()
-    board[0, 2] += 2
-    board[0, 6] += 0.05          # so the exact comparison does not pass
-    assert compare_tolerant(board, _ref(), _margins(3))[0] == "MISMATCH"
-    board = _ref()
-    board[0, 2] += 1
-    board[0, 6] += 0.05
-    verdict, _, counts = compare_tolerant(board, _ref(), _margins(3))
-    assert verdict == "CLOSE" and counts["flips"] == 1
-
-
-def _with_extra_board_row():
-    return np.vstack([_ref(), [row(50, 20, 0, 12.0)]])
-
-
-def test_tolerant_marginal_extra_board_detection_is_close():
-    margins = np.array([10.0, 10.0, 10.0, 0.1])
-    verdict, _, counts = compare_tolerant(_with_extra_board_row(), _ref(),
-                                          margins)
-    assert verdict == "CLOSE" and counts["board_only"] == 1
-    assert counts["max_board_only_margin_db"] == pytest.approx(0.1)
-
-
-def test_tolerant_strong_extra_board_detection_is_mismatch():
-    margins = np.array([10.0, 10.0, 10.0, 6.0])
-    assert compare_tolerant(_with_extra_board_row(), _ref(),
-                            margins)[0] == "MISMATCH"
-
-
-def test_tolerant_ref_only_limit():
-    verdict, _, counts = compare_tolerant(_ref()[:2], _ref(), _margins(2))
-    assert verdict == "CLOSE" and counts["ref_only"] == 1
-    verdict, _, counts = compare_tolerant(_ref()[:1], _ref(), _margins(1))
-    assert verdict == "MISMATCH" and counts["ref_only"] == 2
-
-
 def test_board_margin_db():
     res = BoardResult(dets=[(10, 3, 70, 1.5, -0.5, 2.0, 30.0, 200, 100.0)])
     assert board_margin_db(res) == pytest.approx([3.0103], abs=1e-4)
@@ -213,24 +183,6 @@ def test_read_banner_returns_lines_up_to_rdy():
     board = FakeBoard(["# dims 12 32 128", "# fft_impl own", "RDY", "DET 0 0"])
     lines = _fake_link(board).read_banner(settle_s=0.0)
     assert lines == ["# dims 12 32 128", "# fft_impl own"]
-
-
-def test_margin_class():
-    assert margin_class(0.5) == "0-3 dB"
-    assert margin_class(3.0) == "3-6 dB"
-    assert margin_class(19.9) == "10-20 dB"
-    assert margin_class(45.0) == ">=20 dB"
-
-
-def test_tolerant_reports_snr_difference_by_margin():
-    board = _ref()
-    board[1, 6] += 0.3
-    margins = np.array([25.0, 2.0, 25.0])
-    _, _, counts = compare_tolerant(board, _ref(), margins)
-    by = counts["snr_diff_by_margin"]
-    assert by["0-3 dB"][0] == 1
-    assert by["0-3 dB"][1] == pytest.approx(0.3, abs=1e-9)
-    assert by[">=20 dB"] == [2, 0.0]
 
 
 # ---- judging detections against the frame's true targets ----
@@ -320,13 +272,76 @@ def test_cluster_window_is_per_axis():
     assert counts(in_doppler, (2, 4)) == (1, 0)
 
 
-def test_tally_states_its_cluster_window():
+def _tally():
     targets = _targets(_truth(3.0, 1.625, 5.0))
-    sc = score_targets(np.array([row(20, 18, 5, 40.0)]), targets,
-                       n_chirps=32, cluster_bins=(4, 2))
-    tally = TargetTally(cluster_bins=(4, 2))
-    tally.add(sc, sc)
-    assert "within 4 range and 2 Doppler bins" in "\n".join(tally.lines())
+    board = score_targets(
+        np.array([row(20, 18, 5, 40.0), row(50, 16, 0, 20.0)]), targets,
+        n_chirps=32, margin_db=np.array([25.0, 4.0]), cluster_bins=(4, 2))
+    ref = score_targets(np.array([row(20, 18, 6, 40.0)]), targets,
+                        n_chirps=32, cluster_bins=(4, 2))
+    tally = TargetTally("own-FFT", (4, 2))
+    tally.add(board, ref)
+    return tally
+
+
+def test_tally_states_its_cluster_window():
+    assert "within 4 range and 2 Doppler bins" in "\n".join(_tally().lines())
+
+
+def test_tally_rows():
+    lines = _tally().lines()
+    assert ("    target 0 |      1 |     1 |         1 |   0.0 deg |"
+            "   1.0 deg | 25.0 to 25.0 dB") in lines
+    assert "    near a target          |     1 |         1" in lines
+    assert "    away from every target |     1 |         0" in lines
+    assert any("own-FFT" in ln and "board" in ln for ln in lines)
+
+
+def test_tally_columns_line_up():
+    """Within each table, every separator stands in the same column; a
+    heading that spans two columns may leave one out."""
+    lines = _tally().lines()
+    tables, cur = [], []
+    for ln in lines:
+        if "|" in ln or "+" in ln:      # a row, or the rule under a heading
+            cur.append([i for i, ch in enumerate(ln) if ch in "|+"])
+        elif cur:
+            tables.append(cur)
+            cur = []
+    if cur:
+        tables.append(cur)
+    assert len(tables) == 2
+    for rows in tables:
+        full = max(rows, key=len)
+        assert all(set(r) <= set(full) for r in rows)
+        assert sum(r == full for r in rows) >= 3    # heading, rule, data
+
+
+def test_tally_without_targets_prints_nothing():
+    assert TargetTally("own-FFT", (4, 2)).lines() == []
+
+
+def test_session_lines():
+    lines = session_lines("cmsis", processed=10, mismatches=0, flips=0,
+                          board_errors=0, plane_max_cyc=481444,
+                          baud=1875000, tally=_tally())
+    assert lines[0].startswith("== session result =")
+    assert lines[1:4] == [
+        "  comparison    cmsis-FFT reference: 10 MATCH, 0 MISMATCH, "
+        "0 tie flips",
+        "  board errors  0 frames (not processed, not compared)",
+        "  slowest row   481444 of 493440 cycles at 1875000 baud "
+        "(margin 2.4 %)",
+    ]
+    assert lines[4] == ""
+    assert lines[5].startswith("  true targets (found: a detection within")
+
+
+def test_session_lines_without_a_slowest_row():
+    lines = session_lines("own", processed=0, mismatches=0, flips=0,
+                          board_errors=2, plane_max_cyc=0, baud=921600,
+                          tally=TargetTally())
+    assert [ln.split()[0] for ln in lines[1:]] == ["comparison", "board"]
 
 
 def test_doppler_distance_wraps():
@@ -369,11 +384,11 @@ class _FixedChain:
         return self.det
 
 
-def _one_frame(fe_truth=None):
+def _one_frame(fe_truth=None, ref_snr=40.0):
     targets = _targets(_truth(3.0, 1.625, 5.0))
     board = BoardResult(
         n=1, dets=[(20, 18, 95, 1.5, -0.5, 2.0, 40.0, 200, 100.0)])
-    same = np.array([row(20, 18, 5, 40.0)])
+    same = np.array([row(20, 18, 5, ref_snr)])
     frame = np.zeros((12, 32, 128), dtype=np.complex64)
     return _process_one(_OneResultLink(board), _FixedChain(same),
                         _NoQuantizer(), frame, 0, None, targets=targets,
@@ -393,3 +408,9 @@ def test_targets_scored_against_a_separate_reference_when_given():
     assert out["verdict"] == "MATCH"
     assert out["score_board"]["found"] == [True]
     assert out["score_ref"]["found"] == [False]
+
+
+def test_any_difference_from_the_reference_is_a_mismatch():
+    out = _one_frame(ref_snr=40.5)
+    assert out["verdict"] == "MISMATCH"
+    assert set(out) == {"verdict", "flips", "score_board", "score_ref"}

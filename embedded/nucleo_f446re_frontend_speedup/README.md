@@ -186,7 +186,7 @@ result parsing and the exact comparison. What it adds:
 | Addition | What it does |
 |---|---|
 | Full timing | Reads every field of the board's `TIME` line. Each summary shows the finish stages and the slowest row. |
-| Row deadline | Compares the slowest row with the time one row takes on the wire, warns when it is exceeded, and lists the deadline for each candidate rate at the end. |
+| Row deadline | Shows the slowest row against the time one row takes on the wire at the rate in use, with the margin left, and warns when it is exceeded. |
 | Laptop phases | Times the wait for `RDY`, sending, the wait for the result and the reference, per frame. |
 | Banner fields | Shows the DoA arithmetic, the FFT and the UART rate the board reports, and refuses to start on a wrong rate. |
 | Fresh banner | Discards buffered output before reading the banner (see step 2). |

@@ -8,9 +8,9 @@ Differences from streaming_subscriber_nucleo.py:
    show each finish stage (power, cells, detection, DoA, printing) and the
    slowest single row, plane_max_cyc.
 2. Row deadline. With ping-pong reception a row must be processed before
-   the next one has arrived. The summaries warn when plane_max_cyc exceeds
-   the time one row takes on the wire at the baud in use, and the final
-   summary lists that deadline for every candidate baud rate.
+   the next one has arrived. The summaries show plane_max_cyc against
+   the time one row takes on the wire at the baud in use, with the margin,
+   and warn when it is exceeded.
 3. PC-side phase times. Each frame's wait for the board's RDY, its
    transmission, the wait for the result and the reference computation
    are timed and averaged.
@@ -66,10 +66,12 @@ from simulator.wire import deserialize_frame
 CLK_HZ = 180_000_000
 ROW_WIRE_BYTES = 514            # 512 B of samples plus the 2-byte checksum
 BITS_PER_BYTE = 10              # start bit, 8 data bits, stop bit
-CANDIDATE_BAUDS = (921600, 1500000, 1875000, 2000000)
 BAUD_TOL = 0.03                 # board rate against the rate in use
 STAGES = ("power_cyc", "cells_cyc", "det_cyc", "doa_cyc", "emit_cyc")
 PHASES = ("ready_s", "send_s", "read_s", "ref_s")
+PHASE_NAMES = ("ready", "send", "read", "reference")
+LABEL_W = 12                    # label column of the summaries
+RULE_W = 66                     # width of a summary's heading line
 
 def parse_banner_ext(lines: list[str]) -> dict:
     """The certified banner fields plus the ones only this build prints."""
@@ -227,31 +229,43 @@ class TargetTally:
                                             sc["az_err_deg"][k])
 
     def lines(self) -> list[str]:
+        """Two tables: one row per target, then the detections near and
+        away from the targets. Nothing when no target was in the map."""
         if not self.per_target:
             return []
-        out = ["true targets (found: a detection within "
-               f"{MATCH_BINS:g} bin in range and Doppler):"]
+        ref = self.ref_name
+        found_w, err_w = 5 + 3 + 9, 9 + 3 + 9   # each spans two columns
+        out = [f"  true targets (found: a detection within {MATCH_BINS:g} "
+               f"bin in range and Doppler)",
+               "",
+               f"    {'':<8} | {'frames':>6} | {'found':^{found_w}} | "
+               f"{'largest angle error':^{err_w}} | board peak",
+               f"    {'':<8} | {'in map':>6} | {'board':>5} | {ref:>9} | "
+               f"{'board':>9} | {ref:>9} | above threshold",
+               "    " + "-+-".join("-" * n for n in (8, 6, 5, 9, 9, 9, 15))]
         for k in sorted(self.per_target):
             t = self.per_target[k]
             peak = (f"{min(t['peak']):.1f} to {max(t['peak']):.1f} dB"
                     if t["peak"] else "n/a")
+            name = f"target {k}"
+            az_board = f"{t['az_max']['board']:.1f} deg"
+            az_ref = f"{t['az_max']['ref']:.1f} deg"
             out.append(
-                f"   target {k}: in map {t['in_map']} frames | found: "
-                f"board {t['found']['board']}, "
-                f"{self.ref_name} {t['found']['ref']} | "
-                f"largest angle error: "
-                f"board {t['az_max']['board']:.1f} deg, "
-                f"{self.ref_name} {t['az_max']['ref']:.1f} deg | "
-                f"board peak above threshold: {peak}")
+                f"    {name:<8} | {t['in_map']:>6} | "
+                f"{t['found']['board']:>5} | {t['found']['ref']:>9} | "
+                f"{az_board:>9} | {az_ref:>9} | {peak}")
         window = "" if self.cluster_bins is None else (
-            f" (within {self.cluster_bins[0]:g} range and "
-            f"{self.cluster_bins[1]:g} Doppler bins)")
-        out.append(
-            f"   detections near a target{window}: "
-            f"board {self.cluster['board']}, "
-            f"{self.ref_name} {self.cluster['ref']} | "
-            f"away from every target: board {self.away['board']}, "
-            f"{self.ref_name} {self.away['ref']}")
+            f" (near: within {self.cluster_bins[0]:g} range and "
+            f"{self.cluster_bins[1]:g} Doppler bins of a target)")
+        out += ["",
+                f"  detections{window}",
+                "",
+                f"    {'':<22} | {'board':>5} | {ref:>9}",
+                "    " + "-+-".join("-" * n for n in (22, 5, 9))]
+        for name, counts in (("near a target", self.cluster),
+                             ("away from every target", self.away)):
+            out.append(f"    {name:<22} | {counts['board']:>5} | "
+                       f"{counts['ref']:>9}")
         return out
 
 
@@ -271,16 +285,17 @@ def row_deadline_cyc(baud: int, clk: int = CLK_HZ,
     return row_bytes * BITS_PER_BYTE * clk // baud
 
 
-def deadline_table(plane_max_cyc: int,
-                   bauds: tuple[int, ...] = CANDIDATE_BAUDS) -> list[str]:
-    """One line per baud rate: whether the slowest row fits its deadline."""
-    lines = []
-    for b in bauds:
-        d = row_deadline_cyc(b)
-        verdict = "MISS" if plane_max_cyc > d else "ok"
-        lines.append(f"baud {b} deadline {d} plane_max_cyc {plane_max_cyc} "
-                     f"{verdict}")
-    return lines
+def slowest_row_text(plane_max_cyc: int, baud: int) -> str:
+    """The slowest row against the row deadline at baud, with the margin
+    left; a row over the deadline is marked WARNING."""
+    deadline = row_deadline_cyc(baud)
+    if plane_max_cyc > deadline:
+        over = 100.0 * (plane_max_cyc - deadline) / deadline
+        return (f"WARNING {plane_max_cyc} of {deadline} cycles at {baud} "
+                f"baud (over by {over:.1f} %)")
+    margin = 100.0 * (deadline - plane_max_cyc) / deadline
+    return (f"{plane_max_cyc} of {deadline} cycles at {baud} baud "
+            f"(margin {margin:.1f} %)")
 
 
 def phase_means(frames: list[dict[str, float]]) -> dict[str, float]:
@@ -393,28 +408,73 @@ def _process_one(link, fe, op, frame, frame_id, t_pub, row_pace: float = 0.0,
     return line, res, times, phases, outcome
 
 
-def _timing_lines(time_rows: list[dict[str, int]],
-                  phase_rows: list[dict[str, float]], baud: int) -> list[str]:
-    """The stage, slowest-row and PC-phase lines of one summary."""
-    lines = []
-    if time_rows and all(s in time_rows[0] for s in STAGES):
-        n = len(time_rows)
-        means = "  ".join(
-            f"{s[:-4]} {sum(t[s] for t in time_rows) / n / 1e6:.2f}"
-            for s in STAGES)
-        lines.append(f"   stages, Mcyc per frame: {means}")
-    plane_max = max((t.get("plane_max_cyc", 0) for t in time_rows), default=0)
-    if plane_max:
-        deadline = row_deadline_cyc(baud)
-        lines.append(f"   slowest row: plane_max_cyc {plane_max} "
-                     f"(deadline {deadline} at {baud} baud)")
-        if plane_max > deadline:
-            lines.append(f"   WARNING plane_max_cyc {plane_max} exceeds row "
-                         f"deadline {deadline} at {baud} baud")
+def _labelled(label: str, text: str) -> str:
+    return f"  {label:<{LABEL_W}}  {text}"
+
+
+def _heading(text: str) -> str:
+    return f"== {text} ".ljust(RULE_W, "=")
+
+
+def summary_lines(counts: dict, time_rows: list[dict[str, int]],
+                  phase_rows: list[dict[str, float]], baud: int,
+                  clk: int = CLK_HZ) -> list[str]:
+    """One periodic summary. counts holds the session totals (processed,
+    dropped, board_errors, mismatches, flips), the means since the last
+    summary (latency_s, row_cyc, finish_cyc) and the session's largest
+    heap and stack. time_rows and phase_rows are the frames since the
+    last summary; lines whose values the board did not report are left
+    out."""
+    lines = [
+        _heading(f"{counts['processed']} frames processed"),
+        _labelled("frames",
+                  f"dropped {counts['dropped']} | "
+                  f"board errors {counts['board_errors']} | "
+                  f"mismatches {counts['mismatches']} | "
+                  f"tie flips {counts['flips']}"),
+        _labelled("latency", f"{counts['latency_s']:.2f} s per frame")]
     pm = phase_means(phase_rows)
     if pm:
-        lines.append("   pc phases, s per frame: " + "  ".join(
-            f"{k[:-2]} {pm[k]:.2f}" for k in PHASES))
+        lines.append(_labelled("laptop", " | ".join(
+            f"{name} {pm[k]:.2f} s" for k, name in zip(PHASES, PHASE_NAMES))))
+    row, fin = counts["row_cyc"], counts["finish_cyc"]
+    lines.append(_labelled(
+        "board",
+        f"rows {row / 1e6:.1f} Mcyc ({row / clk * 1e3:.0f} ms) | "
+        f"finish {fin / 1e6:.1f} Mcyc ({fin / clk * 1e3:.0f} ms)"))
+    if time_rows and all(st in time_rows[0] for st in STAGES):
+        n = len(time_rows)
+        lines.append(_labelled("finish", " | ".join(
+            f"{st[:-4]} {sum(t[st] for t in time_rows) / n / 1e6:.2f}"
+            for st in STAGES) + "  (Mcyc)"))
+    plane_max = max((t.get("plane_max_cyc", 0) for t in time_rows), default=0)
+    if plane_max:
+        lines.append(_labelled("slowest row",
+                               slowest_row_text(plane_max, baud)))
+    lines.append(_labelled(
+        "memory", f"heap {counts['heap']} B | stack {counts['stack']} B  "
+                  f"(largest so far)"))
+    return lines
+
+
+def session_lines(ref_fft: str, processed: int, mismatches: int, flips: int,
+                  board_errors: int, plane_max_cyc: int, baud: int,
+                  tally: TargetTally) -> list[str]:
+    """The block printed once at the end: the comparison totals, the
+    session's slowest row, and the true-target tables."""
+    lines = [
+        _heading("session result"),
+        _labelled("comparison",
+                  f"{ref_fft}-FFT reference: {processed - mismatches} MATCH, "
+                  f"{mismatches} MISMATCH, {flips} tie flips"),
+        _labelled("board errors",
+                  f"{board_errors} frames (not processed, not compared)")]
+    if plane_max_cyc:
+        lines.append(_labelled("slowest row",
+                               slowest_row_text(plane_max_cyc, baud)))
+    table = tally.lines()
+    if table:
+        lines += [""] + table
     return lines
 
 
@@ -474,8 +534,8 @@ def main() -> None:
     velocity_axis = [float(x) for x in cfg["velocity_axis"].split(",")]
     # a detection belongs to a target inside the CFAR guard region
     cluster_bins = (int(cfg["cfar_guard_r"]), int(cfg["cfar_guard_d"]))
-    tally = TargetTally("reference" if fe_truth is None
-                        else "own-FFT reference", cluster_bins)
+    tally = TargetTally("reference" if fe_truth is None else "own-FFT",
+                        cluster_bins)
 
     def targets_of(ground_truth):
         return truth_targets(ground_truth, cfg["range_per_bin"],
@@ -497,11 +557,21 @@ def main() -> None:
         print(f"TIME row_cyc {res.row_cyc} finish_cyc {res.finish_cyc}   "
               f"MEM heap {res.heap} stack_peak {res.stack_peak} "
               f"free_start {res.free_start}  SAT {res.sat}")
-        print("\n".join(_timing_lines([times] if times else [], [phases],
-                                      args.baud)))
         if outcome:
             tally.add(outcome["score_board"], outcome["score_ref"])
-            print("\n".join(tally.lines()))
+            print("\n".join(summary_lines(
+                {"processed": 1, "dropped": 0, "board_errors": 0,
+                 "mismatches": int(outcome["verdict"] == "MISMATCH"),
+                 "flips": outcome["flips"],
+                 "latency_s": sum(phases.values()),
+                 "row_cyc": res.row_cyc, "finish_cyc": res.finish_cyc,
+                 "heap": res.heap, "stack": res.stack_peak},
+                [times] if times else [], [phases], args.baud,
+                b.get("clk", CLK_HZ))))
+            print("\n".join(session_lines(
+                ref_fft, 1, int(outcome["verdict"] == "MISMATCH"),
+                outcome["flips"], 0, times.get("plane_max_cyc", 0),
+                args.baud, tally)))
         link.close()
         raise SystemExit(
             0 if outcome and outcome["verdict"] != "MISMATCH" else 1)
@@ -562,17 +632,14 @@ def main() -> None:
                                     times.get("plane_max_cyc", 0))
             if processed % args.summary_every == 0:
                 n = args.summary_every
-                print(f"-- {processed} processed, {drops} dropped, "
-                      f"{board_errors} board errors, "
-                      f"{mismatches} mismatches, "
-                      f"{flips_total} tie flips | "
-                      f"latency {lat_sum / n:.2f} s | "
-                      f"row {row_sum / n / 1e6:.1f} Mcyc "
-                      f"({row_sum / n / clk * 1e3:.0f} ms) "
-                      f"finish {fin_sum / n / 1e6:.1f} Mcyc "
-                      f"({fin_sum / n / clk * 1e3:.0f} ms) | "
-                      f"heap<={heap_max} stack_peak<={stack_max}", flush=True)
-                for ln in _timing_lines(time_rows, phase_rows, args.baud):
+                for ln in summary_lines(
+                        {"processed": processed, "dropped": drops,
+                         "board_errors": board_errors,
+                         "mismatches": mismatches, "flips": flips_total,
+                         "latency_s": lat_sum / n, "row_cyc": row_sum / n,
+                         "finish_cyc": fin_sum / n,
+                         "heap": heap_max, "stack": stack_max},
+                        time_rows, phase_rows, args.baud, clk):
                     print(ln, flush=True)
                 lat_sum = row_sum = fin_sum = 0.0
                 time_rows, phase_rows = [], []
@@ -580,17 +647,10 @@ def main() -> None:
         print("\nbridge stopped.")
     finally:
         link.close()
-    print(f"board errors: {board_errors} frames (not processed, "
-          f"not compared)")
-    print(f"comparison with the {ref_fft}-FFT reference: "
-          f"{processed - mismatches} MATCH, {mismatches} MISMATCH, "
-          f"{flips_total} tie flips")
-    for ln in tally.lines():
+    for ln in session_lines(ref_fft, processed, mismatches, flips_total,
+                            board_errors, plane_max_session, args.baud,
+                            tally):
         print(ln)
-    if plane_max_session:
-        print("row deadline by baud rate, for the session's slowest row:")
-        for ln in deadline_table(plane_max_session):
-            print("   " + ln)
 
 
 if __name__ == "__main__":

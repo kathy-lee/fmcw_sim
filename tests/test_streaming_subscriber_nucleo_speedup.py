@@ -51,18 +51,27 @@ def test_row_deadline_cyc():
 
 
 def test_slowest_row_text_shows_the_margin():
-    assert slowest_row_text(481444, 1875000) == \
-        "481444 of 493440 cycles at 1875000 baud (margin 2.4 %)"
+    assert slowest_row_text(481444, 1875000) == (
+        "took 481444 cycles (2.67 ms) | wire time of a row 493440 cycles "
+        "(2.74 ms) at 1875000 baud | margin 2.4 %")
 
 
 def test_slowest_row_at_the_limit_is_no_warning():
-    assert slowest_row_text(1003906, 921600) == \
-        "1003906 of 1003906 cycles at 921600 baud (margin 0.0 %)"
+    assert slowest_row_text(1003906, 921600) == (
+        "took 1003906 cycles (5.58 ms) | wire time of a row 1003906 cycles "
+        "(5.58 ms) at 921600 baud | margin 0.0 %")
 
 
 def test_slowest_row_over_the_deadline_warns():
-    assert slowest_row_text(500000, 1875000) == \
-        "WARNING 500000 of 493440 cycles at 1875000 baud (over by 1.3 %)"
+    assert slowest_row_text(500000, 1875000) == (
+        "WARNING took 500000 cycles (2.78 ms) | wire time of a row 493440 "
+        "cycles (2.74 ms) at 1875000 baud | over by 1.3 %")
+
+
+def test_slowest_row_milliseconds_follow_the_clock():
+    assert slowest_row_text(90000, 1875000, clk=90_000_000).startswith(
+        "took 90000 cycles (1.00 ms) | wire time of a row 246720 cycles "
+        "(2.74 ms)")
 
 
 SUMMARY_COUNTS = {"processed": 10, "dropped": 307, "board_errors": 0,
@@ -86,8 +95,8 @@ def test_summary_lines_layout():
         "  board         rows 13.7 Mcyc (76 ms) | finish 17.9 Mcyc (99 ms)",
         "  finish        power 3.00 | cells 2.00 | det 5.00 | doa 890.00 | "
         "emit 40.00  (Mcyc)",
-        "  slowest row   410000 of 493440 cycles at 1875000 baud "
-        "(margin 16.9 %)",
+        "  slowest row   took 410000 cycles (2.28 ms) | wire time of a row "
+        "493440 cycles (2.74 ms) at 1875000 baud | margin 16.9 %",
         "  memory        heap 336 B | stack 912 B  (largest so far)",
     ]
 
@@ -330,8 +339,8 @@ def test_session_lines():
         "  comparison    cmsis-FFT reference: 10 MATCH, 0 MISMATCH, "
         "0 tie flips",
         "  board errors  0 frames (not processed, not compared)",
-        "  slowest row   481444 of 493440 cycles at 1875000 baud "
-        "(margin 2.4 %)",
+        "  slowest row   took 481444 cycles (2.67 ms) | wire time of a row "
+        "493440 cycles (2.74 ms) at 1875000 baud | margin 2.4 %",
     ]
     assert lines[4] == ""
     assert lines[5].startswith("  true targets (found: a detection within")

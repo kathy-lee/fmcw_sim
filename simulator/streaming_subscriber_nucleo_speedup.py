@@ -285,17 +285,20 @@ def row_deadline_cyc(baud: int, clk: int = CLK_HZ,
     return row_bytes * BITS_PER_BYTE * clk // baud
 
 
-def slowest_row_text(plane_max_cyc: int, baud: int) -> str:
-    """The slowest row against the row deadline at baud, with the margin
-    left; a row over the deadline is marked WARNING."""
-    deadline = row_deadline_cyc(baud)
+def slowest_row_text(plane_max_cyc: int, baud: int,
+                     clk: int = CLK_HZ) -> str:
+    """The processing time of the slowest row beside the time one row
+    takes on the wire at baud, each in clock cycles and milliseconds, and
+    the margin left. A row slower than the wire is marked WARNING."""
+    deadline = row_deadline_cyc(baud, clk)
+    text = (f"took {plane_max_cyc} cycles ({plane_max_cyc / clk * 1e3:.2f} "
+            f"ms) | wire time of a row {deadline} cycles "
+            f"({deadline / clk * 1e3:.2f} ms) at {baud} baud | ")
     if plane_max_cyc > deadline:
         over = 100.0 * (plane_max_cyc - deadline) / deadline
-        return (f"WARNING {plane_max_cyc} of {deadline} cycles at {baud} "
-                f"baud (over by {over:.1f} %)")
+        return f"WARNING {text}over by {over:.1f} %"
     margin = 100.0 * (deadline - plane_max_cyc) / deadline
-    return (f"{plane_max_cyc} of {deadline} cycles at {baud} baud "
-            f"(margin {margin:.1f} %)")
+    return f"{text}margin {margin:.1f} %"
 
 
 def phase_means(frames: list[dict[str, float]]) -> dict[str, float]:
@@ -450,7 +453,7 @@ def summary_lines(counts: dict, time_rows: list[dict[str, int]],
     plane_max = max((t.get("plane_max_cyc", 0) for t in time_rows), default=0)
     if plane_max:
         lines.append(_labelled("slowest row",
-                               slowest_row_text(plane_max, baud)))
+                               slowest_row_text(plane_max, baud, clk)))
     lines.append(_labelled(
         "memory", f"heap {counts['heap']} B | stack {counts['stack']} B  "
                   f"(largest so far)"))
@@ -459,7 +462,7 @@ def summary_lines(counts: dict, time_rows: list[dict[str, int]],
 
 def session_lines(ref_fft: str, processed: int, mismatches: int, flips: int,
                   board_errors: int, plane_max_cyc: int, baud: int,
-                  tally: TargetTally) -> list[str]:
+                  tally: TargetTally, clk: int = CLK_HZ) -> list[str]:
     """The block printed once at the end: the comparison totals, the
     session's slowest row, and the true-target tables."""
     lines = [
@@ -471,7 +474,7 @@ def session_lines(ref_fft: str, processed: int, mismatches: int, flips: int,
                   f"{board_errors} frames (not processed, not compared)")]
     if plane_max_cyc:
         lines.append(_labelled("slowest row",
-                               slowest_row_text(plane_max_cyc, baud)))
+                               slowest_row_text(plane_max_cyc, baud, clk)))
     table = tally.lines()
     if table:
         lines += [""] + table
@@ -571,7 +574,7 @@ def main() -> None:
             print("\n".join(session_lines(
                 ref_fft, 1, int(outcome["verdict"] == "MISMATCH"),
                 outcome["flips"], 0, times.get("plane_max_cyc", 0),
-                args.baud, tally)))
+                args.baud, tally, b.get("clk", CLK_HZ))))
         link.close()
         raise SystemExit(
             0 if outcome and outcome["verdict"] != "MISMATCH" else 1)
@@ -649,7 +652,7 @@ def main() -> None:
         link.close()
     for ln in session_lines(ref_fft, processed, mismatches, flips_total,
                             board_errors, plane_max_session, args.baud,
-                            tally):
+                            tally, clk):
         print(ln)
 
 

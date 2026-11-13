@@ -214,6 +214,15 @@ def test_board_margin_db():
     assert board_margin_db(BoardResult()).shape == (0,)
 
 
+def test_board_margin_db_zero_threshold_is_infinite():
+    # training cells that average to 0 give a threshold of 0
+    res = BoardResult(dets=[(10, 3, 70, 1.5, -0.5, 2.0, 30.0, 200, 0.0),
+                            (11, 3, 70, 1.5, -0.5, 2.0, 30.0, 200, 100.0)])
+    margin = board_margin_db(res)
+    assert margin[0] == float("inf")
+    assert margin[1] == pytest.approx(3.0103, abs=1e-4)
+
+
 def test_resolve_reference():
     assert resolve_reference("auto", {"fft_impl": "cmsis"}) == "cmsis"
     assert resolve_reference("auto", {"fft_impl": "own"}) == "own"

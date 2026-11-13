@@ -106,10 +106,16 @@ def check_banner_baud(banner: dict, baud: int) -> str | None:
 
 def board_margin_db(result: BoardResult) -> np.ndarray:
     """Per board detection, how far its power is above its CFAR threshold,
-    in dB, in the order of det_rows."""
+    in dB, in the order of det_rows.
+    result = 10·log10(power / threshold)
+    power: power of the detected cell.
+    threshold:  CFAR threshold for that cell.
+    A threshold of 0 (training cells that average to 0) gives inf.
+    """
     if not result.dets:
         return np.empty(0)
-    return np.array([10.0 * np.log10(d[7] / d[8]) for d in result.dets])
+    return np.array([10.0 * np.log10(d[7] / d[8]) if d[8] > 0 else np.inf
+                     for d in result.dets])
 
 
 def resolve_reference(mode: str, banner: dict) -> str:

@@ -180,7 +180,9 @@ python3 -m simulator.streaming_subscriber_nucleo_speedup \
     --baud 1875000 --max-frames 110
 ```
 
-`--baud` must be the rate the board was built for.
+`--baud` must be the rate the board was built for; its default is 921600. At a
+wrong rate the board's output is unreadable, and the subscriber stops with
+"no readable banner".
 
 ## The subscriber
 

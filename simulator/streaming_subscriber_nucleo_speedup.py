@@ -69,6 +69,7 @@ CLK_HZ = 180_000_000
 ROW_WIRE_BYTES = 514            # 512 B of samples plus the 2-byte checksum
 BITS_PER_BYTE = 10              # start bit, 8 data bits, stop bit
 BAUD_TOL = 0.03                 # board rate against the rate in use
+BANNER_UNREADABLE_LINES = 5    # lines of non-ASCII bytes before giving up
 STAGES = ("power_cyc", "cells_cyc", "det_cyc", "doa_cyc", "emit_cyc")
 PHASES = ("ready_s", "send_s", "read_s", "ref_s")
 PHASE_NAMES = ("ready", "send", "read", "reference")
@@ -310,6 +311,21 @@ def phase_means(frames: list[dict[str, float]]) -> dict[str, float]:
     return {k: sum(f[k] for f in frames) / len(frames) for k in frames[0]}
 
 
+def readable_line(raw: bytes) -> str | None:
+    """The line as text, or None when it is not printable ASCII."""
+    try:
+        ln = raw.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return None
+    return ln if ln.isprintable() else None
+
+
+def banner_failure_text(err: Exception, baud: int) -> str:
+    """What to tell the user when no banner could be read."""
+    return (f"{err} at {baud} baud. Is the board built for this rate? "
+            f"Pass the board's rate as --baud.")
+
+
 class TimedLink(NucleoLink):
     """NucleoLink whose result also carries the full TIME line."""
 
@@ -324,7 +340,29 @@ class TimedLink(NucleoLink):
                 self.ser.read(self.ser.in_waiting)
             else:
                 time.sleep(0.01)
-        return self.wait_ready()
+        # Not wait_ready(): at a wrong baud rate the board's output arrives
+        # as unreadable bytes and no RDY ever comes, so reading stops after
+        # a few such lines.
+        seen: list[str] = []
+        empties = 0
+        unreadable = 0
+        while True:
+            raw = self.ser.readline()
+            if not raw.strip():
+                empties += 1
+                if empties >= 6 or not self.ser.is_open:
+                    raise IOError("no RDY from the board")
+                continue
+            empties = 0
+            ln = readable_line(raw)
+            if ln is None:
+                unreadable += 1
+                if unreadable >= BANNER_UNREADABLE_LINES:
+                    raise IOError("no readable banner from the board")
+                continue
+            if ln == "RDY":
+                return seen
+            seen.append(ln)
 
     def read_result(self) -> tuple[BoardResult, dict[str, int]]:
         """Read one result block as NucleoLink.read_result does: through
@@ -513,8 +551,18 @@ def main() -> None:
     ap.add_argument("--connect", default="tcp://127.0.0.1:5555")
     ap.add_argument("--topic", default="fmcw")
     ap.add_argument("--port", default="/dev/ttyACM0")
-    ap.add_argument("--baud", type=int, default=921600)
-    ap.add_argument("--params", required=True)
+    ap.add_argument("--baud", type=int, default=921600,
+                    help="rate the serial port to the board is opened at "
+                         "(default %(default)s). It must be the rate the "
+                         "board was built with: 1875000 for the default "
+                         "build, 921600 for FFT=own")
+    ap.add_argument("--params", required=True,
+                    help="params.cfg written by scripts/export_for_c.py, "
+                         "e.g. data/c_export_stream128/params.cfg. The "
+                         "laptop reference is computed with it, and it must "
+                         "be the file the board was built with: the "
+                         "subscriber refuses to start when the board "
+                         "reports other dimensions or another CFAR factor")
     ap.add_argument("--scenario",
                     default="scenarios/scenario_mimo_stream_128.json")
     ap.add_argument("--one-shot", action="store_true")
@@ -533,7 +581,13 @@ def main() -> None:
 
     cfg = read_params(args.params)
     link = TimedLink(args.port, args.baud)
-    b = parse_banner_ext(link.read_banner())
+    try:
+        banner_lines = link.read_banner()
+    except IOError as err:
+        link.close()
+        print(f"refusing: {banner_failure_text(err, args.baud)}")
+        raise SystemExit(1)
+    b = parse_banner_ext(banner_lines)
     want = (int(cfg["n_virtual"]), int(cfg["n_chirps"]), int(cfg["n_samples"]))
     alpha_ok = abs(b.get("alpha", 0) - cfg["cfar_alpha"]) \
         <= 1e-9 * abs(cfg["cfar_alpha"])

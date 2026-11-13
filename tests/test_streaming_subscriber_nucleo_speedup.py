@@ -5,7 +5,8 @@ import pytest
 
 from simulator.streaming_subscriber_nucleo import BoardResult
 from simulator.streaming_subscriber_nucleo_speedup import (
-    TargetTally, TimedLink, _process_one, board_margin_db, check_banner_baud,
+    TargetTally, TimedLink, _process_one, banner_failure_text,
+    board_margin_db, check_banner_baud,
     parse_banner_ext, parse_time, phase_means, reference_lib_path,
     resolve_reference, row_deadline_cyc, score_targets, session_lines,
     slowest_row_text, summary_lines, truth_targets)
@@ -232,6 +233,44 @@ def test_read_banner_returns_lines_up_to_rdy():
     board = FakeBoard(["# dims 12 32 128", "# fft_impl own", "RDY", "DET 0 0"])
     lines = _fake_link(board).read_banner(settle_s=0.0)
     assert lines == ["# dims 12 32 128", "# fft_impl own"]
+
+
+def _raw_board(raw_lines):
+    """A FakeBoard that emits these bytes, one element per readline."""
+    board = FakeBoard([])
+    board.out = list(raw_lines)
+    return board
+
+
+# what a banner looks like when the link is opened at another baud rate
+GARBAGE = b"\x00\xfe\x9c\xe0\x1c\x00\xfc\x8e\n"
+
+
+def test_read_banner_gives_up_on_unreadable_lines():
+    board = _raw_board([GARBAGE] * 50 + [b"RDY\n"])
+    with pytest.raises(IOError, match="no readable banner"):
+        _fake_link(board).read_banner(settle_s=0.0)
+    assert len(board.out) > 40          # it stopped early, not at the end
+
+
+def test_read_banner_skips_a_single_unreadable_line():
+    board = _raw_board([GARBAGE, b"# dims 12 32 128\n", b"# baud 1875000\n",
+                        b"RDY\n"])
+    lines = _fake_link(board).read_banner(settle_s=0.0)
+    assert lines == ["# dims 12 32 128", "# baud 1875000"]
+
+
+def test_read_banner_silent_board_still_reports_no_rdy():
+    with pytest.raises(IOError, match="no RDY"):
+        _fake_link(_raw_board([])).read_banner(settle_s=0.0)
+
+
+def test_banner_failure_names_the_baud_rate():
+    text = banner_failure_text(IOError("no readable banner from the board"),
+                               921600)
+    assert text == ("no readable banner from the board at 921600 baud. "
+                    "Is the board built for this rate? "
+                    "Pass the board's rate as --baud.")
 
 
 # ---- judging detections against the frame's true targets ----

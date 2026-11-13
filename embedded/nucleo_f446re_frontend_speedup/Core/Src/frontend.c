@@ -162,7 +162,7 @@ static void drain_rx(void)
  * single reader, no further synchronization needed. */
 static volatile int rx_done, rx_err;
 /* The cycle count at the moment the last byte of a row arrived. The main
- * loop reads it before it arms the reception of the row after next, so it
+ * loop reads it before it arms the reception of the next row, so it
  * always belongs to the row rx_done announces. */
 static volatile uint32_t rx_stamp;
 

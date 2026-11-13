@@ -26,7 +26,9 @@ TESTS += tests/test_cfar_cells_q15 tests/test_rd_stream_q15 \
 # CMSIS-DSP is not written for -Wpedantic -Werror, so this target has its
 # own flags. __GNUC_PYTHON__ is CMSIS-DSP's switch for a compiler without
 # the CMSIS-Core headers. -Bsymbolic keeps every call inside this library
-# when both libraries are loaded into one process.
+# when both libraries are loaded into one process. -ffp-contract=off keeps
+# the float steps as written, as -std=c11 does for libfmcw.so: gnu11 would
+# otherwise let a compiler with fused multiply-add merge them.
 CMSIS_DSP   = ../embedded/third_party/CMSIS-DSP
 CMSIS_TF    = $(CMSIS_DSP)/Source/TransformFunctions
 CMSIS_SRC   = ../embedded/nucleo_f446re_frontend_speedup/Core/Src/fft_q15_cmsis.c \
@@ -34,7 +36,7 @@ CMSIS_SRC   = ../embedded/nucleo_f446re_frontend_speedup/Core/Src/fft_q15_cmsis.
               $(CMSIS_TF)/arm_bitreversal.c $(CMSIS_TF)/arm_bitreversal2.c \
               $(CMSIS_DSP)/Source/CommonTables/arm_const_structs.c \
               $(CMSIS_DSP)/Source/CommonTables/arm_common_tables.c
-CMSIS_FLAGS = -std=gnu11 -Wall -O2 -Iinclude -Iinclude/onepass \
+CMSIS_FLAGS = -std=gnu11 -Wall -O2 -ffp-contract=off -Iinclude -Iinclude/onepass \
               -I$(CMSIS_DSP)/Include -I$(CMSIS_DSP)/PrivateInclude \
               -I$(CMSIS_TF) -D__GNUC_PYTHON__ -DARM_MATH_LOOPUNROLL
 

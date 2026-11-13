@@ -17,12 +17,17 @@ CDIR = ROOT / "c_frontend"
 CMSIS_LIB = CDIR / "libfmcw_cmsis.so"
 SCENARIO = "scenarios/scenario_mimo_stream_128.json"
 
+CMSIS_DSP = ROOT / "embedded" / "third_party" / "CMSIS-DSP"
+
 needs_gcc = pytest.mark.skipif(shutil.which("gcc") is None,
                                reason="gcc not available")
 
 
 @pytest.fixture(scope="module")
 def exported(tmp_path_factory):
+    if not (CMSIS_DSP / "Source").is_dir():
+        pytest.skip("CMSIS-DSP submodule not checked out: git submodule "
+                    "update --init embedded/third_party/CMSIS-DSP")
     out = tmp_path_factory.mktemp("stream128_cmsis")
     subprocess.run(
         [sys.executable, "scripts/export_for_c.py", "--scenario", SCENARIO,

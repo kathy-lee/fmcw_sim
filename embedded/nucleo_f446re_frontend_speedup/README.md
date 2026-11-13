@@ -106,6 +106,15 @@ Two things had to be solved to use it:
   on the laptop, running each DSP instruction as the C function CMSIS-DSP
   supplies for it. With that reference every frame matches bit for bit.
 
+One limit to know: `arm_cfft_q15` does not saturate. Its last step doubles each
+value in 16 bits, and a result beyond ±32767 wraps around to the opposite sign.
+A tone cannot cause that at any amplitude. It takes an input clipped at the ADC
+to nearly a square wave at full scale in both I and Q, whose strongest bin is
+4/π times full scale (about 41 700). The laptop reference wraps in the same
+way, so such a frame still gives MATCH, and `SAT` does not count it; the
+subscriber's warning that samples were clipped at the ADC grid is the sign to
+look for. The project's FFT saturates and counts in this case.
+
 Also tried and dropped: CMSIS-DSP's 32-bit FFT for the range transform. It was
 slower and no closer to the project's FFT.
 

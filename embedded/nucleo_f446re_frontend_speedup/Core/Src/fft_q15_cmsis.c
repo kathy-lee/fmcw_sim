@@ -46,8 +46,13 @@ void fft_q15_plan_free(FftPlanQ15 *p)
  * The truncation errors are divided by the same factor on the way down.
  * A block that already fills the word is transformed as it is.
  *
- * *sat is left alone: CMSIS-DSP saturates without counting, so the
- * caller's count then covers only the steps outside the FFT. */
+ * *sat is left alone, so the caller's count covers only the steps outside
+ * the FFT. arm_cfft_q15 does not saturate its result either: its last step
+ * doubles each value in 16 bits, and a result beyond +-32767 wraps around.
+ * A scaled block cannot reach that, and neither can a tone of any
+ * amplitude. It takes a block transformed as it is whose I and Q both sit
+ * near full scale most of the time — a signal clipped to a square wave,
+ * whose strongest bin is 4/pi times full scale. */
 void fft_q15_inplace(const FftPlanQ15 *p, cplx_q15 *x, long long *sat)
 {
     (void)sat;

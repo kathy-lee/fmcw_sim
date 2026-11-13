@@ -44,10 +44,23 @@ libfmcw_cmsis.so: $(SRC) $(CMSIS_SRC) $(HDRS)
 	$(CC) $(CMSIS_FLAGS) -fPIC -shared -Wl,-Bsymbolic -Wl,--no-undefined \
 	    -o $@ $(filter-out src/fft_q15.c,$(SRC)) $(CMSIS_SRC) $(LDLIBS)
 
+# The board's FFT file with its block scaling, tested on the laptop, and a
+# check that the FFT underneath is the board's version: the test also links
+# CMSIS-DSP's plain C version under other names (tests/cfft_q15_plain_path.c).
+CMSIS_TEST = tests/test_fft_q15_cmsis
+
+$(CMSIS_TEST): tests/test_fft_q15_cmsis.c tests/cfft_q15_plain_path.c \
+               $(CMSIS_SRC) $(HDRS) tests/check.h
+	$(CC) $(CMSIS_FLAGS) -Itests -o $@ tests/test_fft_q15_cmsis.c \
+	    tests/cfft_q15_plain_path.c $(CMSIS_SRC) $(LDLIBS)
+
+test-cmsis: $(CMSIS_TEST)
+	./$(CMSIS_TEST)
+
 clean: clean-cmsis
 clean-cmsis:
-	rm -f libfmcw_cmsis.so
+	rm -f libfmcw_cmsis.so $(CMSIS_TEST)
 
-.PHONY: lib-cmsis clean-cmsis
+.PHONY: lib-cmsis test-cmsis clean-cmsis
 # this file is included above the main Makefile's first rule
 .DEFAULT_GOAL := all

@@ -331,10 +331,16 @@ board, with either FFT.
 
 ```bash
 make -C c_frontend test PYTHON=python3
+make -C c_frontend test-cmsis
 python3 -m pytest tests/test_c_frontend_cmsis.py \
     tests/test_streaming_subscriber_nucleo_speedup.py \
     tests/test_frontend_speedup_params.py -q
 ```
+
+`test-cmsis` runs the board's `fft_q15_cmsis.c` on the laptop
+(`c_frontend/tests/test_fft_q15_cmsis.c`): the block scaling at its limits, the
+accuracy for small values, and that the FFT underneath is CMSIS-DSP's version
+for cores with DSP instructions and not its plain C version.
 
 `tests/test_c_frontend_cmsis.py` builds both laptop libraries and checks that
 they load side by side, that each runs its own FFT, and that the CMSIS-DSP
